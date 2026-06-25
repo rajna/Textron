@@ -1,0 +1,33 @@
+{
+  "name": "textron-agent",
+  "version": "1.0.0",
+  "description": "Textron - Trainable textual neural network for agent context optimization. Multi-layer graph of text nodes that learn from task outcomes through forward/backward propagation.",
+  "keywords": [
+    "pi-package",
+    "neural-network",
+    "agent-memory",
+    "context-optimization",
+    "text-graph",
+    "reinforcement-learning"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourname/textron-agent"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

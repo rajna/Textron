@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Textron — Network Training Lifecycle</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#080c14;color:#b0b8d0;font-family:'Inter',sans-serif;overflow:hidden;user-select:none}
+canvas{display:block}
+#controls{position:fixed;bottom:0;left:0;right:0;z-index:2;background:rgba(8,10,18,.85);
+  backdrop-filter:blur(16px);border-top:1px solid rgba(100,90,160,.1);padding:16px 24px;
+  display:flex;align-items:center;gap:16px;justify-content:center;flex-wrap:wrap}
+#controls button{background:rgba(40,36,60,.6);border:1px solid rgba(120,110,180,.2);
+  color:#a098c8;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:.75rem;
+  letter-spacing:.05em;transition:all .2s}
+#controls button:hover{background:rgba(60,50,90,.6);border-color:rgba(160,140,220,.4)}
+#controls button.active{background:rgba(100,80,160,.4);border-color:rgba(180,160,230,.6);color:#d0c0f0}
+#controls .sep{width:1px;height:24px;background:rgba(100,90,160,.1)}
+#controls .label{font-size:.65rem;color:#504870;letter-spacing:.1em;text-transform:uppercase}
+#legend{position:fixed;top:20px;right:24px;z-index:2;display:flex;flex-direction:column;gap:6px;
+  font-size:.6rem;color:#605878}
+#legend span{display:flex;align-items:center;gap:6px}
+#legend .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+#info{position:fixed;top:20px;left:24px;z-index:2;font-size:.7rem;color:#8078a0;max-width:320px;
+  line-height:1.5;background:rgba(8,10,18,.7);padding:14px 18px;border-radius:10px;
+  border:1px solid rgba(100,90,160,.08)}
+#info .title{font-size:.9rem;color:#c0b0e0;margin-bottom:4px}
+#info .trigger{color:#e0c060;font-size:.6rem;margin-top:6px;letter-spacing:.04em}
+
+@media(max-width:700px){#info{max-width:200px;font-size:.6rem}#legend{top:auto;bottom:80px;right:8px}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info"></div>
+<div id="legend">
+  <span><div class="dot" style="background:rgba(160,140,200,.15);border:1px solid rgba(140,120,180,.3)"></div> empty node</span>
+  <span><div class="dot" style="background:rgba(140,120,200,.5);border:1px solid rgba(170,150,220,.6)"></div> filled node</span>
+  <span><div class="dot" style="background:rgba(220,190,70,.6);border:1px solid rgba(240,210,100,.8)"></div> activated node</span>
+  <span style="color:#80d080">━━━</span><span>positive edge (+w)</span>
+  <span style="color:#e06060">━━━</span><span>negative edge (-w)</span>
+  <span style="color:#403860">╌╌╌</span><span>neutral (w≈0.5)</span>
+</div>
+<div id="controls">
+  <div class="label">Training Epoch</div>
+</div>
+
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+
+function resize(){W=canvas.width=innerWidth;H=canvas.height=innerHeight}
+window.addEventListener('resize',()=>{resize();draw()});
+resize();
+
+// ─── Network State Across Epochs ──────────────────────────────────
+const LAYERS=[4,6,6,4];
+const nodeNames=['node_0','node_1','node_2','node_3','node_4','node_5',
+  'node_6','node_7','node_8','node_9','node_10','node_11','node_12',
+  'node_13','node_14','node_15','node_16','node_17','node_18','node_19'];
+
+// Pre-compute node positions per layer
+function layerY(l){return H*.15+(l/(LAYERS.length-1))*(H*.65)}
+function nodeX(l,i,n){const pad=W*.12;const w=W-pad*2;return pad+(i/(n-1))*w}
+
+const nodePos=[];
+for(let l=0;l<LAYERS.length;l++){
+  const layer=[];
+  for(let i=0;i<LAYERS[l];i++)layer.push({x:nodeX(l,i,LAYERS[l]),y:layerY(l)});
+  nodePos.push(layer);
+}
+
+// ─── Epoch Data ───────────────────────────────────────────────────
+const epochs=[
+  { // Epoch 0: Fresh network — all empty, all weights 0.5
+    name:'Task 1 · 初始化',
+    info:'LLM遇到一个React useEffect无限循环bug。没有匹配的网络，调用 Textron init 创建了 [4,6,6,4] 新网络。所有节点为空，边权重统一0.5。',
+    trigger:'触发: LLM 调用 Textron action=init',
+    nodes:{},
+    edges:{},
+    highlights:[],
+  },
+  { // Epoch 1: After first backward — nodes filled, edges unchanged
+    name:'Task 1 · 反向传播',
+    info:'任务完成后，LLM调用 Textron backward。feedback="success: useMemo修复了依赖"。LLM自己决定了4个节点该填什么内容。边权重尚未更新（第一次激活路径被记录）。',
+    trigger:'触发: LLM 调用 Textron action=backward',
+    nodes:{
+      'node_0':'useEffect deps: 对象引用每渲染变化',
+      'node_1':'useMemo 稳定对象引用',
+      'node_2':'useCallback 稳定函数引用',
+      'node_3':'函数式 setState(prev=>...)',
+    },
+    edges:{
+      '0_1:0_0':0.54,'0_1:0_1':0.54,'0_1:0_2':0.54,'0_1:0_4':0.54,
+      '1_2:1_0':0.54,'1_2:1_1':0.54,
+      '0_1:1_0':0.54,'0_1:1_1':0.54,'0_1:1_2':0.54,
+      '0_1:3_0':0.54,'0_1:3_1':0.54,'0_1:3_3':0.54,
+    },
+    highlights:[0,0,0,1,1,1,1,2,2,3,3],
+  },
+  { // Epoch 2: Task 2, more training
+    name:'Task 2 · 第二次训练',
+    info:'用户又问了一个React重渲染问题。LLM路由到同一网络，调forward加载节点，对4个已填节点打了高分(0.8-0.9)，propagate后编译出上下文提示。任务成功后调backward，新增2个节点内容，强化已有路径。',
+    trigger:'触发: LLM forward→score→propagate→backward',
+    nodes:{
+      'node_0':'useEffect deps: 对象引用每渲染变化',
+      'node_1':'useMemo 稳定对象引用',
+      'node_2':'useCallback 稳定函数引用',
+      'node_3':'函数式 setState(prev=>...)',
+      'node_4':'检查 stale closure: 闭包捕获了旧值',
+      'node_5':'React.StrictMode 双挂载调试',
+    },
+    edges:{
+      '0_1:0_0':0.58,'0_1:0_1':0.58,'0_1:0_2':0.58,'0_1:0_4':0.58,
+      '0_1:1_0':0.58,'0_1:1_1':0.58,'0_1:1_2':0.58,
+      '0_1:3_0':0.58,'0_1:3_1':0.58,'0_1:3_3':0.58,
+      '1_2:0_0':0.58,'1_2:0_1':0.58,'1_2:1_0':0.58,'1_2:1_1':0.58,
+      '1_2:4_0':0.58,'1_2:4_1':0.58,
+      '2_3:0_0':0.58,'2_3:0_1':0.58,'2_3:1_0':0.58,'2_3:5_0':0.58,
+    },
+    highlights:[0,0,0,1,1,1,1,2,2,3,3,4,4,5,5],
+  },
+  { // Epoch 3: Task 5 — more convergence
+    name:'Task 5 · 部分收敛',
+    info:'同类任务做了5次。6个节点已填充，edge权重显著分化：高价值路径>0.7，低价值路径<0.3。LLM前向传播时自动筛掉无用节点，编译出的prompt更短但更准。用户修正减少了60%。',
+    trigger:'触发: 多次 forward→backward 循环累积',
+    nodes:{
+      'node_0':'useEffect deps: 对象/数组引用每渲染变化',
+      'node_1':'useMemo: const obj=useMemo(()=>({...}),[dep])',
+      'node_2':'useCallback: const fn=useCallback(()=>{...},[dep])',
+      'node_3':'函数式setState: setState(prev=>({...prev,...}))',
+      'node_4':'Stale Closure: useEffect内函数捕获旧值',
+      'node_5':'React.StrictMode 开发环境双挂载',
+      'node_6':'❌ 不要: 空deps[] + eslint-disable',
+      'node_7':'useRef存可变值不触发重渲染',
+      'node_8':'React DevTools Profiler 定位重渲染',
+    },
+    edges:{
+      '0_1:0_0':0.72,'0_1:0_1':0.72,'0_1:0_2':0.72,
+      '0_1:1_0':0.72,'0_1:1_1':0.72,
+      '0_1:3_0':-0.15,'0_1:3_1':-0.15,
+      '1_2:0_0':0.68,'1_2:0_1':0.68,'1_2:1_0':0.68,
+      '1_2:4_0':0.32,'1_2:4_1':0.32,
+      '2_3:0_0':0.65,'2_3:0_1':0.65,'2_3:1_0':0.65,
+      '2_3:5_0':-0.22,
+      '0_1:0_4':0.50,'0_1:2_0':0.50,
+      '1_2:2_0':0.50,'1_2:3_0':0.50,
+    },
+    highlights:[0,0,0,1,1,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8],
+  },
+  { // Epoch 4: Task 20 — converged
+    name:'Task 20 · 收敛',
+    info:'网络完全收敛。9个节点填充了精炼后的模式，成功路径边权重>0.85，失败路径< -0.5 被抑制。LLM做同类任务时forward→propagate给出的prompt极度紧凑精准。可以蒸馏导出为 SKILL.md。',
+    trigger:'触发: 20次循环 → 稳定子图 → 可蒸馏为 Skill',
+    nodes:{
+      'node_0':'useEffect 对象/数组引用稳定性检查',
+      'node_1':'useMemo包装: const stable=useMemo(()=>obj,[a,b])',
+      'node_2':'useCallback包装: const fn=useCallback(()=>{},[dep])',
+      'node_3':'函数式更新: setState(prev=>({...prev,x}))',
+      'node_4':'Stale Closure: 闭包捕获的是创建时的值',
+      'node_5':'StrictMode 双挂载效应 — 仅开发环境',
+      'node_6':'⚠️ 禁用空deps+eslint-disable (反模式)',
+      'node_7':'useRef: 存可变值，.current变化不触发渲染',
+      'node_8':'Profiler→定位重渲染→React.memo+useMemo',
+      'node_9':'useEffect cleanup: return ()=>{} 清理副作用',
+    },
+    edges:{
+      '0_1:0_0':0.88,'0_1:0_1':0.88,'0_1:0_2':0.88,
+      '0_1:1_0':0.85,'0_1:1_1':0.85,
+      '0_1:3_0':-0.62,'0_1:3_1':-0.62,
+      '1_2:0_0':0.82,'1_2:0_1':0.82,'1_2:1_0':0.82,
+      '1_2:4_0':0.35,'1_2:4_1':0.35,
+      '2_3:0_0':0.78,'2_3:0_1':0.78,'2_3:1_0':0.78,
+      '2_3:5_0':-0.55,
+      '0_1:0_4':0.50,'0_1:2_0':0.50,
+      '1_2:2_0':0.50,'1_2:3_0':0.50,
+      '1_2:5_0':0.44,'1_2:5_1':0.44,
+      '2_3:5_1':-0.48,
+    },
+    highlights:[0,0,0,1,1,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9],
+  },
+];
+
+let currentEpoch=0;
+
+// ─── Draw ──────────────────────────────────────────────────────────
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // BG
+  const bg=ctx.createRadialGradient(W*.5,H*.4,0,W*.5,H*.5,Math.max(W,H));
+  bg.addColorStop(0,'#0e0c1c');bg.addColorStop(1,'#040610');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  const ep=epochs[currentEpoch];
+  const defaultEdges=[];
+  // Generate default edge structure (sparse)
+  for(let l=0;l<LAYERS.length-1;l++){
+    const rng=mulberry32(l*100+currentEpoch*7);
+    for(let f=0;f<LAYERS[l];f++){
+      for(let t=0;t<LAYERS[l+1];t++){
+        if(rng()<0.6)defaultEdges.push({key:`${l}_${l+1}:${f}_${t}`,from:[l,f],to:[l+1,t],weight:0.5});
+      }
+    }
+  }
+
+  // Draw edges
+  defaultEdges.forEach(e=>{
+    const ek=`${e.from[0]}_${e.from[1]}:${e.to[0]}_${e.to[1]}`;
+    let w=ep.edges[ek]??0.5;
+    const absW=Math.abs(w);
+    const from=nodePos[e.from[0]][e.from[1]];
+    const to=nodePos[e.to[0]][e.to[1]];
+
+    const isActivated=absW>0.52;
+    const alpha=isActivated?.18+.1:.04;
+    const lw=isActivated?Math.max(.5,absW*3):.4;
+
+    ctx.beginPath();
+    ctx.moveTo(from.x,from.y);
+    // Curved edges
+    const mx=(from.x+to.x)/2;
+    const my=(from.y+to.y)/2+(e.from[0]%2?.5:-.5)*15;
+    ctx.quadraticCurveTo(mx,my,to.x,to.y);
+
+    if(w>0.55)ctx.strokeStyle=`rgba(120,210,120,${alpha})`;
+    else if(w<-0.1)ctx.strokeStyle=`rgba(220,100,100,${alpha})`;
+    else ctx.strokeStyle=`rgba(60,50,80,${alpha})`;
+
+    ctx.lineWidth=lw;
+    if(Math.abs(w-0.5)<0.02)ctx.setLineDash([3,4]);
+    else ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Draw layer labels
+  ctx.fillStyle='#484068';
+  ctx.font='10px Inter';
+  ctx.textAlign='center';
+  nodePos.forEach((layer,l)=>{
+    const x=nodeX(l,0,LAYERS[l])-24;
+    ctx.fillText(`L${l}`,x,nodePos[l][0].y);
+  });
+
+  // Draw nodes
+  for(let l=0;l<LAYERS.length;l++){
+    for(let i=0;i<LAYERS[l];i++){
+      const nid=`node_${l*6+i}`;
+      const pos=nodePos[l][i];
+      const content=ep.nodes[nid];
+      const isHighlighted=ep.highlights.some(h=>{
+        if(typeof h==='number')return h===l*6+i;
+        return false;
+      });
+      const r=isHighlighted?10:content?8:6;
+
+      // Glow
+      if(isHighlighted){
+        const g=ctx.createRadialGradient(pos.x,pos.y,r*.5,pos.x,pos.y,r*3);
+        g.addColorStop(0,'rgba(220,190,60,.25)');g.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.beginPath();ctx.arc(pos.x,pos.y,r*3,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+      }else if(content){
+        const g=ctx.createRadialGradient(pos.x,pos.y,r*.5,pos.x,pos.y,r*2);
+        g.addColorStop(0,'rgba(140,120,200,.15)');g.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.beginPath();ctx.arc(pos.x,pos.y,r*2,0,Math.PI*2);ctx.fillStyle=g;ctx.fill();
+      }
+
+      // Node body
+      ctx.beginPath();ctx.arc(pos.x,pos.y,r,0,Math.PI*2);
+      if(isHighlighted)ctx.fillStyle='rgba(220,190,70,.7)';
+      else if(content)ctx.fillStyle='rgba(140,120,200,.5)';
+      else ctx.fillStyle='rgba(40,36,60,.3)';
+
+      if(isHighlighted)ctx.strokeStyle='rgba(240,210,100,.8)';
+      else if(content)ctx.strokeStyle='rgba(170,150,220,.5)';
+      else ctx.strokeStyle='rgba(100,90,140,.2)';
+      ctx.lineWidth=1.5;
+      ctx.fill();ctx.stroke();
+
+      // Label
+      if(content){
+        ctx.fillStyle=isHighlighted?'#f0e0a0':'#a098c8';
+        ctx.font=`${isHighlighted?'bold ':''}8px Inter`;
+        ctx.textAlign='center';
+        const label=content.length>12?content.slice(0,11)+'…':content;
+        ctx.fillText(label,pos.x,pos.y+r+14);
+      }
+    }
+  }
+
+  // Update info panel
+  document.getElementById('info').innerHTML=`
+    <div class="title">${ep.name}</div>
+    <div>${ep.info}</div>
+    <div class="trigger">${ep.trigger}</div>
+  `;
+}
+
+// ─── Controls ──────────────────────────────────────────────────────
+const ctrlDiv=document.getElementById('controls');
+epochs.forEach((ep,i)=>{
+  const btn=document.createElement('button');
+  btn.textContent=ep.name;
+  if(i===0)btn.classList.add('active');
+  btn.addEventListener('click',()=>{
+    currentEpoch=i;
+    document.querySelectorAll('#controls button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    draw();
+  });
+  ctrlDiv.appendChild(btn);
+});
+
+// Simple deterministic RNG
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+// Parallax on mouse
+document.addEventListener('mousemove',e=>{
+  const mx=(e.clientX/W-.5)*8;
+  const my=(e.clientY/H-.5)*8;
+  nodePos.forEach((layer,l)=>{
+    layer.forEach((p,i)=>{
+      p._x=p._x||p.x;p._y=p._y||p.y;
+      p.x=p._x+mx*(l*.3+1);p.y=p._y+my*(l*.3+1);
+    });
+  });
+  draw();
+});
+
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Textron — Textual Neural Network</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#080c16;color:#b0b8d0;font-family:'Inter','SF Pro Display',-apple-system,sans-serif;line-height:1.6}
+canvas{position:fixed;top:0;left:0;z-index:0;pointer-events:none}
+#ui{position:relative;z-index:1;max-width:960px;margin:0 auto;padding:0 24px}
+
+header{text-align:center;padding:80px 0 40px}
+header h1{font-size:clamp(3rem,8vw,6rem);font-weight:200;letter-spacing:.1em;
+  background:linear-gradient(180deg,#e0d0ff,#7060a0);-webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;background-clip:text;
+  filter:drop-shadow(0 0 30px rgba(120,100,200,.25))}
+header .tag{font-size:.75rem;letter-spacing:.3em;color:#504870;margin-top:8px;text-transform:uppercase}
+
+.card{border-radius:16px;background:rgba(14,12,28,.7);backdrop-filter:blur(20px);
+  border:1px solid rgba(100,90,160,.1);padding:36px;margin-bottom:32px}
+.card h2{font-size:1.1rem;font-weight:400;color:#a098c8;letter-spacing:.08em;margin-bottom:20px}
+.card h3{font-size:.9rem;font-weight:400;color:#8078a8;margin:20px 0 10px}
+
+/* ── Hero mapping table ── */
+.mapping{display:grid;grid-template-columns:1fr auto 1fr;gap:6px 16px;font-size:.8rem;margin-top:16px}
+.mapping .col-h{color:#605878;font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;padding-bottom:8px}
+.mapping .nn{color:#c0a0e0;text-align:right}
+.mapping .arrow{color:#403860;text-align:center}
+.mapping .tx{color:#80b0c0}
+
+/* ── Flow steps ── */
+.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;margin:24px 0}
+.flow-step{background:rgba(30,26,50,.8);border:1px solid rgba(100,90,160,.15);border-radius:12px;
+  padding:14px 18px;text-align:center;min-width:90px;transition:all .3s}
+.flow-step:hover{border-color:rgba(160,140,220,.5);transform:translateY(-3px)}
+.flow-step .icon{font-size:1.6rem;margin-bottom:4px}
+.flow-step .label{font-size:.7rem;color:#9088b0;letter-spacing:.06em}
+.flow-step .who{font-size:.55rem;color:#504870;margin-top:2px}
+.flow-arrow{color:#403860;font-size:1.2rem}
+
+/* ── Code blocks ── */
+.code{background:rgba(10,8,20,.6);border:1px solid rgba(80,70,130,.1);border-radius:10px;
+  padding:18px 22px;font-family:'SF Mono','Fira Code',monospace;font-size:.75rem;
+  color:#9098b8;overflow-x:auto;white-space:pre;margin:12px 0}
+
+/* ── Storage tree ── */
+.tree{font-family:'SF Mono','Fira Code',monospace;font-size:.72rem;color:#7068a0;line-height:1.8;margin:12px 0}
+.tree .hl{color:#a090d0}
+.tree .dim{color:#484068}
+
+/* ── Two-column ── */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+@media(max-width:700px){.cols{grid-template-columns:1fr}}
+
+/* ── Stats bar ── */
+.stats{display:flex;gap:32px;flex-wrap:wrap;justify-content:center;padding:20px 0}
+.stat{text-align:center}
+.stat .n{font-size:2rem;color:#c0b0e0;font-weight:200}
+.stat .l{font-size:.6rem;color:#504870;letter-spacing:.15em;text-transform:uppercase}
+
+/* ── Layer viz ── */
+.layers{display:flex;align-items:center;gap:20px;justify-content:center;margin:20px 0;flex-wrap:wrap}
+.layer-col{display:flex;flex-direction:column;gap:6px;align-items:center}
+.layer-label{font-size:.6rem;color:#504870;letter-spacing:.1em;margin-bottom:4px}
+.node-dot{width:16px;height:16px;border-radius:50%;border:1.5px solid rgba(140,120,200,.3);
+  transition:all .3s}
+.node-dot.filled{background:rgba(160,130,220,.4);border-color:rgba(180,150,240,.6);
+  box-shadow:0 0 12px rgba(140,110,200,.2)}
+.node-dot.high{background:rgba(220,190,80,.5);border-color:rgba(240,210,100,.7);
+  box-shadow:0 0 16px rgba(200,160,40,.3)}
+.edge-line{width:24px;height:0;border-top:1px dashed rgba(80,70,120,.2);align-self:center;margin:0 2px}
+
+footer{text-align:center;padding:60px 20px;color:#383058;font-size:.65rem;letter-spacing:.2em}
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div id="ui">
+
+<header>
+  <h1>Textron</h1>
+  <div class="tag">Trainable Textual Neural Network for Agent Context</div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="n">1</div><div class="l">Tool</div></div>
+  <div class="stat"><div class="n">6</div><div class="l">Actions</div></div>
+  <div class="stat"><div class="n">10</div><div class="l">Max Networks</div></div>
+  <div class="stat"><div class="n">∞</div><div class="l">Nodes / Network</div></div>
+  <div class="stat"><div class="n">[-1, 1]</div><div class="l">Edge Weights</div></div>
+</div>
+
+<!-- ── Core Concept ── -->
+<div class="card">
+  <h2>✦ Core Abstraction</h2>
+  <p style="color:#7068a0;font-size:.8rem;margin-bottom:12px">
+    Textron models task experience as a <span style="color:#a090d0">multi-layer graph of text nodes</span>.
+    Each task family gets its own network. Nodes are arbitrary text, edges are weighted connections.
+    Through forward propagation (LLM attention scoring → layer filtering → prompt compilation) and
+    backward propagation (feedback → weight updates → node filling), the network converges
+    to produce optimal context for recurring tasks.
+  </p>
+  <div class="mapping">
+    <div class="col-h">Neural Network</div><div class="col-h"></div><div class="col-h">Textron</div>
+    <div class="nn">Neuron</div><div class="arrow">→</div><div class="tx">HTML text node (any content, can be empty)</div>
+    <div class="nn">Weight w<sub>ij</sub></div><div class="arrow">→</div><div class="tx">Edge weight in [-1, 1] (excitatory / inhibitory)</div>
+    <div class="nn">Layer</div><div class="arrow">→</div><div class="tx">Layer of nodes (e.g. [4, 6, 6, 4])</div>
+    <div class="nn">Forward pass</div><div class="arrow">→</div><div class="tx">LLM scores nodes → weight propagation → compile prompt</div>
+    <div class="nn">Backward pass</div><div class="arrow">→</div><div class="tx">Task feedback → update edges → fill / update nodes</div>
+    <div class="nn">Training epochs</div><div class="arrow">→</div><div class="tx">Repeated tasks in same family → convergence</div>
+  </div>
+</div>
+
+<!-- ── Architecture ── -->
+<div class="card">
+  <h2>✦ Network Architecture</h2>
+  <p style="color:#7068a0;font-size:.8rem;margin-bottom:16px">
+    A 4-layer network [4, 6, 6, 4]. Each circle is a text node. <span style="color:#c0a0e0">Filled</span> =
+    has content from training. <span style="color:#e0c040">Highlighted</span> = activated in forward pass.
+    Edges are sparsely initialized (~60% connectivity), weights start at 0.5.
+  </p>
+  <div class="layers">
+    <div class="layer-col">
+      <div class="layer-label">Layer 0</div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot filled"></div>
+      <div class="node-dot"></div>
+    </div>
+    <div class="edge-line"></div>
+    <div class="layer-col">
+      <div class="layer-label">Layer 1</div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot filled"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot"></div>
+    </div>
+    <div class="edge-line"></div>
+    <div class="layer-col">
+      <div class="layer-label">Layer 2</div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot filled"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot"></div>
+    </div>
+    <div class="edge-line"></div>
+    <div class="layer-col">
+      <div class="layer-label">Layer 3</div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot filled high"></div>
+      <div class="node-dot"></div>
+      <div class="node-dot"></div>
+    </div>
+  </div>
+  <div style="text-align:center;font-size:.6rem;color:#484068;margin-top:12px">
+    Sparse connections · No predefined node types · Function emerges from training
+  </div>
+</div>
+
+<!-- ── Forward Propagation ── -->
+<div class="card">
+  <h2>✦ Forward Propagation <span style="color:#504870;font-size:.7rem">— LLM semantic</span></h2>
+  <div class="flow">
+    <div class="flow-step"><div class="icon">📋</div><div class="label">List Networks</div><div class="who">Tool: status</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🔀</div><div class="label">Route</div><div class="who">LLM语义判断</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🔍</div><div class="label">Load Nodes</div><div class="who">Tool: forward</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🎯</div><div class="label">Score Attention</div><div class="who">LLM: 0.0–1.0</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">⚡</div><div class="label">Propagate</div><div class="who">Tool: propagate</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">📝</div><div class="label">Execute Task</div><div class="who">LLM</div></div>
+  </div>
+  <p style="color:#605878;font-size:.7rem;margin-top:16px">
+    The LLM assigns attention scores to each node based on relevance to the current task.
+    The propagate action runs layer-by-layer: score × edge_weight → activation sum
+    → threshold filter → next layer. Activated nodes are compiled into the execution prompt.
+  </p>
+</div>
+
+<!-- ── Backward Propagation ── -->
+<div class="card">
+  <h2>✦ Backward Propagation <span style="color:#504870;font-size:.7rem">— LLM semantic</span></h2>
+  <div class="flow">
+    <div class="flow-step"><div class="icon">✅</div><div class="label">Task Done</div><div class="who">success / failure</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🧠</div><div class="label">Analyze</div><div class="who">LLM语义判断</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🔄</div><div class="label">Backward</div><div class="who">Tool: backward</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🔗</div><div class="label">Update Edges</div><div class="who">success→boost / fail→penalize</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">✏️</div><div class="label">Fill Nodes</div><div class="who">LLM writes content</div></div>
+  </div>
+  <div class="cols" style="margin-top:20px">
+    <div>
+      <h3>Weight Update</h3>
+      <div class="code">success: w += lr × 1.0 × (1 - w)    → w → +1
+failure: w -= lr × 0.5 × (1 + w)    → w → -1
+neutral: no change</div>
+    </div>
+    <div>
+      <h3>Node Filling</h3>
+      <div class="code">backward({
+  feedback: "success",
+  filledNodes: {
+    "node_0": "useMemo stabilizes deps",
+    "node_1": "check stale closures",
+    ...
+  }
+})</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Convergence ── -->
+<div class="card">
+  <h2>✦ Convergence Over Time</h2>
+  <div class="cols">
+    <div>
+      <h3>Task 1 (fresh network)</h3>
+      <div class="code">All nodes empty.
+LLM executes task.
+→ calls backward to fill 4 nodes.
+→ no context help yet.</div>
+    </div>
+    <div>
+      <h3>Task 2 (network has content)</h3>
+      <div class="code">LLM routes → forward scores 4 filled nodes.
+→ propagate activates them.
+→ prompt: "useMemo, stale closure, ..."
+→ LLM solves task faster.
+→ backward reinforces edges.</div>
+    </div>
+    <div>
+      <h3>Task 5 (partially converged)</h3>
+      <div class="code">6/10 nodes filled, edges converged.
+→ forward activates high-weight path.
+→ prompt is shorter but more accurate.
+→ user corrections reduced 70%.
+→ LLM fills remaining empty nodes.</div>
+    </div>
+    <div>
+      <h3>Task 20 (converged)</h3>
+      <div class="code">All nodes filled with refined patterns.
+→ edge weights near +1 for successful paths.
+→ negative weights suppress dead ends.
+→ prompt: compact, exact, zero fluff.
+→ network can be distilled into a SKILL.md.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Storage ── -->
+<div class="card">
+  <h2>✦ Storage Architecture</h2>
+  <div class="cols">
+    <div>
+      <h3>Filesystem (no database)</h3>
+      <div class="tree">
+<span class="dim">~/.textron/</span>
+<span class="dim">└──</span> <span class="hl">react_hooks_debugging/</span>
+<span class="dim">    ├──</span> hyperparams.json     <span class="dim"># layers, threshold, lr</span>
+<span class="dim">    ├──</span> weights.json         <span class="dim"># all edge weights</span>
+<span class="dim">    ├──</span> <span class="hl">layer_0/</span>
+<span class="dim">    │   ├──</span> node_0.html     <span class="dim"># &lt;content&gt;text&lt;/content&gt;</span>
+<span class="dim">    │   ├──</span> node_1.html
+<span class="dim">    │   └──</span> ...
+<span class="dim">    ├──</span> <span class="hl">layer_1/</span>
+<span class="dim">    └──</span> ...
+      </div>
+    </div>
+    <div>
+      <h3>Node HTML Format</h3>
+      <div class="code">&lt;meta name="layer" content="0"&gt;
+&lt;meta name="id" content="node_0"&gt;
+&lt;link rel="out"
+  href="../layer_1/node_1.html"
+  data-weight="0.54"&gt;
+&lt;content&gt;
+useMemo to stabilize
+object references in deps
+&lt;/content&gt;</div>
+    </div>
+  </div>
+  <p style="color:#504870;font-size:.65rem;margin-top:16px">
+    HTML nodes + JSON weights = human-readable, git-versionable, browser-inspectable.
+    No predefined node types — a node's role emerges from its layer position, connections, and content.
+  </p>
+</div>
+
+<!-- ── Pi Integration ── -->
+<div class="card">
+  <h2>✦ Pi Agent Integration</h2>
+  <div class="cols">
+    <div>
+      <h3>before_agent_start hook</h3>
+      <div class="code">Injects routing hint into system prompt:
+
+"Textron Networks Available:
+- react_hooks [4,6,6,4] 4/20 filled
+- python_csv [4,6,4] 6/14 filled
+
+If one matches, call Textron
+action=forward to load its nodes."</div>
+    </div>
+    <div>
+      <h3>Textron Tool (6 actions)</h3>
+      <div class="code">status   → show all networks
+list     → list with fill stats
+init     → create network
+forward  → load nodes for scoring
+propagate→ compile prompt from scores
+backward → train from feedback</div>
+    </div>
+  </div>
+  <div class="flow" style="margin-top:20px">
+    <div class="flow-step"><div class="icon">🏗️</div><div class="label">pi Extension</div><div class="who">~550 lines TS</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">💾</div><div class="label">HTML+JSON</div><div class="who">~/.textron/</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🔧</div><div class="label">Textron Tool</div><div class="who">LLM callable</div></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step"><div class="icon">🪝</div><div class="label">Lifecycle Hooks</div><div class="who">before_agent_start</div></div>
+  </div>
+</div>
+
+<footer>Textron · Externalized Textual Parameter Space · MIT</footer>
+</div>
+
+<script>
+const canvas=document.getElementById('bg');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=innerWidth;H=canvas.height=document.body.scrollHeight||innerHeight}
+window.addEventListener('resize',resize);
+resize();
+
+const nodes=[];
+for(let i=0;i<80;i++)nodes.push({
+  x:Math.random()*1200,y:Math.random()*2000,r:Math.random()*1.2+.2,
+  a:Math.random()*.4+.05,t:Math.random()*Math.PI*2,s:Math.random()*.01+.003,
+  h:240+Math.random()*30
+});
+
+let f=0;
+function animate(){
+  f++;ctx.clearRect(0,0,W,H);
+  const g=ctx.createRadialGradient(W*.5,H*.35,0,W*.5,H*.4,Math.max(W,H)*.7);
+  g.addColorStop(0,'#100e20');g.addColorStop(1,'#060812');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+  for(let i=0;i<3;i++){
+    const nx=W*(.25+i*.3),ny=H*(.2+(i%2)*.35),nr=180+Math.sin(f*.002+i)*30;
+    const ng=ctx.createRadialGradient(nx,ny,0,nx,ny,nr);
+    ng.addColorStop(0,`hsla(${[260,230,280][i]},30%,18%,.03)`);
+    ng.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=ng;ctx.fillRect(0,0,W,H);
+  }
+
+  nodes.forEach(n=>{
+    n.t+=n.s;const a=n.a+Math.sin(n.t)*.15;
+    ctx.beginPath();ctx.arc(n.x%W,n.y%H,n.r,0,Math.PI*2);
+    ctx.fillStyle=`hsla(${n.h},25%,60%,${Math.max(0,a)})`;ctx.fill();
+  });
+
+  requestAnimationFrame(animate);
+}
+animate();
+document.querySelectorAll('.card').forEach((c,i)=>{c.style.animationDelay=i*.08+'s'});
+</script>
+</body>
+</html>

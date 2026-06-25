@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Textron Live Monitor</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#080c14;color:#b0b8d0;font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif}h1{margin:0 0 4px;color:#a098c8;font-weight:300;font-size:1.45rem}.sub{margin-bottom:18px;color:#5e5680;font-size:.72rem}.panel{border:1px solid rgba(120,105,180,.16);border-radius:14px;background:rgba(14,12,28,.72);padding:18px;margin-bottom:16px}.meta{font-size:.72rem;color:#6d6590;margin-bottom:12px}.path{font-family:SFMono-Regular,Menlo,monospace;font-size:.72rem;color:#e5cf63;margin:8px 0 12px;word-break:break-all}.graph{overflow:auto}.node-label{font:10px SFMono-Regular,Menlo,monospace;fill:#948bb8;text-anchor:middle;pointer-events:none}.node-score{font:10px SFMono-Regular,Menlo,monospace;text-anchor:middle;pointer-events:none}.node-content{font:9px Inter,sans-serif;text-anchor:middle;pointer-events:none}.edge-weight{font:8px SFMono-Regular,Menlo,monospace;fill:#615985;text-anchor:middle;pointer-events:none}.log{font:11px SFMono-Regular,Menlo,monospace;color:#615985;margin-top:10px;white-space:pre-wrap}.backward{border-color:rgba(90,180,140,.22);background:rgba(8,26,22,.55)}.reward-pos{color:#78e0a0}.reward-neg{color:#ff8a8a}.reward-zero{color:#c8b870}.selected-edge{filter:drop-shadow(0 0 6px rgba(245,210,80,.85))}.selected-node{filter:drop-shadow(0 0 8px rgba(245,210,80,.9))}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:#68d080;margin-right:6px;animation:pulse 1.5s infinite}
+</style>
+</head>
+<body>
+<h1>🧠 Textron Live Monitor</h1>
+<div class="sub"><span class="live"></span>fixed selected path: highest scoring node per layer</div>
+<div id="root">loading...</div>
+<script>
+(function(){
+  var R=13,GX=170,GY=58,P=42;
+  var root=document.getElementById('root');
+  function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+  function short(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
+  function x(layer){return P+layer*GX+GX/2}
+  function y(nodeId){var i=parseInt(String(nodeId).split('_')[1]||'0',10);return P+i*GY+GY/2}
+  function qid(layer,id){return 'L'+layer+'::'+id}
+  function edgeId(layer,from,to){return 'L'+layer+'::'+from+'->L'+(layer+1)+'::'+to}
+  function lineAttrs(x1,y1,x2,y2,color,width,cls){return '<line '+(cls?'class="'+cls+'" ':'')+'x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+color+'" stroke-width="'+width+'" stroke-linecap="round"/>'}
+
+  async function poll(){
+    try{
+      var r=await fetch('/api/state',{cache:'no-store'});
+      var s=await r.json();
+      render(s);
+    }catch(e){root.innerHTML='<div class="panel">ERROR: '+esc(e.message)+'</div>'}
+  }
+
+  function render(s){
+    var names=Object.keys(s.networks||{});
+    if(!names.length){root.innerHTML='<div class="panel">No Textron networks.</div>';return}
+    var activeName=s.currentTaskFamily&&s.networks[s.currentTaskFamily]?s.currentTaskFamily:names[0];
+    var html=renderBackward(s.lastBackwardState);
+    for(var ni=0;ni<names.length;ni++){
+      var name=names[ni],net=s.networks[name];
+      html+=renderNet(name,net,name===activeName?s:null);
+    }
+    root.innerHTML=html;
+  }
+
+
+  function renderBackward(b){
+    if(!b)return '<div class="panel backward"><div class="meta">semantic backward: pending / no result yet</div></div>';
+    var r=Number(b.reward||0), cls=r>0?'reward-pos':r<0?'reward-neg':'reward-zero';
+    var h='<div class="panel backward"><div class="meta"><b>↩ semantic backward</b> · '+esc(b.taskFamily||'')+' · '+esc(b.at||'')+'</div>';
+    h+='<div class="path '+cls+'">reward '+r.toFixed(3)+' · edges '+(b.edgesUpdated||0)+' · node updates '+(b.nodesUpdated||0)+' · nodes added '+(b.nodesAdded||0)+'</div>';
+    if(b.rationale)h+='<div class="log">rationale: '+esc(b.rationale)+'</div>';
+    if(b.changedEdges&&b.changedEdges.length)h+='<div class="log">changedEdges:\n'+esc((b.changedEdges||[]).join('\n'))+'</div>';
+    if(b.selectedEdgeIds&&b.selectedEdgeIds.length)h+='<div class="log">selected backward path:\n'+esc((b.selectedEdgeIds||[]).join('\n'))+'</div>';
+    h+='</div>';
+    return h;
+  }
+
+  function renderNet(name,net,state){
+    var selectedIds=state?(state.currentActivatedIds||[]):[];
+    var selectedEdges=state?(state.currentSelectedEdgeIds||[]):[];
+    var scores=state?(state.currentActivationScores||{}):{};
+    var selected={}; for(var i=0;i<selectedIds.length;i++) selected[selectedIds[i]]=1;
+    var selectedE={}; for(var i=0;i<selectedEdges.length;i++) selectedE[selectedEdges[i]]=1;
+
+    var byL={};
+    for(var i=0;i<net.nodes.length;i++){var nd=net.nodes[i];if(!byL[nd.layer])byL[nd.layer]=[];byL[nd.layer].push(nd)}
+    var layers=net.layers,nL=layers.length,maxN=Math.max.apply(null,layers),W=nL*GX+P*2,H=maxN*GY+P*2;
+    var weights=net.weights||{},edgeWeights={};
+    for(var k in weights){var m=k.match(/^(\d+)_to_(\d+)$/);if(!m)continue;var l=parseInt(m[1],10);edgeWeights[l]=edgeWeights[l]||{};for(var j=0;j<weights[k].length;j++){var e=weights[k][j];edgeWeights[l][e.from+'_'+e.to]=e.weight}}
+
+    var edgeGoldCount=0;
+    var h='<div class="panel"><div class="meta"><b>'+esc(name)+'</b> · layers ['+layers.join(',')+'] · selected '+selectedIds.length+' · threshold '+net.threshold+'</div>';
+    h+='<div class="path">'+(selectedIds.length?esc(selectedIds.join(' → ')):'no selected path')+'</div>';
+    h+='<div class="graph"><svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'">';
+
+    // edges: selected path first as wide gold underlay, all real edges after/before in correct visual stack
+    for(var l=0;l<nL-1;l++){
+      var froms=byL[l]||[],tos=byL[l+1]||[];
+      for(var fi=0;fi<froms.length;fi++){
+        var fn=froms[fi],x1=x(l),y1=y(fn.id);
+        for(var ti=0;ti<tos.length;ti++){
+          var tn=tos[ti],wt=edgeWeights[l]&&edgeWeights[l][fn.id+'_'+tn.id];
+          if(wt===undefined)continue;
+          var x2=x(l+1),y2=y(tn.id),eid=edgeId(l,fn.id,tn.id),gold=!!selectedE[eid];
+          if(gold)edgeGoldCount++;
+          var color=gold?'rgba(245,210,70,.95)':'rgba(75,65,120,.22)';
+          var width=gold?5:0.8;
+          h+=lineAttrs(x1,y1,x2,y2,color,width,gold?'selected-edge':'');
+          var mx=(x1+x2)/2,my=(y1+y2)/2;
+          h+='<text class="edge-weight" x="'+mx+'" y="'+(my-4)+'">'+Number(wt).toFixed(2)+'</text>';
+        }
+      }
+    }
+
+    // If selected adjacent nodes have no real edge, draw a dashed visual route anyway so the chosen path is fixed/visible.
+    for(var l=0;l<nL-1;l++){
+      var a=null,b=null;
+      for(var si=0;si<selectedIds.length;si++){if(selectedIds[si].indexOf('L'+l+'::')===0)a=selectedIds[si].split('::')[1];if(selectedIds[si].indexOf('L'+(l+1)+'::')===0)b=selectedIds[si].split('::')[1]}
+      if(a&&b&&!selectedE[edgeId(l,a,b)]) h+='<line class="selected-edge" x1="'+x(l)+'" y1="'+y(a)+'" x2="'+x(l+1)+'" y2="'+y(b)+'" stroke="rgba(245,210,70,.9)" stroke-width="4" stroke-dasharray="7 5" stroke-linecap="round"/>';
+    }
+
+    // nodes
+    for(var l=0;l<nL;l++){
+      var list=byL[l]||[];
+      for(var i=0;i<list.length;i++){
+        var nd=list[i],id=qid(l,nd.id),sel=!!selected[id],score=scores[id],cx=x(l),cy=y(nd.id);
+        var fill=sel?'rgba(245,210,70,.95)':(nd.name||nd.content)?'rgba(132,112,205,.62)':'rgba(24,20,42,.65)';
+        var stroke=sel?'rgba(255,235,120,1)':(nd.name||nd.content)?'rgba(165,145,225,.55)':'rgba(90,80,130,.35)';
+        h+='<circle '+(sel?'class="selected-node" ':'')+'cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="'+fill+'" stroke="'+stroke+'" stroke-width="'+(sel?3:1.5)+'"><title>'+esc(id+'\nname: '+(nd.name||'')+'\nscore: '+(score==null?'':Number(score).toFixed(3))+'\ncontext: '+(nd.context||nd.content||''))+'</title></circle>';
+        h+='<text class="node-label" x="'+cx+'" y="'+(cy+R+14)+'">'+esc(nd.id)+'</text>';
+        if(score!==undefined) h+='<text class="node-score" x="'+cx+'" y="'+(cy-R-7)+'" fill="'+(sel?'#ffe978':'#7a7198')+'">'+Number(score).toFixed(2)+'</text>';
+        h+='<text class="node-content" x="'+cx+'" y="'+(cy+R+27)+'" fill="'+(sel?'#e8d781':'#81789f')+'">'+esc(short(nd.name||nd.content||'(empty)',34))+'</text>';
+      }
+    }
+    h+='</svg></div><div class="log">selectedEdges: '+selectedEdges.length+' real gold edges: '+edgeGoldCount+'</div></div>';
+    return h;
+  }
+
+  var evt;
+  try{evt=new EventSource('/events');evt.addEventListener('propagate_live',function(){poll()});evt.addEventListener('update',function(){poll()})}catch(e){}
+  poll();setInterval(poll,1500);
+})();
+</script>
+</body>
+</html>

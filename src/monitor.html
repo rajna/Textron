@@ -5,16 +5,241 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Textron Live Monitor</title>
 <style>
-*{box-sizing:border-box}body{margin:0;padding:24px;background:#080c14;color:#b0b8d0;font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif}h1{margin:0 0 4px;color:#a098c8;font-weight:300;font-size:1.45rem}.sub{margin-bottom:18px;color:#5e5680;font-size:.72rem}.panel{border:1px solid rgba(120,105,180,.16);border-radius:14px;background:rgba(14,12,28,.72);padding:18px;margin-bottom:16px}.meta{font-size:.72rem;color:#6d6590;margin-bottom:12px}.path{font-family:SFMono-Regular,Menlo,monospace;font-size:.72rem;color:#e5cf63;margin:8px 0 12px;word-break:break-all}.graph{overflow:auto}.node-label{font:10px SFMono-Regular,Menlo,monospace;fill:#948bb8;text-anchor:middle;pointer-events:none}.node-score{font:10px SFMono-Regular,Menlo,monospace;text-anchor:middle;pointer-events:none}.node-content{font:9px Inter,sans-serif;text-anchor:middle;pointer-events:none}.edge-weight{font:8px SFMono-Regular,Menlo,monospace;fill:#615985;text-anchor:middle;pointer-events:none}.log{font:11px SFMono-Regular,Menlo,monospace;color:#615985;margin-top:10px;white-space:pre-wrap}.backward{border-color:rgba(90,180,140,.22);background:rgba(8,26,22,.55)}.reward-pos{color:#78e0a0}.reward-neg{color:#ff8a8a}.reward-zero{color:#c8b870}.selected-edge{filter:drop-shadow(0 0 6px rgba(245,210,80,.85))}.selected-node{filter:drop-shadow(0 0 8px rgba(245,210,80,.9))}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:#68d080;margin-right:6px;animation:pulse 1.5s infinite}
+:root{
+  --bg:#d8d8d8;
+  --card:#ffffff;
+  --surface:#ffffff;
+  --surface-soft:#f4f1ee;
+  --surface-tint:#f6e4c0;
+  --text:#1a1a1a;
+  --muted:#5b5b5b;
+  --faint:#9a9a9a;
+  --border:#ececec;
+  --border-strong:#ded8d2;
+  --green:#b58fb1;
+  --green-strong:#7f5e94;
+  --blue:#b58fb1;
+  --blue-soft:#f4f1ee;
+  --yellow:#f3b97a;
+  --yellow-strong:#9b6a27;
+  --red:#e8a29a;
+  --red-strong:#b85b52;
+  --purple:#7f5e94;
+  --accent:#b58fb1;
+  --accent-soft:#efd9ec;
+  --amber:#f3b97a;
+  --shadow:0 30px 60px rgba(0,0,0,.06);
+  --shadow-soft:0 8px 30px rgba(0,0,0,.04);
+  --radius:24px;
+  --mono:SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{
+  margin:0;
+  min-height:100vh;
+  padding:64px 48px 96px;
+  color:var(--text);
+  font-family:var(--sans);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+body:before{display:none}
+h1{
+  margin:0;
+  color:var(--text);
+  font-size:72px;
+  line-height:.95;
+  font-weight:600;
+  letter-spacing:-.03em;
+}
+h1:after{display:none}
+.sub{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  margin:18px 0 0;
+  padding:8px 16px;
+  color:var(--muted);
+  font-size:14px;
+  font-weight:500;
+  border:0;
+  border-radius:999px;
+  background:#f4f1ee;
+  box-shadow:none;
+}
+.stage{display:flex;justify-content:center}
+.board{width:1280px;max-width:100%;background:var(--card);border-radius:32px;box-shadow:var(--shadow);padding:38px 56px 40px;position:relative;overflow:hidden}
+.top{display:flex;align-items:center;justify-content:space-between;gap:24px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:24px;letter-spacing:-.01em}
+.brand-mark{width:30px;height:30px;display:grid;place-items:center}
+.nav{background:#f4f1ee;border-radius:999px;display:flex;align-items:center;gap:6px;padding:10px 18px}
+.nav .item{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;color:#3a3a3a}
+.nav .item.active{background:linear-gradient(135deg,#c9a3c7,#7f5e94);color:#fff;box-shadow:0 6px 16px rgba(127,94,148,.35)}
+.nav svg{width:20px;height:20px}
+.top-right{display:flex;align-items:center;gap:14px}
+.live-pill{height:54px;border-radius:999px;background:#0f0f12;color:#fff;display:inline-flex;align-items:center;gap:10px;padding:0 18px;font-size:14px;font-weight:600}
+.avatar{width:54px;height:54px;border-radius:50%;background:#e6d3c1;display:grid;place-items:center;color:#3a2a22;font-weight:700}
+.hero{display:grid;grid-template-columns:340px 1fr;gap:32px;align-items:end;margin-top:50px;margin-bottom:28px}
+.hero-card{background:#fff;border-radius:24px;padding:26px 30px;box-shadow:var(--shadow-soft);min-height:160px;position:relative;overflow:hidden}
+.hero-card:before{content:"";position:absolute;right:-70px;top:-90px;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,rgba(243,185,122,.35),rgba(246,227,192,.24) 40%,transparent 70%);filter:blur(12px)}
+.hero-card .k{font-size:14px;color:var(--muted);font-weight:500}.hero-card .v{font-size:46px;font-weight:600;letter-spacing:-.02em;margin-top:10px}.hero-card .u{font-size:15px;color:var(--muted);margin-top:6px}
+.panel{
+  position:relative;
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  background:#fff;
+  padding:24px 30px;
+  margin-bottom:28px;
+  box-shadow:var(--shadow-soft);
+  overflow:hidden;
+}
+.panel:before{display:none}
+.meta{
+  font-size:15px;
+  color:var(--muted);
+  margin-bottom:14px;
+  letter-spacing:0;
+}
+.meta b{color:var(--text);font-weight:600}
+.path{
+  font-family:var(--mono);
+  font-size:13px;
+  line-height:1.65;
+  color:#6f5d26;
+  margin:8px 0 14px;
+  word-break:break-all;
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid #eadfac;
+  background:#fff9df;
+}
+.graph{
+  overflow:auto;
+  border:1px solid var(--border);
+  border-radius:24px;
+  background:linear-gradient(180deg,#ffffff,#faf8f5);
+  padding:18px;
+}
+.graph svg{display:block;min-width:100%}
+.node-label{font:10px var(--mono);fill:#5b5b5b;text-anchor:middle;pointer-events:none;font-weight:650}
+.node-score{font:10px var(--mono);text-anchor:middle;pointer-events:none;font-weight:750}
+.node-content{font:9px var(--sans);text-anchor:middle;pointer-events:none;fill:#8b8178}
+.edge-weight{font:8px var(--mono);fill:#b0aaa4;text-anchor:middle;pointer-events:none}
+.log{
+  font:11px var(--mono);
+  color:#5b5b5b;
+  margin-top:10px;
+  white-space:pre-wrap;
+  line-height:1.65;
+  padding:12px 14px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:#f4f1ee;
+}
+.backward{
+  border-color:var(--border);
+  background:#fff;
+}
+.reward-pos{color:var(--green-strong)}
+.reward-neg{color:var(--red-strong)}
+.reward-zero{color:var(--yellow-strong)}
+.selected-edge{filter:drop-shadow(0 0 7px rgba(184,136,40,.34))}
+.selected-node{filter:drop-shadow(0 8px 18px rgba(80,150,110,.28))}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.72)}}
+.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f3b97a;box-shadow:0 0 0 5px rgba(243,185,122,.24);animation:pulse 1.5s infinite}
+.bw-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.bw-status{font-size:13px;font-weight:600;padding:7px 14px;border-radius:999px;border:1px solid transparent}
+.bw-status-done{background:#f4f1ee;color:#7f5e94;border-color:#e7ded6}
+.bw-status-running{background:#fff8df;color:var(--yellow-strong);border-color:#f0e0a7}
+.bw-status-failed{background:#fff0ef;color:var(--red-strong);border-color:#f0cbc8}
+.bw-time{font-size:13px;color:var(--faint)}
+.bw-network{font-size:12px;color:#5b5b5b;font-family:var(--mono);padding:6px 10px;border-radius:999px;background:#f4f1ee;border:1px solid var(--border)}
+.bw-kv{display:inline-flex;align-items:center;gap:5px;margin:0 8px 6px 0;font-size:12px;padding:6px 10px;border-radius:999px;background:#f4f1ee;border:1px solid var(--border)}
+.bw-kv-key{color:var(--muted)}
+.bw-kv-val{color:#293941;font-weight:760}
+.bw-kv-val-good{color:var(--green-strong)}
+.bw-kv-val-warn{color:var(--yellow-strong)}
+.bw-kv-val-bad{color:var(--red-strong)}
+.bw-bar-wrap{display:inline-block;width:82px;height:8px;background:#f0eee9;border-radius:999px;vertical-align:middle;margin:0 4px;overflow:hidden;border:1px solid #e2ddd8}
+.bw-bar-fill{display:block;border-radius:999px;height:100%}
+.bw-bar-high{background:linear-gradient(90deg,#c9a3c7,#7f5e94)}
+.bw-bar-medium{background:linear-gradient(90deg,#f6e4c0,#f3b97a)}
+.bw-bar-low{background:linear-gradient(90deg,#f0c1bb,#b85b52)}
+.bw-row{font-size:13px;color:var(--muted);margin:6px 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.bw-section{margin:14px 0 0;padding:12px 0 0;border-top:1px solid var(--border)}
+.bw-section-label{font-size:12px;color:#9a9a9a;text-transform:uppercase;letter-spacing:.08em;margin-bottom:9px;font-weight:700}
+.bw-path-seg{font-family:var(--mono);font-size:12px;color:#5b5b5b;background:#f4f1ee;border:1px solid var(--border);border-radius:999px;padding:4px 8px}
+.bw-path-arrow{color:#9a9a9a;margin:0 4px}
+.bw-rationale{font-size:13px;color:#765f1d;background:#fff9e6;padding:10px 12px;border-radius:14px;margin:10px 0;border:1px solid #efe0a8;border-left:4px solid var(--yellow)}
+.bw-changes{font-family:var(--mono);font-size:12px;color:#5b5b5b;margin:5px 0;padding-left:10px;border-left:3px solid #e2ddd8}
+.history-row{display:flex;align-items:flex-start;gap:10px;padding:10px 0;font-size:12px;border-bottom:1px solid var(--border)}
+.history-time{color:#9a9a9a;white-space:nowrap;min-width:72px}
+.history-status{font-weight:700;min-width:48px;color:#5b5b5b}
+.history-detail{color:#5b5b5b;flex:1}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#d6e3df;border-radius:999px;border:2px solid #f7faf9}
+::-webkit-scrollbar-track{background:transparent}
+
+.monitor-grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:28px;align-items:start}
+.monitor-main{min-width:0}
+.monitor-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:16px;max-height:calc(100vh - 48px);overflow:auto;padding-right:2px}
+.diag-details{margin-bottom:0;padding:0;overflow:hidden}
+.diag-details>summary{cursor:pointer;list-style:none;padding:18px 20px;font-weight:600;color:var(--text);border-bottom:1px solid var(--border);user-select:none;font-size:15px}
+.diag-details>summary::-webkit-details-marker{display:none}
+.diag-details>summary:after{content:"＋";float:right;color:#9a9a9a;font-weight:700}
+.diag-details[open]>summary:after{content:"−"}
+.diag-details>div,.diag-details>.log,.diag-details>.path{margin-left:14px;margin-right:14px}
+.diag-details .panel{box-shadow:none;border:0;background:transparent;margin:0;padding:12px 14px;border-radius:0}
+.diag-details .panel:before{display:none}
+@media(max-width:1180px){body{padding:32px 20px}.hero{grid-template-columns:1fr}.monitor-grid{grid-template-columns:1fr}.monitor-side{position:static;max-height:none;overflow:visible}.board{padding:30px 26px}.top{align-items:flex-start}.nav{display:none}h1{font-size:52px}}
+
+@media(max-width:720px){body{padding:18px}.panel{padding:18px;border-radius:20px}.sub{display:flex}.path{font-size:12px}.board{border-radius:24px;padding:24px 18px}.top-right{display:none}h1{font-size:42px}}
 </style>
 </head>
 <body>
-<h1>🧠 Textron Live Monitor</h1>
-<div class="sub"><span class="live"></span>fixed selected path: highest scoring node per layer</div>
-<div id="root">loading...</div>
+<div class="stage">
+  <div class="board">
+    <div class="top">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <defs><linearGradient id="textronBrand" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#c9a3c7"/><stop offset="1" stop-color="#7f5e94"/></linearGradient></defs>
+            <path d="M6 8 L16 4 L26 8 L26 18 L16 26 L6 18 Z" fill="url(#textronBrand)"/>
+            <path d="M11 11 L16 9 L21 11 L21 17 L16 21 L11 17 Z" fill="#fff" opacity=".5"/>
+          </svg>
+        </span>
+        Textron
+      </div>
+      <div class="nav" aria-label="Monitor sections">
+        <div class="item active" title="Graph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><circle cx="17.5" cy="17.5" r="3.5"/></svg></div>
+        <div class="item" title="Stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg></div>
+        <div class="item" title="Activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13c2-1 3-3 5-3s3 4 5 3 3-5 5-4 2 4 3 5"/></svg></div>
+        <div class="item" title="More"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg></div>
+      </div>
+      <div class="top-right">
+        <div class="live-pill"><span class="live"></span>Live</div>
+        <div class="avatar">T</div>
+      </div>
+    </div>
+    <div class="hero">
+      <div>
+        <h1>Textron<br>Live Monitor</h1>
+        <div class="sub"><span class="live"></span>fixed selected path: highest scoring node per layer</div>
+      </div>
+      <div class="hero-card">
+        <div class="k">Current State</div>
+        <div class="v">Graph</div>
+        <div class="u">Live forward path · semantic backward · network updates</div>
+      </div>
+    </div>
+    <div id="root">loading...</div>
+  </div>
+</div>
 <script>
 (function(){
-  var R=13,GX=170,GY=58,P=42;
+  var R=15,GX=230,GY=96,P=64;
   var root=document.getElementById('root');
   function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
   function short(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
@@ -23,10 +248,25 @@
   function qid(layer,id){return 'L'+layer+'::'+id}
   function edgeId(layer,from,to){return 'L'+layer+'::'+from+'->L'+(layer+1)+'::'+to}
   function lineAttrs(x1,y1,x2,y2,color,width,cls){return '<line '+(cls?'class="'+cls+'" ':'')+'x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+color+'" stroke-width="'+width+'" stroke-linecap="round"/>'}
+  function diagOpenKey(key){return 'textron.monitor.diag.'+key}
+  function isDiagOpen(key){
+    var el=root.querySelector('details.diag-details[data-diag="'+key+'"]');
+    if(el)return !!el.open;
+    try{return localStorage.getItem(diagOpenKey(key))==='1'}catch(e){return false}
+  }
+  function diagAttrs(key){return ' data-diag="'+key+'" '+(isDiagOpen(key)?'open':'')}
+  function bindDiagState(){
+    var els=root.querySelectorAll('details.diag-details[data-diag]');
+    for(var i=0;i<els.length;i++){
+      els[i].addEventListener('toggle',function(){
+        try{localStorage.setItem(diagOpenKey(this.getAttribute('data-diag')),this.open?'1':'0')}catch(e){}
+      });
+    }
+  }
 
   async function poll(){
     try{
-      var r=await fetch('/api/state',{cache:'no-store'});
+      var r=await fetch('/api/state?t='+Date.now(),{cache:'no-store'});
       var s=await r.json();
       render(s);
     }catch(e){root.innerHTML='<div class="panel">ERROR: '+esc(e.message)+'</div>'}
@@ -36,26 +276,197 @@
     var names=Object.keys(s.networks||{});
     if(!names.length){root.innerHTML='<div class="panel">No Textron networks.</div>';return}
     var activeName=s.currentTaskFamily&&s.networks[s.currentTaskFamily]?s.currentTaskFamily:names[0];
-    var html=renderBackward(s.lastBackwardState);
+    var activeIds=(s.currentActivatedIds||[]);
+    var activeEdges=(s.currentSelectedEdgeIds||[]);
+
+    var html='';
+    // Put the most-used monitor content first: current forward path + network graph.
+    html+='<div class="panel" style="border-color:#ececec;background:#ffffff;box-shadow:var(--shadow-soft);position:sticky;top:12px;z-index:5">';
+    html+='<div class="meta" style="font-size:18px;color:#1a1a1a;font-weight:600;letter-spacing:-.01em">⬆ FORWARD SELECTED PATH</div>';
+    html+='<div class="path" style="font-size:15px;color:#7f5e94;background:#f4f1ee;border-color:#ececec">'+(activeIds.length?esc(activeIds.join(' → ')):'(no selected path)')+'</div>';
+    if(activeEdges.length) html+='<div class="path" style="font-size:12px;color:#765f1d;background:#fff9e6;border-color:#eee1af">'+esc(activeEdges.join('  |  '))+'</div>';
+    html+='</div>';
+
+    html+='<div class="monitor-grid">';
+    html+='<main class="monitor-main">';
     for(var ni=0;ni<names.length;ni++){
       var name=names[ni],net=s.networks[name];
       html+=renderNet(name,net,name===activeName?s:null);
     }
+    html+='</main>';
+
+    html+='<aside class="monitor-side">';
+    html+='<details class="panel backward diag-details"'+diagAttrs('backward')+'><summary>↩ semantic backward</summary>'+renderBackwardInner(s.lastBackwardState)+'</details>';
+    var rawHtml=(typeof renderRawLLMResponse==='function')?renderRawLLMResponse(s.backwardEvents||[]):'';
+    if(rawHtml) html+='<details class="panel diag-details"'+diagAttrs('raw')+'><summary>🧾 raw LLM response</summary>'+rawHtml+'</details>';
+    html+='<details class="panel backward diag-details"'+diagAttrs('history')+'><summary>🕘 backward history</summary>'+renderBackwardEventsInner(s.backwardEvents||[])+'</details>';
+    html+='</aside>';
+    html+='</div>';
     root.innerHTML=html;
+    bindDiagState();
   }
+  function relTime(iso){
+    if(!iso)return'';
+    var t=Date.parse(iso);if(isNaN(t))return iso.slice(11,19);
+    var diff=(Date.now()-t)/1000;
+    if(diff<10)return'刚刚';
+    if(diff<60)return Math.floor(diff)+'秒前';
+    if(diff<3600)return Math.floor(diff/60)+'分钟前';
+    if(diff<86400)return Math.floor(diff/3600)+'小时前';
+    if(diff<172800)return'昨天 '+new Date(t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+    return new Date(t).toLocaleDateString('zh-CN',{month:'short',day:'numeric'})+' '+new Date(t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+  }
+  function qualityBar(q,qLabel){
+    if(q==null)return'';
+    var w=Math.round(q*100);var cls=q>=0.7?'bw-bar-high':q>=0.35?'bw-bar-medium':'bw-bar-low';
+    return '<span class="bw-bar-wrap"><span class="bw-bar-fill '+cls+'" style="width:'+w+'%"></span></span>';
+  }
+  function kv(label,val,valCls){return '<span class="bw-kv"><span class="bw-kv-key">'+esc(label)+'</span><span class="bw-kv-val'+(valCls?' '+valCls:'')+'">'+esc(String(val))+'</span></span>'}
+  function renderBackwardInner(b){
+    if(!b)return '<div class="panel backward"><div class="meta" style="color:#5b5b5b">↩ semantic backward — 等待下一轮反馈</div></div>';
+    var status=b.status||'done';
+    var r=Number(b.reward||0);
+    var q=b.qualityScore==null?null:Number(b.qualityScore), qLabel=b.qualityLabel||'';
+    var icon=status==='done'?'✅ ':status==='running'?'⏳ ':'❌ ';
+    var stCls=status==='done'?'bw-status-done':status==='running'?'bw-status-running':'bw-status-failed';
+    var stLabel=status==='done'?'完成':status==='running'?'运行中':'失败';
 
+    var h='<div class="panel backward">';
+    h+='<div class="bw-header">';
+    h+='<span style="font-size:1rem">↩</span>';
+    h+='<span class="bw-status '+stCls+'">'+icon+stLabel+'</span>';
+    h+='<span class="bw-time">'+esc(relTime(b.at||b.startedAt||''))+'</span>';
+    h+='<span class="bw-network">'+esc(b.taskFamily||'')+'</span>';
+    h+='</div>';
 
-  function renderBackward(b){
-    if(!b)return '<div class="panel backward"><div class="meta">semantic backward: pending / no result yet</div></div>';
-    var r=Number(b.reward||0), cls=r>0?'reward-pos':r<0?'reward-neg':'reward-zero';
-    var h='<div class="panel backward"><div class="meta"><b>↩ semantic backward</b> · '+esc(b.taskFamily||'')+' · '+esc(b.at||'')+'</div>';
-    h+='<div class="path '+cls+'">reward '+r.toFixed(3)+' · edges '+(b.edgesUpdated||0)+' · node updates '+(b.nodesUpdated||0)+' · nodes added '+(b.nodesAdded||0)+'</div>';
-    if(b.rationale)h+='<div class="log">rationale: '+esc(b.rationale)+'</div>';
-    if(b.changedEdges&&b.changedEdges.length)h+='<div class="log">changedEdges:\n'+esc((b.changedEdges||[]).join('\n'))+'</div>';
-    if(b.selectedEdgeIds&&b.selectedEdgeIds.length)h+='<div class="log">selected backward path:\n'+esc((b.selectedEdgeIds||[]).join('\n'))+'</div>';
+    if(status==='running'){
+      h+='<div class="bw-row">';
+      if(b.activatedIds&&b.activatedIds.length) h+=kv('路径',b.activatedIds.join(' → '));
+      h+=kv('HighEntropy',b.hasHighEntropy?'有':'无',b.hasHighEntropy?'bw-kv-val-good':'bw-kv-val-warn');
+      h+='</div>';
+      if(b.runId)h+='<div class="bw-row" style="color:#9a9a9a;font-size:12px">runId: '+esc(b.runId)+'</div>';
+    }else if(status==='failed'){
+      h+='<div class="bw-row">';
+      h+=kv('错误',b.error||'unknown');
+      h+='</div>';
+      if(b.runId)h+='<div class="bw-row" style="color:#9a9a9a;font-size:12px">runId: '+esc(b.runId)+'</div>';
+    }else{
+      // Summary row — most important metrics first
+      h+='<div class="bw-row">';
+      var rCls=r>0?'bw-kv-val-good':r<0?'bw-kv-val-bad':'bw-kv-val-warn';
+      h+=kv('Reward',r.toFixed(3),rCls);
+      h+=kv('质量',(q==null?'n/a':q.toFixed(2))+' '+esc(qLabel),q>=0.7?'bw-kv-val-good':q>=0.35?'bw-kv-val-warn':'bw-kv-val-bad');
+      h+=qualityBar(q,qLabel);
+      h+=kv('耗时',(b.durationMs||0)+'ms');
+      h+='</div>';
+
+      // Section: network changes
+      h+='<div class="bw-section"><div class="bw-section-label">📊 网络变更</div>';
+      h+='<div class="bw-row">';
+      h+=kv('边更新',b.edgesUpdated||0,b.edgesUpdated>0?'bw-kv-val-good':'');
+      h+=kv('节点更新',b.nodesUpdated||0,b.nodesUpdated>0?'bw-kv-val-good':'');
+      h+=kv('新增节点',b.nodesAdded||0,b.nodesAdded>0?'bw-kv-val-good':'');
+      h+=kv('合并',b.nodesMerged||0);
+      h+=kv('跳过',b.nodesSkipped||0,b.nodesSkipped>0?'bw-kv-val-warn':'');
+      h+=kv('蒸馏',b.distillCount||0,b.distillCount>0?'bw-kv-val-good':'');
+      h+='</div></div>';
+
+      // Hidden details toggle
+      h+='<div class="bw-row" style="font-size:12px;color:#9a9a9a">';
+      h+='HighEntropy: '+(b.hasHighEntropy?'✅':'❌')+' · LLM reward: '+Number(b.llmReward||0).toFixed(3);
+      h+='</div>';
+    }
+
+    // Rationale — prominent
+    if(b.rationale)h+='<div class="bw-rationale">💡 '+esc(b.rationale)+'</div>';
+
+    // Selected backward path — visual
+    if(b.selectedEdgeIds&&b.selectedEdgeIds.length){
+      h+='<div class="bw-section"><div class="bw-section-label">🔗 反向传播路径</div>';
+      h+='<div class="bw-row">'+b.selectedEdgeIds.map(function(e){return'<span class="bw-path-seg">'+esc(e)+'</span>'}).join('')+'</div></div>';
+    }
+
+    // Node changes
+    if(b.changedNodes&&b.changedNodes.length){
+      h+='<div class="bw-section"><div class="bw-section-label">📝 节点内容变更 ('+b.changedNodes.length+')</div>';
+      for(var i=0;i<b.changedNodes.length;i++){
+        var cn=b.changedNodes[i];
+        h+='<div class="bw-changes">'+esc(cn.id)+': <span style="color:#7f5e94">'+esc(cn.oldContent||'(空)')+'</span> → <span style="color:#5b5b5b">'+esc(cn.newContent||'(空)')+'</span></div>';
+      }
+      h+='</div>';
+    }
+
+    // Edge changes
+    if(b.changedEdges&&b.changedEdges.length){
+      h+='<div class="bw-section"><div class="bw-section-label">⚡ 边权重变更 ('+b.changedEdges.length+')</div>';
+      for(var i=0;i<Math.min(b.changedEdges.length,8);i++){
+        h+='<div class="bw-changes">'+esc(b.changedEdges[i])+'</div>';
+      }
+      if(b.changedEdges.length>8)h+='<div class="bw-changes" style="color:#9a9a9a">... 还有 '+(b.changedEdges.length-8)+' 条</div>';
+      h+='</div>';
+    }
+
+    // Skip reasons
+    if(b.skipReasons&&b.skipReasons.length){
+      h+='<div class="bw-section"><div class="bw-section-label">⏭️ 跳过原因</div>';
+      for(var i=0;i<b.skipReasons.length;i++){
+        h+='<div class="bw-changes">'+esc(b.skipReasons[i])+'</div>';
+      }
+      h+='</div>';
+    }
+
     h+='</div>';
     return h;
   }
+
+  function renderBackwardEventsInner(events){
+    if(!events.length)return '';
+    var rows=events.slice(-12).reverse().map(function(e){
+      var status=e.status||String(e.action||'').replace('semantic_backward_','');
+      var sIcon=status==='done'?'✅':status==='running'?'⏳':status==='failed'?'❌':'';
+      var sLabel=status==='done'?'完成':status==='running'?'运行中':status==='failed'?'失败':status;
+      var q=e.qualityScore==null?'':' 质量'+Number(e.qualityScore).toFixed(2);
+      var upd=(e.nodesUpdated!=null||e.edgesUpdated!=null)?(' 边'+e.edgesUpdated+' 节点'+e.nodesUpdated+' 新'+e.nodesAdded+' 合'+e.nodesMerged+' 跳'+e.nodesSkipped):'';
+      var err=e.error?(' ❌'+e.error):'';
+      var row='<div class="history-row">';
+      row+='<span class="history-time">'+esc(relTime(e.ts||e.at||''))+'</span>';
+      row+='<span class="history-status" style="color:'+(status==='done'?'#7f5e94':status==='failed'?'#b85b52':'#9b6a27')+'">'+sIcon+sLabel+'</span>';
+      row+='<span class="history-detail">'+esc(e.taskFamily||'')+q+upd+err+'</span>';
+      row+='</div>';
+      return row;
+    }).join('');
+    return '<div class="panel backward"><div class="meta"><b>📜 反向传播历史</b> · 最近 '+Math.min(12,events.length)+' 条</div>'+rows+'</div>';
+  }
+
+  function renderRawLLMResponse(events){
+    var raw=null;
+    for(var i=events.length-1;i>=0;i--) if(events[i].action==='semantic_backward_llm_raw_response'){raw=events[i];break}
+    if(!raw)return '';
+    var h='<div class="panel backward" style="border-color:#ececec;background:#ffffff">';
+    h+='<div class="meta"><b>🔍 LLM 原始响应诊断</b> · '+esc(raw.mode||'')+' · '+esc(relTime(raw.ts||''))+'</div>';
+    h+='<div class="bw-section"><div class="bw-section-label">System Prompt (前400字符)</div>';
+    h+='<div class="log" style="max-height:120px;overflow-y:auto">'+esc(raw.systemPromptPreview||'')+'</div></div>';
+    h+='<div class="bw-section"><div class="bw-section-label">User Prompt (前600字符)</div>';
+    h+='<div class="log" style="max-height:120px;overflow-y:auto">'+esc(raw.userPromptPreview||'')+'</div></div>';
+    h+='<div class="bw-section"><div class="bw-section-label">模型原始响应 ('+(raw.rawContentChars||0)+' 字符)</div>';
+    h+='<div class="log" style="max-height:160px;overflow-y:auto;color:#6f5d26">'+esc(raw.rawContent||'(空)')+'</div></div>';
+    if(raw.rawReasoning){
+      h+='<div class="bw-section"><div class="bw-section-label">推理过程 ('+(raw.rawReasoningChars||0)+' 字符)</div>';
+      h+='<div class="log" style="max-height:100px;overflow-y:auto;color:#7f5e94">'+esc(raw.rawReasoning)+'</div></div>';
+    }
+    h+='<div class="bw-section"><div class="bw-section-label">解析结果</div>';
+    h+='<div class="bw-row">';
+    h+=kv('Reward',raw.parsedReward!=null?Number(raw.parsedReward).toFixed(3):'n/a');
+    h+=kv('节点更新',(raw.parsedNodeUpdateKeys||[]).length+' 个',(raw.parsedNodeUpdateKeys||[]).length>0?'bw-kv-val-good':'bw-kv-val-warn');
+    h+=kv('新增节点',raw.parsedAddNodeCount||0);
+    h+=kv('Rationale',raw.parsedRationale||'(空)');
+    h+='</div></div>';
+    h+='</div>';
+    return h;
+  }
+
+  function renderBackward(b){return '<div class="panel backward">'+renderBackwardInner(b)+'</div>'}
+  function renderBackwardEvents(events){return '<div class="panel backward">'+renderBackwardEventsInner(events)+'</div>'}
 
   function renderNet(name,net,state){
     var selectedIds=state?(state.currentActivatedIds||[]):[];
@@ -110,8 +521,8 @@
         var stroke=sel?'rgba(255,235,120,1)':(nd.name||nd.content)?'rgba(165,145,225,.55)':'rgba(90,80,130,.35)';
         h+='<circle '+(sel?'class="selected-node" ':'')+'cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="'+fill+'" stroke="'+stroke+'" stroke-width="'+(sel?3:1.5)+'"><title>'+esc(id+'\nname: '+(nd.name||'')+'\nscore: '+(score==null?'':Number(score).toFixed(3))+'\ncontext: '+(nd.context||nd.content||''))+'</title></circle>';
         h+='<text class="node-label" x="'+cx+'" y="'+(cy+R+14)+'">'+esc(nd.id)+'</text>';
-        if(score!==undefined) h+='<text class="node-score" x="'+cx+'" y="'+(cy-R-7)+'" fill="'+(sel?'#ffe978':'#7a7198')+'">'+Number(score).toFixed(2)+'</text>';
-        h+='<text class="node-content" x="'+cx+'" y="'+(cy+R+27)+'" fill="'+(sel?'#e8d781':'#81789f')+'">'+esc(short(nd.name||nd.content||'(empty)',34))+'</text>';
+        if(score!==undefined) h+='<text class="node-score" x="'+cx+'" y="'+(cy-R-7)+'" fill="'+(sel?'#765f1d':'#7f5e94')+'">'+Number(score).toFixed(2)+'</text>';
+        h+='<text class="node-content" x="'+cx+'" y="'+(cy+R+27)+'" fill="'+(sel?'#765f1d':'#8b8178')+'">'+esc(short(nd.name||nd.content||'(empty)',34))+'</text>';
       }
     }
     h+='</svg></div><div class="log">selectedEdges: '+selectedEdges.length+' real gold edges: '+edgeGoldCount+'</div></div>';

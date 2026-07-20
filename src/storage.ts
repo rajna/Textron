@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { TEXTRON_HOME } from "./constants";
+import { distillNodeName } from "./name_distill.ts";
 
 // ─── Textron Storage Helpers ──────────────────────────────────────────
 
@@ -26,9 +27,9 @@ export function readNodeContent(filePath: string): string {
 }
 
 export function compressNodeName(content: string): string {
-  const s = (content || "").replace(/\s+/g, " ").trim();
-  if (!s) return "";
-  return s.length > 48 ? s.slice(0, 45) + "..." : s;
+  // Keyword-distilled name (name_distill.ts) — node name = retrieval key seen by
+  // L0 scoring/routing/dedup, so it must carry content's high-entropy terms.
+  return distillNodeName(content);
 }
 
 export function readNodeName(filePath: string): string {

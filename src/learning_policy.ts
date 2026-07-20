@@ -7,7 +7,7 @@ export type RouteCandidate = {
 
 export type RouteDecision = {
   taskFamily: string | null;
-  reason: "explicit_match" | "domain_match" | "content_match" | "no_safe_match";
+  reason: "explicit_match" | "domain_match" | "content_match" | "best_effort" | "no_safe_match";
   score: number;
 };
 
@@ -66,6 +66,7 @@ export function chooseTaskFamilyRoute(input: {
   explicitTaskFamily?: string;
   minContentScore?: number;
   minDomainScore?: number;
+  allowBestEffort?: boolean;
 }): RouteDecision {
   const candidates = input.candidates || [];
   if (candidates.length === 0) return { taskFamily: null, reason: "no_safe_match", score: 0 };
@@ -89,6 +90,7 @@ export function chooseTaskFamilyRoute(input: {
   if (!best) return { taskFamily: null, reason: "no_safe_match", score: 0 };
   if (best.domainScore >= minDomainScore) return { taskFamily: best.name, reason: "domain_match", score: best.score };
   if (best.contentScore >= minContentScore) return { taskFamily: best.name, reason: "content_match", score: best.score };
+  if (input.allowBestEffort && best.name) return { taskFamily: best.name, reason: "best_effort", score: best.score };
   return { taskFamily: null, reason: "no_safe_match", score: best.score };
 }
 
@@ -130,7 +132,7 @@ export function decideMergeFirst(input: {
   const quality = validateKnowledgeGranularity(input.candidate.content);
   if (!quality.ok) return { action: "reject", score: 0, reason: quality.reason || "low_signal" };
 
-  const mergeThreshold = input.mergeThreshold ?? 0.24;
+  const mergeThreshold = input.mergeThreshold ?? 0.55;
   const addThreshold = input.addThreshold ?? 0.08;
   let best: ExistingKnowledgeNode | null = null;
   let bestScore = 0;

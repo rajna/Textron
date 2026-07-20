@@ -48,7 +48,17 @@ function testTaskFamilyHardGate() {
       { name: "textron_learning_policy", content: "backward negative credit merge-first" },
     ],
   });
-  ok("does not fallback to first unrelated network", noMatch.taskFamily === null, JSON.stringify(noMatch));
+  ok("does not fallback to first unrelated network by default", noMatch.taskFamily === null, JSON.stringify(noMatch));
+
+  const bestEffort = chooseTaskFamilyRoute({
+    prompt: "写一首深夜R&B歌词",
+    allowBestEffort: true,
+    candidates: [
+      { name: "stock_astrology", content: "A股 天象 股票" },
+      { name: "textron_learning_policy", content: "backward negative credit merge-first" },
+    ],
+  });
+  ok("best-effort mode selects a candidate for lifecycle probing", bestEffort.taskFamily !== null && bestEffort.reason === "best_effort", JSON.stringify(bestEffort));
 
   const explicit = chooseTaskFamilyRoute({
     prompt: "任何内容",

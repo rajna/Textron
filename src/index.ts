@@ -35,7 +35,10 @@ import {
 } from "./ngram_distill";
 import { buildTextronPromptInjection } from "./prompt_injection";
 import { buildBackwardTaskContext } from "./lifecycle_context";
-import { assignEdgeCredit, chooseTaskFamilyRoute } from "./learning_policy";
+import { chooseTaskFamilyRoute } from "./learning_policy";
+import { assistantMessageText, extractHighEntropy, extractLatestHighEntropyFromMessages, parseHighEntropyCrystal } from "./highentropy";
+import { distillNodeName } from "./name_distill.ts";
+import { applyExplorationPolicy, buildLocalScores, parseNodeScores, rankLayerWithExploration } from "./scoring_policy";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -81,9 +84,9 @@ const DEFAULT_HYPERPARAMS: Hyperparams = {
 };
 
 const DEFAULT_WEIGHT = 0.5;
-const NGRAM_DISTILL_PROMOTE = process.env.TEXTRON_NGRAM_DISTILL_PROMOTE === "1";
-// Freeze topology by default: learning must merge/update/replace existing slots, not grow forever.
-const TEXTRON_ALLOW_NODE_GROWTH = process.env.TEXTRON_ALLOW_NODE_GROWTH === "1";
+const NGRAM_DISTILL_PROMOTE = true;
+// Growth enabled: new nodes created for novel patterns, preventing knowledge stagnation.
+const TEXTRON_ALLOW_NODE_GROWTH = true;
 
 // ─── Storage Helpers ─────────────────────────────────────────────────
 
@@ -160,9 +163,9 @@ function readNodeContent(filePath: string): string {
 }
 
 function compressNodeName(content: string): string {
-  const s = (content || "").replace(/\s+/g, " ").trim();
-  if (!s) return "";
-  return s.length > 48 ? s.slice(0, 45) + "..." : s;
+  // Keyword-distilled name (name_distill.ts) — a retrieval key seen by L0
+  // scoring/routing/dedup, NOT a crude first-48-chars truncation.
+  return distillNodeName(content);
 }
 
 function readNodeName(filePath: string): string {
@@ -251,52 +254,12 @@ function intraLayerOrthogonalityCheck(
   return { tooSimilar: bestScore >= 0.65, similarTo: bestScore >= 0.65 ? bestNode : undefined, similarity: bestScore };
 }
 
-function parseHighEntropyCrystal(text: string): { name: string; content: string; raw: string; ok: boolean; reason?: string } {
-  const rawText = String(text || "");
-  const match = rawText.match(/<HighEntropy>\s*([\s\S]*?)\s*<\/HighEntropy>/i);
-  const raw = match?.[1]?.replace(/\s+/g, " ").trim() || "";
-  if (!raw) return { name: "", content: "", raw, ok: false, reason: "missing" };
-  if (raw.includes("<TextronSkill") || raw.includes("historical Textron network prior")) {
-    return { name: "", content: "", raw, ok: false, reason: "echoed_textron_prior" };
-  }
-
-  let name = "";
-  let content = "";
-  try {
-    const parsed = JSON.parse(raw);
-    name = String(parsed?.name || parsed?.Name || "").trim();
-    content = String(parsed?.content || parsed?.Content || parsed?.rule || parsed?.insight || "").trim();
-  } catch {}
-  if (!content) {
-    const nameMatch = raw.match(/(?:^|[;；|\n])\s*(?:name|Name|名称|节点名)\s*[:：]\s*([^;；|\n]{2,80})/);
-    const contentMatch = raw.match(/(?:^|[;；|\n])\s*(?:content|Content|内容|规则)\s*[:：]\s*([\s\S]{8,220})/);
-    if (nameMatch) name = nameMatch[1].trim();
-    if (contentMatch) content = contentMatch[1].trim();
-  }
-  if (!content) content = raw.replace(/^(?:name|Name|名称|节点名)\s*[:：][^;；|\n]+[;；|\n]?\s*/i, "").trim();
-  content = completeContent(content.replace(/^content\s*[:：]\s*/i, ""), 180);
-  name = completeContent(name || compressNodeName(content), 64);
-
-  if (isNgramFragmentContent(content)) return { name, content, raw, ok: false, reason: "ngram_fragment" };
-  if (isTemporalSummary(content)) return { name, content, raw, ok: false, reason: "temporal_summary" };
-  const validation = validateKnowledgeCrystal(content);
-  if (!validation.ok) return { name, content, raw, ok: false, reason: validation.reason };
-  if (isNgramFragmentContent(name)) name = compressNodeName(validation.content);
-  return { name: completeContent(name, 64), content: validation.content, raw, ok: true };
-}
-
-function extractHighEntropy(text: string): string {
-  const crystal = parseHighEntropyCrystal(text);
-  if (!crystal.ok) return "";
-  return `Name: ${crystal.name}\nContent: ${crystal.content}`;
-}
-
 const HIGH_ENTROPY_INSTRUCTION = `
 
 ## Textron HighEntropy Output Contract
 At the very end of your final user-facing answer, append exactly one XML block. Textron backward consumes this as training data, so do NOT echo TextronSkill/history/tool logs.
 <HighEntropy>
-Name: ≤48 chars entropy crystal: the shortest distinctive symbolic compression of Content; preserve the transferable pattern, not surface words. Content: ≤160 chars high-entropy experience atom from this turn for Textron learning: a reusable insight that would change future behavior or context selection in similar tasks. Capture durable constraints, failure corrections, causal mechanisms, decision boundaries, validation signals, or strategy patterns when present. No raw logs, file lists, counts, URLs, session summaries, or vague progress.
+Name: ≤48 chars retrieval key — join the 3-6 highest-entropy terms LIFTED from Content (technical identifiers, domain signal words, key numbers; original words, space-separated). Node scoring/routing sees ONLY this name, so it must carry Content's most distinctive keywords. NOT a generic summary sentence, NOT a truncated first clause. Bad: "语法检查不等于可运行" (zero distinctive terms). Good: "运行时冒烟测试 drawMinimap col字段缺失 stub DOM/Canvas 帧循环". Content: ≤160 chars high-entropy experience atom from this turn for Textron learning: a reusable insight that would change future behavior or context selection in similar tasks. Capture durable constraints, failure corrections, causal mechanisms, decision boundaries, validation signals, or strategy patterns when present. No raw logs, file lists, counts, URLs, session summaries, or vague progress.
 </HighEntropy>`;
 
 // ─── Task Classification ────────────────────────────────────────────
@@ -376,6 +339,81 @@ function loadNetwork(taskFamily: string) {
     hyperparams: readJson<Hyperparams>(path.join(tfPath, "hyperparams.json"), DEFAULT_HYPERPARAMS),
     weights: readJson<WeightsFile>(path.join(tfPath, "weights.json"), { layer_connections: {} }),
   };
+}
+
+// ─── PageRank ─────────────────────────────────────────────────────
+
+/** Compute PageRank scores for all nodes in the network.
+ *  Treats each node as a web page, edges as links with weights.
+ *  Blended with LLM scores to prevent activation cold-start. */
+function computePageRank(
+  net: NonNullable<ReturnType<typeof loadNetwork>>,
+): Record<string, number> {
+  const layers = net.hyperparams.layers;
+  const totalNodes = layers.reduce((a, b) => a + b, 0);
+  const nodeIds: string[] = [];
+  const nodeIndex = new Map<string, number>();
+
+  // Build flat node index
+  for (let l = 0; l < layers.length; l++) {
+    for (let n = 0; n < layers[l]; n++) {
+      const key = `L${l}::node_${n}`;
+      nodeIndex.set(key, nodeIds.length);
+      nodeIds.push(key);
+    }
+  }
+
+  // Build adjacency matrix (sparse representation: outLinks[from] = [{to, weight}])
+  const outLinks: { to: number; weight: number }[][] = Array.from({ length: totalNodes }, () => []);
+  for (const [edgeKey, edges] of Object.entries(net.weights.layer_connections)) {
+    const [fromL, toL] = edgeKey.split('_to_').map(Number);
+    for (const e of edges) {
+      const fromKey = `L${fromL}::${e.from}`;
+      const toKey = `L${toL}::${e.to}`;
+      const fi = nodeIndex.get(fromKey);
+      const ti = nodeIndex.get(toKey);
+      if (fi !== undefined && ti !== undefined && e.weight > 0) {
+        outLinks[fi].push({ to: ti, weight: e.weight });
+      }
+    }
+  }
+
+  // Power iteration
+  const damping = 0.85;
+  const epsilon = 1e-6;
+  const maxIter = 100;
+  let pr = new Array(totalNodes).fill(1 / totalNodes);
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    const newPr = new Array(totalNodes).fill((1 - damping) / totalNodes);
+    let maxDelta = 0;
+    for (let i = 0; i < totalNodes; i++) {
+      if (outLinks[i].length === 0) {
+        // Dangling node: distribute PR to all nodes
+        for (let j = 0; j < totalNodes; j++) newPr[j] += damping * pr[i] / totalNodes;
+      } else {
+        const totalWeight = outLinks[i].reduce((s, l) => s + l.weight, 0);
+        if (totalWeight > 0) {
+          for (const link of outLinks[i]) {
+            newPr[link.to] += damping * pr[i] * (link.weight / totalWeight);
+          }
+        }
+      }
+    }
+    for (let i = 0; i < totalNodes; i++) {
+      maxDelta = Math.max(maxDelta, Math.abs(newPr[i] - pr[i]));
+    }
+    pr = newPr;
+    if (maxDelta < epsilon) break;
+  }
+
+  // Normalize to 0-1 range
+  const maxPr = Math.max(...pr, 1e-10);
+  const result: Record<string, number> = {};
+  for (let i = 0; i < totalNodes; i++) {
+    result[nodeIds[i]] = pr[i] / maxPr;
+  }
+  return result;
 }
 
 // ─── Manual Propagation (used by tool actions) ────────────────────
@@ -506,156 +544,146 @@ function selectedEdgeIdToWeightKey(edgeId: string): string | null {
   return `${fromL}_to_${toL}:${m[2]}:${m[4]}`;
 }
 
-function autoBackward(
-  net: NonNullable<ReturnType<typeof loadNetwork>>,
-  activatedIds: string[],
-  reward: number,
-  onLog: (msg: string) => void,
-  selectedEdgeIds: string[] = [],
-  edgeRewards?: Map<string, number>,
-): { changes: number; changedEdges: string[] } {
-  const lr = net.hyperparams.learningRate;
-  const activeEdgeSet = new Set<string>();
+// ─── Auto Backward Propagation (moved below after helpers) ────────────
+// See expanded autoBackward() defined right before forcedSemanticBackward().
+// It now handles edge weights + node content CRUD in a single pass.
 
-  // Preferred path: update exactly the selected forward edges. This prevents unrelated
-  // edges between activated nodes from being reinforced or penalized.
-  for (const edgeId of selectedEdgeIds) {
-    const key = selectedEdgeIdToWeightKey(edgeId);
-    if (key) activeEdgeSet.add(key);
-  }
+// ─── Vector Similarity (TF-IDF cosine) ────────────────────────────
 
-  // Legacy fallback: derive adjacent edges from activated path if selectedEdgeIds unavailable.
-  if (activeEdgeSet.size === 0 && activatedIds.length > 1) {
-    const parsedPath = activatedIds
-      .map((id) => ({ raw: id, parsed: parseLayerNodeId(id) }))
-      .filter((x) => x.parsed !== null) as { raw: string; parsed: { layer: number; nodeId: string } }[];
-    parsedPath.sort((a, b) => a.parsed.layer - b.parsed.layer);
-    for (let i = 0; i < parsedPath.length - 1; i++) {
-      const a = parsedPath[i].parsed;
-      const b = parsedPath[i + 1].parsed;
-      if (b.layer === a.layer + 1) activeEdgeSet.add(`${a.layer}_to_${b.layer}:${a.nodeId}:${b.nodeId}`);
+/** Shared TF-IDF tokenizer: alnum words kept whole; CJK runs become character
+ *  bigrams (Chinese has no whitespace — whole-run tokens never match across
+ *  docs, which made cosine≈0 and emptied the RELATED merge/delete candidates). */
+function tfidfTokens(text: string): string[] {
+  const s = (text || "").toLowerCase();
+  const out: string[] = [];
+  const runs = s.match(/[a-z0-9]+|[一-鿿]+/g) || [];
+  for (const run of runs) {
+    if (/^[a-z0-9]+$/.test(run)) {
+      if (run.length > 1) out.push(run);
+    } else if (run.length === 2) {
+      out.push(run);
+    } else {
+      for (let i = 0; i < run.length - 1; i++) out.push(run.slice(i, i + 2));
     }
   }
-
-  if (activeEdgeSet.size === 0) return { changes: 0, changedEdges: [] };
-
-  let changes = 0;
-  const changedEdges: string[] = [];
-  for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
-    for (const edge of edges) {
-      const eid = `${key}:${edge.from}:${edge.to}`;
-      if (!activeEdgeSet.has(eid)) continue;
-      const old = edge.weight;
-      const edgeReward = edgeRewards?.get(eid) ?? reward;
-      if (edgeReward > 0) edge.weight = clamp(old + lr * edgeReward * (1 - old), -1, 1);
-      else if (edgeReward < 0) edge.weight = clamp(old + lr * edgeReward * (1 + old), -1, 1);
-      if (Math.abs(edge.weight - old) > 0.000001) {
-        changes++;
-        changedEdges.push(`${eid}:${old.toFixed(4)}->${edge.weight.toFixed(4)}`);
-      }
-    }
-  }
-
-  if (changes > 0) {
-    writeJson(path.join(net.path, "weights.json"), net.weights);
-    net.hyperparams.updatedAt = new Date().toISOString();
-    writeJson(path.join(net.path, "hyperparams.json"), net.hyperparams);
-    onLog(`Textron backward: ${changes} selected edge(s) updated (reward=${reward.toFixed(3)}) for "${path.basename(net.path)}"`);
-  }
-  return { changes, changedEdges };
+  return out;
 }
 
-// ─── Feedback Detection ───────────────────────────────────────────────
+/** Build TF-IDF vectors for all node contents. Returns { vocab, idf, nodeVectors }. */
+function buildTfidfIndex(net: NonNullable<ReturnType<typeof loadNetwork>>): {
+  vocab: string[];
+  idf: Float64Array;
+  nodeVectors: Map<string, Float64Array>;
+} {
+  const layerCount = net.hyperparams.layers.length;
+  const allDocs: { key: string; tokens: string[] }[] = [];
 
-async function evaluateUserFeedback(userMessage: string, ctx?: { apiKey?: string; baseUrl?: string; model?: string }): Promise<{ sentiment: 'success' | 'failure' | 'neutral'; insight?: string }> {
-  const endpoint = ctx?.baseUrl || process.env.TEXTRON_EVAL_ENDPOINT || 'http://localhost:11434/v1/chat/completions';
-  const model = ctx?.model || process.env.TEXTRON_EVAL_MODEL || await detectSmallestModel() || '';
-  if (!model) return { sentiment: keywordFallback(userMessage) };
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{
-          role: 'system',
-          content: '分析用户消息。1) 判断是对助手上一轮回答的正面/负面/中性回应。2) 如有改进建议或纠正，提炼≤80字关键要点。返回JSON: {"sentiment":"success|failure|neutral","insight":"要点或null"}'
-        }, {
-          role: 'user',
-          content: `用户消息: "${userMessage.slice(0, 3000)}"`
-        }],
-        max_tokens: 150,
-        temperature: 0,
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json() as any;
-    const raw: string = data?.choices?.[0]?.message?.content || '';
-    try {
-      const parsed = JSON.parse(raw);
-      return {
-        sentiment: parsed.sentiment || 'neutral',
-        insight: parsed.insight && parsed.insight !== 'null' ? parsed.insight : undefined,
-      };
-    } catch {
-      const lower = raw.toLowerCase();
-      if (lower.includes('failure') || lower.includes('负面')) return { sentiment: 'failure' };
-      if (lower.includes('success') || lower.includes('正面')) return { sentiment: 'success' };
-      return { sentiment: 'neutral' };
-    }
-  } catch {
-    return { sentiment: keywordFallback(userMessage) };
-  }
-}
-
-async function detectSmallestModel(): Promise<string | null> {
-  try {
-    const res = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return null;
-    const data = await res.json() as any;
-    const models: { name: string; size: number }[] = data?.models || [];
-    if (models.length === 0) return null;
-    models.sort((a, b) => a.size - b.size);
-    return models[0].name;
-  } catch { return null; }
-}
-
-function keywordFallback(userMessage: string): 'success' | 'failure' | 'neutral' {
-  const msg = userMessage.toLowerCase();
-  // Negation pattern: 不 + positive word = negative. Must check BEFORE success.
-  if (/不[好行对像样够理想]|太差|太烂|太糟|[没無]有?做好|[没無]用|fail|wrong|incorrect|don't|shouldn't|cannot|can't|badly|poorly/.test(msg)) return 'failure';
-  // More aggressive failure: explicit negative words
-  if (/不对|不是|错了|修正|不应该|错误|不行|不像|不好|不完?整|不连贯|混乱|糟糕|失败|垃圾|难听|不自然|不流畅|僵硬|生硬/.test(msg)) return 'failure';
-  // Success: positive feedback (only match standalone positive words, not negated ones)
-  if (/(?:^|[\s，。！？、\-—\(\)])好(?:[\s，。！？、\-—\(\)]|$)|很好|太棒|不错|厉害|完美|great|awesome|excellent|amazing|perfect/.test(msg)) return 'success';
-  if (/对|继续|是的|good|thanks|correct|exactly|love it|well done/.test(msg)) return 'success';
-  return 'neutral';
-}
-
-function storeFailureKnowledge(
-  net: NonNullable<ReturnType<typeof loadNetwork>>,
-  activatedIds: string[],
-  userMessage: string,
-  onLog: (msg: string) => void,
-) {
-  // Compress user's correction to ~100 chars as high-entropy insight
-  const insight = userMessage.length > 100 ? userMessage.slice(0, 97) + '...' : userMessage;
-  // Try to fill an empty node in a non-output layer first
-  for (let l = 0; l < net.hyperparams.layers.length - 1; l++) {
+  for (let l = 0; l < layerCount; l++) {
     for (let n = 0; n < net.hyperparams.layers[l]; n++) {
       const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
-      if (!readNodeContent(np)) {
-        const outEdges = (net.weights.layer_connections[`${l}_to_${l + 1}`] || [])
-          .filter(e => e.from === `node_${n}`).map(e => ({ toId: e.to, weight: e.weight }));
-        writeNodeHtml(np, l, `node_${n}`, insight, outEdges, compressNodeName(insight));
-        onLog(`Textron: stored failure insight in L${l}::node_${n}`);
-        return;
+      const content = readNodeContent(np);
+      if (!content) continue;
+      const name = readNodeName(np) || "";
+      // Combine name + content for richer representation
+      const text = `${name} ${content}`.toLowerCase();
+      const tokens = tfidfTokens(text);
+      if (tokens.length === 0) continue;
+      allDocs.push({ key: `L${l}::node_${n}`, tokens });
+    }
+  }
+
+  if (allDocs.length === 0) return { vocab: [], idf: new Float64Array(0), nodeVectors: new Map() };
+
+  // Build vocabulary
+  const termSet = new Set<string>();
+  for (const doc of allDocs) for (const t of doc.tokens) termSet.add(t);
+  const vocab = [...termSet];
+  const termIndex = new Map<string, number>();
+  vocab.forEach((t, i) => termIndex.set(t, i));
+
+  const N = allDocs.length;
+  // Compute DF (document frequency)
+  const df = new Float64Array(vocab.length);
+  for (const doc of allDocs) {
+    const seen = new Set<string>();
+    for (const t of doc.tokens) {
+      if (!seen.has(t) && termIndex.has(t)) {
+        df[termIndex.get(t)!]++;
+        seen.add(t);
       }
     }
   }
-  // All non-output nodes filled — add dynamic node to layer 0
-  addPolicyNode(net, undefined, insight, onLog, compressNodeName(insight));
+
+  // Compute IDF
+  const idf = new Float64Array(vocab.length);
+  for (let i = 0; i < vocab.length; i++) {
+    idf[i] = Math.log((N + 1) / (df[i] + 1)) + 1; // smooth IDF
+  }
+
+  // Build TF-IDF vectors
+  const nodeVectors = new Map<string, Float64Array>();
+  for (const doc of allDocs) {
+    const tf = new Float64Array(vocab.length);
+    for (const t of doc.tokens) {
+      const idx = termIndex.get(t);
+      if (idx !== undefined) tf[idx]++;
+    }
+    // Normalize TF then multiply by IDF
+    const norm = Math.sqrt(tf.reduce((s, v) => s + v * v, 0)) || 1;
+    const vec = new Float64Array(vocab.length);
+    for (let i = 0; i < vocab.length; i++) {
+      vec[i] = (tf[i] / norm) * idf[i];
+    }
+    nodeVectors.set(doc.key, vec);
+  }
+
+  return { vocab, idf, nodeVectors };
+}
+
+/** Compute cosine similarity between two TF-IDF vectors. */
+function cosineSim(a: Float64Array, b: Float64Array): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
+}
+
+/** Compute TF-IDF cosine similarity between new content and existing nodes.
+ *  Returns a map of node keys to similarity scores. */
+function tfidfSimilarity(
+  net: NonNullable<ReturnType<typeof loadNetwork>>,
+  newName: string,
+  newContent: string,
+): Map<string, number> {
+  const index = buildTfidfIndex(net);
+  if (index.vocab.length === 0) return new Map();
+
+  // Build vector for new content
+  const text = `${newName} ${newContent}`.toLowerCase();
+  const tokens = tfidfTokens(text);
+  const termIndex = new Map<string, number>();
+  index.vocab.forEach((t, i) => termIndex.set(t, i));
+
+  const tf = new Float64Array(index.vocab.length);
+  for (const t of tokens) {
+    const idx = termIndex.get(t);
+    if (idx !== undefined) tf[idx]++;
+  }
+  const norm = Math.sqrt(tf.reduce((s, v) => s + v * v, 0)) || 1;
+  const newVec = new Float64Array(index.vocab.length);
+  for (let i = 0; i < index.vocab.length; i++) {
+    newVec[i] = (tf[i] / norm) * index.idf[i];
+  }
+
+  const scores = new Map<string, number>();
+  for (const [key, vec] of index.nodeVectors) {
+    scores.set(key, cosineSim(newVec, vec));
+  }
+  return scores;
 }
 
 // ─── Orthogonality Helpers ─────────────────────────────────────────────
@@ -693,18 +721,17 @@ function findSimilarNode(
   targetLayer?: number,
 ): { layer: number; nodeId: string; score: number; name: string } | null {
   const target = nameTokens(name);
+  // Use TF-IDF cosine similarity for cross-layer semantic matching
+  const scores = tfidfSimilarity(net, name, name); // name-only similarity for findSimilarNode
   let best: { layer: number; nodeId: string; score: number; name: string } | null = null;
-  const startLayer = Number.isInteger(targetLayer as number) ? targetLayer as number : 0;
-  const endLayer = Number.isInteger(targetLayer as number) ? targetLayer as number : net.hyperparams.layers.length - 1;
-  for (let l = startLayer; l <= endLayer; l++) {
-    for (let n = 0; n < net.hyperparams.layers[l]; n++) {
-      const nodeId = `node_${n}`;
-      const nodePath = path.join(net.path, `layer_${l}`, `${nodeId}.html`);
-      const existingName = readNodeName(nodePath);
-      if (!existingName) continue;
-      const score = tokenSimilarity(target, nameTokens(existingName));
-      if (score >= minScore && (!best || score > best.score)) best = { layer: l, nodeId, score, name: existingName };
-    }
+  for (const [key, score] of scores) {
+    if (score < minScore) continue;
+    const parsed = parseLayerNodeId(key);
+    if (!parsed) continue;
+    const np = path.join(net.path, `layer_${parsed.layer}`, `${parsed.nodeId}.html`);
+    const existingName = readNodeName(np);
+    if (!existingName) continue;
+    if (!best || score > best.score) best = { layer: parsed.layer, nodeId: parsed.nodeId, score, name: existingName };
   }
   return best;
 }
@@ -713,27 +740,24 @@ function findSimilarKnowledgeNode(
   net: NonNullable<ReturnType<typeof loadNetwork>>,
   name: string,
   content: string,
-  minScore = 0.24,
+  minScore = 0.40,
   targetLayer?: number,
   excludeNodeId?: string,
 ): { layer: number; nodeId: string; score: number; name: string; content: string } | null {
-  const targetName = nameTokens(name || compressNodeName(content));
-  const targetContent = nameTokens(content);
+  // TF-IDF cosine similarity for semantic merge (replaces jaccard)
+  const scores = tfidfSimilarity(net, name, content);
   let best: { layer: number; nodeId: string; score: number; name: string; content: string } | null = null;
-  const startLayer = Number.isInteger(targetLayer as number) ? targetLayer as number : 0;
-  const endLayer = Number.isInteger(targetLayer as number) ? targetLayer as number : net.hyperparams.layers.length - 1;
-  for (let l = startLayer; l <= endLayer; l++) {
-    for (let n = 0; n < net.hyperparams.layers[l]; n++) {
-      const nodeId = `node_${n}`;
-      if (nodeId === excludeNodeId) continue;
-      const nodePath = path.join(net.path, `layer_${l}`, `${nodeId}.html`);
-      const existingContent = readNodeContent(nodePath);
-      if (!existingContent) continue;
-      const existingName = readNodeName(nodePath) || compressNodeName(existingContent);
-      const nameScore = tokenSimilarity(targetName, nameTokens(existingName));
-      const contentScore = tokenSimilarity(targetContent, nameTokens(existingContent));
-      const score = Math.max(nameScore, contentScore, (nameScore + contentScore) / 2);
-      if (score >= minScore && (!best || score > best.score)) best = { layer: l, nodeId, score, name: existingName, content: existingContent };
+  for (const [key, score] of scores) {
+    if (score < minScore) continue;
+    const parsed = parseLayerNodeId(key);
+    if (!parsed) continue;
+    if (parsed.nodeId === excludeNodeId) continue;
+    const nodePath = path.join(net.path, `layer_${parsed.layer}`, `${parsed.nodeId}.html`);
+    const existingContent = readNodeContent(nodePath);
+    if (!existingContent) continue;
+    const existingName = readNodeName(nodePath) || compressNodeName(existingContent);
+    if (!best || score > best.score) {
+      best = { layer: parsed.layer, nodeId: parsed.nodeId, score, name: existingName, content: existingContent };
     }
   }
   return best;
@@ -828,7 +852,7 @@ function addPolicyNode(
   const mergeSimilar = options?.mergeSimilar !== false;
 
   // Merge-first across the target layer, before considering any new slot.
-  const similar = findSimilarKnowledgeNode(net, nodeName, content, options?.similarityThreshold ?? 0.24, targetLayer);
+  const similar = findSimilarKnowledgeNode(net, nodeName, content, options?.similarityThreshold ?? 0.40, targetLayer);
   if (similar && mergeSimilar) {
     updateExistingNodeByPolicy(net, similar.layer, similar.nodeId, nodeName, content, onLog);
     return { layer: similar.layer, nodeId: similar.nodeId, added: false, merged: true };
@@ -863,7 +887,7 @@ function addPolicyNode(
     const np = path.join(net.path, `layer_${targetLayer}`, `${weakestNode}.html`);
     const oldContent = readNodeContent(np);
     const oldQuality = validateKnowledgeCrystal(oldContent, targetLayer);
-    if (oldQuality.ok && weakestScore >= 0.28) {
+    if (oldQuality.ok && weakestScore >= 0.15) {
       onLog(`Textron shape policy: frozen full L${targetLayer}; skipped add_node (no weak slot, weakest=${weakestNode}/${weakestScore.toFixed(2)})`);
       return { layer: targetLayer, nodeId: weakestNode, added: false, merged: false, skipped: true, reason: "frozen_full_no_weak_slot" };
     }
@@ -901,6 +925,80 @@ function addPolicyNode(
  * Add a new node to an existing layer. Updates hyperparams, weight files,
  * and creates the node HTML file with proper edge connections.
  */
+function compactEmptyNodes(
+  net: NonNullable<ReturnType<typeof loadNetwork>>,
+  onLog: (msg: string) => void,
+): number {
+  let removedTotal = 0;
+  const layerSnapshots = new Map<number, { oldId: string; name: string; content: string }[]>();
+
+  for (let layer = 0; layer < net.hyperparams.layers.length; layer++) {
+    const kept: { oldId: string; name: string; content: string }[] = [];
+    for (let n = 0; n < net.hyperparams.layers[layer]; n++) {
+      const oldId = `node_${n}`;
+      const np = path.join(net.path, `layer_${layer}`, `${oldId}.html`);
+      const content = readNodeContent(np);
+      if (content) kept.push({ oldId, name: readNodeName(np), content });
+    }
+    layerSnapshots.set(layer, kept);
+  }
+
+  const remaps = new Map<number, Map<string, string>>();
+  for (let layer = 0; layer < net.hyperparams.layers.length; layer++) {
+    const kept = layerSnapshots.get(layer) || [];
+    const remap = new Map<string, string>();
+    kept.forEach((node, idx) => remap.set(node.oldId, `node_${idx}`));
+    remaps.set(layer, remap);
+    removedTotal += Math.max(0, net.hyperparams.layers[layer] - kept.length);
+    net.hyperparams.layers[layer] = kept.length;
+  }
+
+  if (removedTotal === 0) return 0;
+
+  const nextWeights: WeightsFile = { layer_connections: {} };
+  for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
+    const m = key.match(/^(\d+)_to_(\d+)$/);
+    if (!m) continue;
+    const fromL = parseInt(m[1], 10);
+    const toL = parseInt(m[2], 10);
+    const fromMap = remaps.get(fromL) || new Map<string, string>();
+    const toMap = remaps.get(toL) || new Map<string, string>();
+    const dedup = new Map<string, Edge>();
+    for (const edge of edges) {
+      const from = fromMap.get(edge.from);
+      const to = toMap.get(edge.to);
+      if (!from || !to) continue;
+      const eid = `${from}->${to}`;
+      const prev = dedup.get(eid);
+      if (!prev || Math.abs(edge.weight) > Math.abs(prev.weight)) dedup.set(eid, { from, to, weight: edge.weight });
+    }
+    nextWeights.layer_connections[key] = [...dedup.values()];
+  }
+  net.weights = nextWeights;
+
+  for (let layer = 0; layer < net.hyperparams.layers.length; layer++) {
+    const layerDir = path.join(net.path, `layer_${layer}`);
+    ensureDir(layerDir);
+    for (const file of fs.readdirSync(layerDir)) {
+      if (/^node_\d+\.(html|ngram\.json)$/.test(file)) fs.rmSync(path.join(layerDir, file), { force: true });
+    }
+    const kept = layerSnapshots.get(layer) || [];
+    for (let n = 0; n < kept.length; n++) {
+      const nodeId = `node_${n}`;
+      const outEdges = (net.weights.layer_connections[`${layer}_to_${layer + 1}`] || [])
+        .filter((e) => e.from === nodeId)
+        .map((e) => ({ toId: e.to, weight: e.weight }));
+      writeNodeHtml(path.join(layerDir, `${nodeId}.html`), layer, nodeId, kept[n].content, outEdges, kept[n].name || compressNodeName(kept[n].content));
+    }
+  }
+
+  net.hyperparams.updatedAt = new Date().toISOString();
+  writeJson(path.join(net.path, "weights.json"), net.weights);
+  writeJson(path.join(net.path, "hyperparams.json"), net.hyperparams);
+  onLog(`Textron compact: removed ${removedTotal} empty node(s) and reindexed layers in "${path.basename(net.path)}"`);
+  return removedTotal;
+}
+
 function addDynamicNode(
   net: NonNullable<ReturnType<typeof loadNetwork>>,
   layer: number,
@@ -1013,7 +1111,14 @@ function shannonEntropy(text: string): number {
 
 /** Word-level Shannon entropy. More discriminative for CJK+EN mixed content. */
 function wordEntropy(text: string): number {
-  const words = String(text || "").toLowerCase().split(/[\s,，。！？、:：;；()\[\]{}<>"'`/\\|+=_-]+/).filter(w => w.length > 1);
+  const raw = String(text || "").toLowerCase();
+  const words = raw.split(/[\s,，。！？、:：;；()\[\]{}<>"'`/\\|+=_-]+/).filter(w => w.length > 1);
+  // CJK crystals often contain no spaces; add character bigrams so valid Chinese
+  // high-entropy rules are not rejected as one or two low-entropy "words".
+  const cjkRuns = raw.match(/[\u4e00-\u9fff]{2,}/g) || [];
+  for (const run of cjkRuns) {
+    for (let i = 0; i < run.length - 1; i++) words.push(run.slice(i, i + 2));
+  }
   if (words.length < 3) return 0;
   const freq = new Map<string, number>();
   let total = 0;
@@ -1029,10 +1134,10 @@ function isTruncated(text: string): boolean {
   if (!s) return false;
   // Trailing truncation indicators: ellipsis, three dots, trailing dash/comma/colon without period
   if (/(?:[…—,_;:，、…]|\.{3})$/.test(s)) return true;
-  // Only flag CJK if the text is PREDOMINANTLY CJK (>60%) and doesn't end with sentence-ending punctuation.
-  // Mixed CJK+EN (common in tech summaries) shouldn't be falsely flagged.
+  // Only flag CJK when it ends with a continuation marker. Short Chinese
+  // HighEntropy crystals commonly omit final punctuation but are still complete.
   const cjkCount = (s.match(/[\u4e00-\u9fff]/g) || []).length;
-  if (cjkCount > 0 && cjkCount / s.length > 0.6 && !/[。！？\.!?]$/.test(s)) return true;
+  if (cjkCount > 0 && cjkCount / s.length > 0.6 && /(?:因为|如果|需要|通过|以及|并且|或者|但|而|与|和|及|的|地|得|了)$/.test(s)) return true;
   // Trailing preposition/conjunction at a word break (likely mid-thought cut)
   if (/\b(a|an|the|in|on|at|to|for|of|and|or|but|via|per|by|from|with|not|is|are|was|were|has|had|when|if|as)\s*$/i.test(s)) return true;
   return false;
@@ -1146,11 +1251,23 @@ export default function (pi: ExtensionAPI) {
   // Default is global for normal pi sessions; spawned workflows can set TEXTRON_STATE_FILE
   // to keep backward state scoped to a job/beat chain instead of racing other Pi sessions.
   const LAST_STATE_PATH = process.env.TEXTRON_STATE_FILE || path.join(TEXTRON_HOME, "_last_state.json");
+  let _monitorEventWriteFailed = false;
   function recordMonitorEvent(data: Record<string, unknown>) {
     try {
       ensureDir(TEXTRON_HOME);
-      fs.appendFileSync(EVENTS_PATH, JSON.stringify({ ...data, ts: new Date().toISOString() }) + "\n", "utf-8");
-    } catch {}
+      const line = JSON.stringify({ ...data, ts: new Date().toISOString() }) + "\n";
+      fs.appendFileSync(EVENTS_PATH, line, "utf-8");
+      // 旁路心跳文件：每次成功写入更新 mtime，用于诊断是否真的在写入
+      if (!_monitorEventWriteFailed) {
+        try { fs.writeFileSync(path.join(TEXTRON_HOME, "_events_heartbeat"), line.slice(0, 200), "utf-8"); } catch {}
+      }
+    } catch (e) {
+      _monitorEventWriteFailed = true;
+      const errMsg = (e as Error).message || String(e);
+      console.error(`[textron] recordMonitorEvent failed: ${errMsg}`, { path: EVENTS_PATH, size: fs.existsSync(EVENTS_PATH) ? fs.statSync(EVENTS_PATH).size : -1 });
+      // 旁路写入失败日志
+      try { fs.appendFileSync(path.join(TEXTRON_HOME, "_events_error.log"), `${new Date().toISOString()} | ${errMsg}\n`, "utf-8"); } catch {}
+    }
   }
   function appendArtifactAudit(data: Record<string, unknown>) {
     const entry = { ...data, ts: new Date().toISOString() };
@@ -1178,6 +1295,10 @@ export default function (pi: ExtensionAPI) {
       .slice(0, limit)
       .map((n) => ({ id: n.id, score: Number(n.score.toFixed(4)) }));
   }
+  function forwardTopK(): number {
+    const raw = Number(process.env.TEXTRON_FORWARD_TOP_K || "3");
+    return Number.isFinite(raw) ? Math.max(1, Math.min(8, Math.floor(raw))) : 3;
+  }
   function tokenSet(text: string): Set<string> {
     return new Set(String(text || "").toLowerCase().split(/[\s,，。！？、:：;；()\[\]{}<>"'`/\\|+=_-]+/).filter((w) => w.length > 2));
   }
@@ -1188,19 +1309,6 @@ export default function (pi: ExtensionAPI) {
     let hit = 0;
     for (const w of aa) if (bb.has(w)) hit++;
     return Number((hit / Math.min(aa.size, bb.size)).toFixed(4));
-  }
-  function buildPathAudit(net: NonNullable<ReturnType<typeof loadNetwork>>, taskText: string, highEntropy: string, activatedIds: string[]) {
-    const targetText = `${taskText || ""}\n${highEntropy || ""}`;
-    const nodes = activatedIds.map((id) => {
-      const parsed = parseLayerNodeId(id);
-      const nodePath = parsed ? path.join(net.path, `layer_${parsed.layer}`, `${parsed.nodeId}.html`) : "";
-      const name = parsed ? readNodeName(nodePath) : "";
-      const content = parsed ? readNodeContent(nodePath) : "";
-      return { id, name: preview(name, 80), contentPreview: preview(content, 120), overlap: overlapScore(targetText, `${name} ${content}`) };
-    });
-    const maxOverlap = nodes.reduce((m, n) => Math.max(m, n.overlap), 0);
-    const label = maxOverlap >= 0.18 ? "high" : maxOverlap >= 0.07 ? "medium" : "low";
-    return { label, maxOverlap, nodes };
   }
   function readMonitorEvents(limit = 60): Record<string, unknown>[] {
     try {
@@ -1360,7 +1468,7 @@ export default function (pi: ExtensionAPI) {
       }
       return { name, content };
     });
-    const route = chooseTaskFamilyRoute({ prompt, candidates, explicitTaskFamily });
+    const route = chooseTaskFamilyRoute({ prompt, candidates, explicitTaskFamily, allowBestEffort: true });
     recordMonitorEvent({ type: "trace", action: "route_policy_decision", promptPreview: preview(prompt, 180), explicitTaskFamily: explicitTaskFamily || "", taskFamily: route.taskFamily || "", reason: route.reason, score: Number(route.score.toFixed(4)) });
     return route.taskFamily;
   }
@@ -1429,10 +1537,18 @@ export default function (pi: ExtensionAPI) {
     });
   });
 
+  // baseUrl may already end with a version segment (/v1, /v3, /v1beta...).
+  // Never blind-append /v1 — volcengine ark uses /api/plan/v3 → /v3/v1/... = HTTP 404 empty body.
+  function joinApiEndpoint(baseUrl: string, apiPath: string): string {
+    const b = String(baseUrl).replace(/\/+$/, "");
+    return /\/v\d+[a-z]*$/i.test(b) ? `${b}${apiPath}` : `${b}/v1${apiPath}`;
+  }
+
   async function scoreL0WithLLM(
     l0Nodes,
     userPrompt,
     ctx,
+    networkPath?: string,
   ) {
     const model = (ctx as any).model || _textronModel;
     const l0StartedMs = Date.now();
@@ -1457,13 +1573,22 @@ export default function (pi: ExtensionAPI) {
     }
 
     const baseUrl = String(model.baseUrl).replace(/\/+$/, "");
-    const endpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+    const endpoint = joinApiEndpoint(baseUrl, "/chat/completions");
 
     const { apiKey, source: apiKeySource } = await resolveModelApiKey(ctx, model);
     log(`Textron L0: model=${model.id} baseUrl=${model.baseUrl} provider=${model.provider} apiKey=${apiKeySource}`);
 
+    const statsPath = networkPath ? path.join(networkPath, "_node_stats.json") : "";
+    const nodeStats = readJson<Record<string, { success: number; failure: number }>>(statsPath, {});
     const nodesList = l0Nodes
-      .map((n) => `${n.id}: ${(n.name || compressNodeName(n.content) || "(empty)").slice(0, 80)}`)
+      .map((n) => {
+        const key = `L0::${n.id}`;
+        const s = nodeStats[key];
+        const statLine = s && (s.success + s.failure) > 0
+          ? ` [战绩: 激活${s.success + s.failure}·成${s.success}·败${s.failure}]`
+          : "";
+        return `${n.id}: ${(n.name || compressNodeName(n.content) || "(empty)").slice(0, 80)}${statLine}`;
+      })
       .join("\n");
 
     function normalizeScores(parsed: Record<string, unknown>) {
@@ -1479,43 +1604,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     function extractJsonObject(rawParts: string[]) {
-      const raw = rawParts.filter(Boolean).join("\n").trim();
-      if (!raw) throw new Error("Empty response content");
-      const candidates: string[] = [];
-      candidates.push(raw);
-      const marker = raw.lastIndexOf("---JSON---");
-      if (marker >= 0) candidates.push(raw.slice(marker + "---JSON---".length).trim());
-      const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      if (fence?.[1]) candidates.push(fence[1].trim());
-
-      // Balanced brace extraction; robust when reasoning text surrounds JSON.
-      for (let i = 0; i < raw.length; i++) {
-        if (raw[i] !== "{") continue;
-        let depth = 0;
-        for (let j = i; j < raw.length; j++) {
-          const ch = raw[j];
-          if (ch === "{") depth++;
-          else if (ch === "}") {
-            depth--;
-            if (depth === 0) {
-              candidates.push(raw.slice(i, j + 1));
-              break;
-            }
-          }
-        }
-      }
-      // Prefer later/longer candidates; final answer usually appears last.
-      candidates.sort((a, b) => a.length - b.length);
-      let lastErr: unknown = null;
-      for (let i = candidates.length - 1; i >= 0; i--) {
-        try { return JSON.parse(candidates[i]); }
-        catch (e) { lastErr = e; }
-      }
-      throw lastErr || new Error("No JSON object found");
+      return parseNodeScores(rawParts.filter(Boolean).join("\n"));
     }
 
     const messages = [
-      { role: "system", content: 'Return ONLY a valid JSON object. Score each Layer-0 node from 0.0 to 1.0 based ONLY on its compressed name relevance to the user task. Do not use long context. Keys must be L0::node_X. Example: {"L0::node_0":0.8,"L0::node_1":0.0}' },
+      { role: "system", content: 'Score each Layer-0 node 0.0-1.0 by semantic relevance to the user task. Prefer a compact JSON object. If JSON is unavailable, return one score per line as L0::node_X=0.80. No explanation. Nodes with [战绩] showing high failure count score lower; high success scores higher.' },
       { role: "user", content: `Task: ${userPrompt.slice(0, 800)}\n\nNodes:\n${nodesList}` },
     ];
 
@@ -1532,14 +1625,14 @@ export default function (pi: ExtensionAPI) {
       const requestBody: Record<string, unknown> = { model: model.id, messages };
       if (attempt.maxParam) requestBody[attempt.maxParam] = attempt.tokens || 4096;
       if (attempt.temperature) requestBody.temperature = 0;
-      if (attempt.reasoningEffort) requestBody.reasoning_effort = "low";
+      if (attempt.reasoningEffort) requestBody.reasoning_effort = "minimal";
       if (attempt.jsonMode) requestBody.response_format = { type: "json_object" };
 
       const res = await fetch(endpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(25000),
       });
       const rawBody = await res.text();
       let data;
@@ -1554,12 +1647,12 @@ export default function (pi: ExtensionAPI) {
     async function callResponsesScorer() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-      const responsesEndpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
+      const responsesEndpoint = joinApiEndpoint(baseUrl, "/responses");
       const requestBody: Record<string, unknown> = {
         model: model.id,
         input: messages,
-        max_output_tokens: 4096,
-        reasoning: { effort: "low" },
+        max_output_tokens: 512,
+        reasoning: { effort: "minimal" },
         text: { format: { type: "json_object" } },
       };
       const res = await fetch(responsesEndpoint, {
@@ -1593,7 +1686,7 @@ export default function (pi: ExtensionAPI) {
       const requestBody: Record<string, unknown> = {
         model: model.id,
         messages,
-        max_completion_tokens: 4096,
+        max_completion_tokens: 512,
         tools: [{
           type: "function",
           function: {
@@ -1679,8 +1772,8 @@ export default function (pi: ExtensionAPI) {
         model: model.id,
         messages,
         stream: true,
-        max_completion_tokens: 8192,
-        reasoning_effort: "low",
+        max_completion_tokens: 512,
+        reasoning_effort: "minimal",
       };
       const res = await fetch(endpoint, {
         method: "POST",
@@ -1700,20 +1793,20 @@ export default function (pi: ExtensionAPI) {
     async function callStreamingResponsesScorer() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-      const responsesEndpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
+      const responsesEndpoint = joinApiEndpoint(baseUrl, "/responses");
       const requestBody: Record<string, unknown> = {
         model: model.id,
         input: messages,
         stream: true,
-        max_output_tokens: 8192,
-        reasoning: { effort: "low" },
+        max_output_tokens: 512,
+        reasoning: { effort: "minimal" },
         text: { format: { type: "json_object" } },
       };
       const res = await fetch(responsesEndpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
@@ -1725,11 +1818,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const attempts = [
-      { jsonMode: true, label: "json_mode/max_tokens/temp0", maxParam: "max_tokens" as const, tokens: 4096, temperature: true },
-      { jsonMode: false, label: "plain/max_tokens/temp0", maxParam: "max_tokens" as const, tokens: 4096, temperature: true },
-      { jsonMode: false, label: "plain/max_completion_tokens/reasoning_min", maxParam: "max_completion_tokens" as const, tokens: 8192, reasoningEffort: true },
-      { jsonMode: false, label: "plain/max_completion_tokens", maxParam: "max_completion_tokens" as const, tokens: 8192 },
-      { jsonMode: false, label: "plain/minimal" },
+      { jsonMode: true, label: "json_mode/max_tokens/temp0", maxParam: "max_tokens" as const, tokens: 384, temperature: true },
     ];
     const errors: string[] = [];
     for (const attempt of attempts) {
@@ -1743,6 +1832,22 @@ export default function (pi: ExtensionAPI) {
         errors.push(err);
         recordMonitorEvent({ type: "trace", action: "l0_score_attempt_failed", mode: attempt.label, error: preview(err, 260), durationMs: Date.now() - l0StartedMs });
       }
+    }
+
+    // One bounded remote attempt, then deterministic local relevance.
+    // Slow provider fallbacks remain opt-in for diagnostics only.
+    if (process.env.TEXTRON_L0_SLOW_FALLBACK !== "1") {
+      const localScores = buildLocalScores(String(userPrompt || ""), l0Nodes);
+      recordMonitorEvent({
+        type: "trace",
+        action: "l0_score_local_fallback",
+        provider: model.provider,
+        durationMs: Date.now() - l0StartedMs,
+        remoteErrors: errors.map((e) => preview(e, 180)),
+        nonzeroCount: Object.values(localScores).filter((v) => v > 0).length,
+        topScores: topScores(localScores),
+      });
+      return localScores;
     }
 
     try {
@@ -1804,13 +1909,13 @@ export default function (pi: ExtensionAPI) {
     currentUserMessage: string,
     activatedIds: string[],
     ctx: any,
-  ): Promise<{ reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[] }> {
+  ): Promise<{ reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] }> {
     const model = (ctx as any).model || _textronModel;
     if (!model?.id || !model?.baseUrl) return { reward: 0, rationale: "no model" };
 
     const baseUrl = String(model.baseUrl).replace(/\/+$/, "");
-    const chatEndpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
-    const responsesEndpoint = baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
+    const chatEndpoint = joinApiEndpoint(baseUrl, "/chat/completions");
+    const responsesEndpoint = joinApiEndpoint(baseUrl, "/responses");
 
     const { apiKey } = await resolveModelApiKey(ctx, model);
 
@@ -1819,9 +1924,43 @@ export default function (pi: ExtensionAPI) {
       const nodePath = parsed ? path.join(net.path, `layer_${parsed.layer}`, `${parsed.nodeId}.html`) : "";
       const content = parsed ? readNodeContent(nodePath) : "";
       const name = parsed ? readNodeName(nodePath) : "";
-      return { id, name, content };
+      return { id, name, content, parsed };
     });
-    const pathAudit = buildPathAudit(net, previousTask, previousAssistantHighEntropy, activatedIds);
+
+    // ── Discover related nodes (TF-IDF similarity) for merge/delete candidates ──
+    // For each selected path node, find top-3 similar nodes in the SAME layer
+    // that are NOT on the selected path. LLM will decide: merge, delete, or keep.
+    const pathNodeKeySet = new Set(activatedIds);
+    const relatedNodes: { pathNodeId: string; relatedNodeId: string; layer: number; name: string; content: string; similarity: number }[] = [];
+    for (const pn of pathNodes) {
+      if (!pn.parsed) continue;
+      const scores = tfidfSimilarity(net, pn.name, pn.content);
+      const candidates: { key: string; score: number }[] = [];
+      for (const [key, score] of scores) {
+        if (score < 0.05) continue; // bigram tokenizer: related pairs ~0.12-0.20, noise p50~0.037
+        if (pathNodeKeySet.has(key)) continue; // skip nodes already on selected path
+        const rp = parseLayerNodeId(key);
+        if (!rp || rp.layer !== pn.parsed.layer) continue; // same layer only for merge/delete
+        candidates.push({ key, score });
+      }
+      candidates.sort((a, b) => b.score - a.score);
+      for (const c of candidates.slice(0, 3)) {
+        const rp = parseLayerNodeId(c.key)!;
+        const np = path.join(net.path, `layer_${rp.layer}`, `${rp.nodeId}.html`);
+        const rc = readNodeContent(np);
+        if (!rc) continue;
+        const rn = readNodeName(np) || compressNodeName(rc);
+        relatedNodes.push({
+          pathNodeId: pn.id,
+          relatedNodeId: c.key,
+          layer: rp.layer,
+          name: rn,
+          content: rc.slice(0, 160),
+          similarity: Number(c.score.toFixed(3)),
+        });
+      }
+    }
+
     const sbStartedMs = Date.now();
     recordMonitorEvent({
       type: "trace",
@@ -1833,39 +1972,67 @@ export default function (pi: ExtensionAPI) {
       previousTaskChars: previousTask.length,
       currentMessageChars: currentUserMessage.length,
       activatedIds,
-      pathAudit,
     });
 
     const previousCrystal = parseHighEntropyCrystal(previousAssistantHighEntropy ? `<HighEntropy>${previousAssistantHighEntropy}</HighEntropy>` : "");
-    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char entropy crystal","content":"<120 char high-entropy signal"}},"add_nodes":[{"layer":1,"name":"<48 char entropy crystal","content":"<120 char high-entropy signal"}]}';
+    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char","content":"<120 char"}},"add_nodes":[{"layer":1,"name":"<48 char","content":"<120 char"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"},{"action":"delete","node":"L1::node_8","rationale":"≤60 chars"}]}';
+    // ── Build filtered existing nodes list (top-8 per layer by TF-IDF relevance) ──
+    const existingNodesTfidf = tfidfSimilarity(net, previousTask.slice(0, 200), currentUserMessage.slice(0, 200));
+    const promptExisting = [...Array(net.hyperparams.layers.length)].map((_, l) => {
+      const nodes: { key: string; name: string; content: string; sim: number }[] = [];
+      for (let n = 0; n < net.hyperparams.layers[l]; n++) {
+        const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
+        const c = readNodeContent(np);
+        if (!c) continue;
+        const key = `L${l}::node_${n}`;
+        const name = readNodeName(np) || compressNodeName(c);
+        const sim = existingNodesTfidf.get(key) || 0;
+        nodes.push({ key, name, content: c, sim });
+      }
+      nodes.sort((a, b) => b.sim - a.sim);
+      const shown = nodes.slice(0, 8);
+      const hidden = nodes.length - shown.length;
+      const lines = shown.map(n => `  ${n.key} [sim=${n.sim.toFixed(2)}]: ${n.name} — ${n.content.slice(0, 80)}`);
+      if (hidden > 0) lines.push(`  ... (+${hidden} more in L${l})`);
+      return lines.length ? `Layer ${l} (${nodes.length} nodes, top-${shown.length} by relevance):\n${lines.join("\n")}` : `Layer ${l}: (all empty)`;
+    }).join("\n\n");
+
+    const promptRelated = relatedNodes.length > 0
+      ? relatedNodes.map(rn => `  ${rn.relatedNodeId} [sim=${rn.similarity} to ${rn.pathNodeId}]: ${rn.name} — ${rn.content}`).join("\n")
+      : "(none — all related nodes are on the selected path)";
+
     const messages = [
       { role: "system", content: `You are Textron semantic backward pass. NO reasoning, NO markdown fences, NO surrounding text — output ONLY the raw JSON object on a single line. Format: ${schemaHint}. reward is continuous -1.0..1.0 for how useful the selected path was for the previous task, inferred from the current user message; use 0 when evidence is unclear.
 
-CRITICAL RULES:
-1. ORTHOGONALITY: each node_update must be CONCEPTUALLY DISTINCT from existing same-layer nodes (shown below). Never produce content that overlaps >50% with an existing node. If all good slots are filled, use add_nodes to create a truly new concept.
-2. FAILURE CRYSTALLIZATION: if current user message indicates failure/wrong, distill the CORRECTION as a reusable "avoid X, do Y instead" principle. This is THE most valuable node type.
-3. SUCCESS CRYSTALLIZATION: if task succeeded, distill WHY — the specific decision/pattern/insight that worked. Not "task completed OK", but the reusable mechanism.
-4. NO TEMPLATE NODES: never output "Rule/tradeoff: Prefer: ..." or "Trigger+gain: ..." — these are meta-instructions, not knowledge.
-5. NO SESSION SUMMARIES: drop temporal references (最近/yesterday/last time), specific counts, timestamps. Extract the timeless principle.
-6. LAYER DIFFERENTIATION: L0=compact domain signal, L1=causal mechanism/tradeoff, L2=concrete tactic/implementation. Content must genuinely differ between layers, not just be the same text at different lengths.
-7. Ensure content is COMPLETE — no mid-sentence truncation.
-8. If selected path nodes are wrong-topic or already hold good unrelated knowledge, DO NOT overwrite them; emit add_nodes for the new concept instead.
-9. Prefer add_nodes when novelty is high: different domain/mechanism from all selected nodes, or update would merely append unrelated content to a good node.
-10. Every candidate MUST have both name and content. Follow skill-node style: name = shortest distinctive symbolic compression of content; content = high-entropy experience atom from the turn — reusable insight that would change future behavior/context selection in similar tasks, such as constraints, failure corrections, causal mechanisms, decision boundaries, validation signals, or strategy patterns. Never copy TextronSkill prior text into learned content.` },
-      { role: "user", content: `Previous user task:\n${previousTask.slice(0, 2000)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nContent: ${previousCrystal.content}` : `(invalid/missing: ${previousCrystal.reason || "none"})`}\n\nEXISTING nodes in same layers (DO NOT duplicate — produce ORTHOGONAL content):\n${[...Array(net.hyperparams.layers.length)].map((_, l) => {
-        const existing: string[] = [];
-        for (let n = 0; n < net.hyperparams.layers[l]; n++) {
-          const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
-          const c = readNodeContent(np);
-          if (c) existing.push(`  L${l}::node_${n}: ${readNodeName(np) || compressNodeName(c)} — ${c.slice(0, 80)}`);
-        }
-        return existing.length ? `Layer ${l} existing nodes:\n${existing.join("\n")}` : `Layer ${l}: (all empty)`;
-      }).join("\n\n")}\n\nSelected path nodes to update:\n${pathNodes.map(n => `${n.id}: name=${n.name || "(empty)"}; context=${n.content || "(empty)"}`).join("\n")}\n\nCurrent user message / feedback:\n${currentUserMessage.slice(0, 3000)}\n\nInstruction: distill reusable experience into skill-node objects. Each returned node must include name and content. Name is the compressed/symbolized entropy crystal of content; content is the high-entropy lesson/pattern/prohibition/method from the dialogue. Return node_updates for selected path nodes only when they are relevant or artifact-repair targets; otherwise use add_nodes. If previous task FAILED, encode the correction as "avoid X; prefer Y". If SUCCEEDED, encode the winning mechanism. Keep content ≤120 chars and COMPLETE.` },
+CRITICAL RULES (ordered by priority):
+1. MERGE/DELETE FIRST: you are given two groups — (A) selected path nodes and (B) RELATED nodes similar to path nodes. Analyze their semantic relationship FIRST, before anything else. If RELATED nodes exist, you MUST emit at least one node_action (merge/delete). Merge complementary nodes → combine content. Delete noise/stale/off-domain nodes. Be specific about which node merges into which and why. This is MANDATORY when RELATED section is non-empty — skipping it causes network bloat.
+2. node_actions format: {"action":"merge|delete", "source":"L1::node_x", "target":"L1::node_y", "rationale":"≤60 chars"}. For merge: content flows from source to target, then the empty source is removed by compaction/reindexing. For delete: use {"action":"delete", "node":"L1::node_x", "rationale":"≤60 chars"}.
+3. NODE_UPDATE preferred over add_nodes: Before adding, scan existing same-layer nodes — if ANY node covers a related concept (even loosely), UPDATE that node. add_nodes ONLY when the concept is PROVABLY orthogonal to ALL existing nodes.
+4. REWARD: continuous -1.0..1.0. Use the current user message as feedback signal to evaluate previous prediction/action. Negative for wrong prediction/mistake, positive for correct/useful output. 0 ONLY when evidence is truly ambiguous — NOT for off-topic tasks (see Rule 6).
+5. FAILURE → CORRECTION: distill as "avoid X → prefer Y" principle. SUCCESS → MECHANISM: distill WHY it worked.
+6. TASK_FAMILY GATE: if the previous task has NOTHING to do with this network's domain, output add_nodes:[] and node_updates:{} and reward=-1 (penalize irrelevant trigger). Do NOT add off-topic nodes.
+7. NO TEMPLATES, NO SESSION SUMMARIES: drop temporal references, counts. Extract timeless principle.
+8. LAYER MEANING: L0=compact domain signal, L1=causal mechanism/tradeoff, L2=concrete tactic.
+9. COMPLETE content ≤120 chars. name = 3-6 highest-entropy terms lifted from content (identifiers/domain signal words/key numbers, original words space-joined) — node scoring/routing sees ONLY the name. NOT a generic sentence, NOT a prefix truncation. ≤48 chars. Every candidate MUST have name+content.
+10. If you're unsure about merge → just merge. Over-merging is fixable later; under-merging causes permanent bloat.
+11. NEGATIVE REWARD MANDATE: when reward < -0.3, you MUST output node_updates encoding the FAILURE BOUNDARY — append "| 失效边界: <condition where this rule does NOT apply>" to node content. 3 consecutive negative rewards on the same path node → MUST use merge to consolidate it into a stronger node with prefix 【低置信】.` },
+      { role: "user", content: `Previous user task:\n${previousTask.slice(0, 2000)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nContent: ${previousCrystal.content}` : `(invalid/missing: ${previousCrystal.reason || "none"})`}\n\nEXISTING nodes (DO NOT duplicate — produce ORTHOGONAL content):\n${promptExisting}\n\nRELATED nodes (NOT on selected path — may need merge/delete to deduplicate):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.map(n => `${n.id}: name=${n.name || "(empty)"}; content=${n.content || "(empty)"}`).join("\n")}\n\nCurrent user message / feedback:\n${currentUserMessage.slice(0, 3000)}\n\nInstruction: distill reusable experience into skill-node objects. Each returned node must include name and content. Name=≤48 chars, 3-6 highest-entropy keywords lifted from Content (identifiers/domain words/numbers, space-joined) — never a generic summary sentence. Content=high-entropy lesson/pattern/prohibition/method. ALWAYS prefer node_updates over add_nodes — update an existing node when the concept overlaps >30% with it. Only add_nodes for PROVABLY NEW concepts orthogonal to all existing nodes. If task FAILED, encode "avoid X → prefer Y". If SUCCEEDED, encode the winning mechanism. ≤120 chars, COMPLETE. Review RELATED nodes vs selected path nodes — analyze their relationship and suggest operations (merge, delete, or distill). Do not skip when RELATED nodes exist.` },
     ];
+
+    // Log LLM input AFTER messages is fully constructed (was accidentally referenced before declaration — causing "Cannot access 'messages' before initialization")
+    recordMonitorEvent({
+      type: "trace",
+      action: "semantic_backward_llm_input",
+      taskFamily: path.basename(net.path),
+      systemPromptChars: messages[0].content.length,
+      userPromptChars: messages[1].content.length,
+      modelId: model?.id,
+      baseUrl: chatEndpoint,
+    });
 
     function clampReward(v: unknown) { return clamp(Number(v) || 0, -1, 1); }
     function normalize(obj: any) {
-      const out: { reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[] } = {
+      const out: { reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
         reward: clampReward(obj?.reward),
       };
       if (obj?.rationale) out.rationale = String(obj.rationale).slice(0, 120);
@@ -1895,9 +2062,32 @@ CRITICAL RULES:
         out.add_nodes = [];
         for (const n of obj.add_nodes.slice(0, 2)) {  // allow limited growth; gates below decide final promotion
           const layer = Number(n?.layer);
-          const content = completeContent(String(n?.content || n?.context || "").trim(), 120);
+          const content = completeContent(String(n?.content || n?.context || n?.name || "").trim(), 120);
           const name = completeContent(String(n?.name || compressNodeName(content)).trim(), 64);
           if (Number.isInteger(layer) && layer >= 0 && layer < net.hyperparams.layers.length && content && name && !isNgramFragmentContent(content) && !isNgramFragmentContent(name)) out.add_nodes.push({ layer, name, content });
+        }
+      }
+      if (Array.isArray(obj?.node_actions)) {
+        out.node_actions = [];
+        for (const a of obj.node_actions.slice(0, 4)) {
+          const action = String(a?.action || "").trim().toLowerCase();
+          if (action !== "merge" && action !== "delete" && action !== "keep") continue;
+          const entry: any = { action: action as "merge" | "delete" | "keep" };
+          if (a?.rationale) entry.rationale = String(a.rationale).slice(0, 80);
+          if (action === "merge") {
+            entry.source = String(a?.source || "").trim();
+            entry.target = String(a?.target || "").trim();
+            if (!entry.source || !entry.target) continue;
+            // Validate both nodes exist in network
+            const sp = parseLayerNodeId(entry.source); const tp = parseLayerNodeId(entry.target);
+            if (!sp || !tp || sp.layer !== tp.layer) continue; // merge only within same layer
+          } else if (action === "delete") {
+            entry.node = String(a?.node || "").trim();
+            if (!entry.node) continue;
+            const dp = parseLayerNodeId(entry.node);
+            if (!dp) continue;
+          }
+          out.node_actions.push(entry);
         }
       }
       return out;
@@ -1978,8 +2168,8 @@ CRITICAL RULES:
       // No reason_effort (triggers 8K+ reasoning chars in deepseek → timeout).
       // No response_format json_object (deepseek non-standard behavior can break parsing).
       // Plain text + system prompt "ONLY JSON" is faster and more reliable.
-      const body: Record<string, unknown> = { model: model.id, messages, stream, max_completion_tokens: 1024 };
-      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+      const body: Record<string, unknown> = { model: model.id, messages, stream, max_completion_tokens: 4096 };
+      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
       if (stream) {
         if (!res.ok) throw new Error(`chat stream HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
         return extract(await readSse(res as any));
@@ -2027,8 +2217,8 @@ CRITICAL RULES:
     async function callResponsesStream() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      const body = { model: model.id, input: messages, stream: true, max_output_tokens: 4096, reasoning: { effort: "low" }, text: { format: { type: "json_object" } } };
-      const res = await fetch(responsesEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+      const body = { model: model.id, input: messages, stream: true, max_output_tokens: 4096, reasoning: { effort: "minimal" }, text: { format: { type: "json_object" } } };
+      const res = await fetch(responsesEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
       if (!res.ok) throw new Error(`responses stream HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
       const parts = await readSse(res as any);
       const result = extract(parts);
@@ -2048,10 +2238,27 @@ CRITICAL RULES:
     }
 
     const errors: string[] = [];
-    for (const [label, fn] of [["chat_json", () => callChat(false)], ["chat_stream", () => callChat(true)], ["responses_stream", callResponsesStream]] as const) {
+    for (const [label, fn] of [["chat_json", () => callChat(false)]] as const) {
       try {
         const result = await fn();
         log(`Textron semantic backward LLM ok (${label}, reward=${result.reward.toFixed(3)})`);
+        // ── File log: full LLM input/output ──
+        try {
+          const logEntry = {
+            ts: new Date().toISOString(),
+            taskFamily: path.basename(net.path),
+            mode: label,
+            model: model?.id,
+            systemPrompt: messages[0].content,
+            userPrompt: messages[1].content,
+            parsed: { reward: result.reward, rationale: result.rationale, nodeUpdateIds: Object.keys(result.node_updates || {}), addNodes: (result.add_nodes || []).map((n: any) => ({ layer: n.layer, name: n.name })), nodeActions: (result.node_actions || []).map((a: any) => ({ action: a.action, source: a.source, target: a.target, node: a.node, rationale: a.rationale })) },
+          };
+          const logDir = path.join(net.path, "_sb_logs");
+          ensureDir(logDir);
+          fs.appendFileSync(path.join(logDir, "semantic_backward.jsonl"), JSON.stringify(logEntry) + "\n", "utf-8");
+        } catch (e) {
+          console.error(`[textron] semantic_backward.jsonl write failed: ${(e as Error).message}`);
+        }
         recordMonitorEvent({
           type: "trace",
           action: "semantic_backward_llm_done",
@@ -2062,7 +2269,6 @@ CRITICAL RULES:
           rationale: result.rationale || "",
           nodeUpdateIds: Object.keys(result.node_updates || {}),
           addNodeCount: (result.add_nodes || []).length,
-          pathAudit,
           durationMs: Date.now() - sbStartedMs,
         });
         return result;
@@ -2073,7 +2279,7 @@ CRITICAL RULES:
       }
     }
     log(`Textron semantic backward LLM failed (${errors.join(" | ")})`);
-    recordMonitorEvent({ type: "trace", action: "semantic_backward_llm_done", status: "failed", taskFamily: path.basename(net.path), errors: errors.map((e) => preview(e, 300)), pathAudit, durationMs: Date.now() - sbStartedMs });
+    recordMonitorEvent({ type: "trace", action: "semantic_backward_llm_done", status: "failed", taskFamily: path.basename(net.path), errors: errors.map((e) => preview(e, 300)), durationMs: Date.now() - sbStartedMs });
     return { reward: 0, rationale: "semantic backward failed" };
   }
 
@@ -2139,6 +2345,32 @@ CRITICAL RULES:
     return Object.keys(updates).length > 0 ? updates : undefined;
   }
 
+  function isTrivialBackwardTriggerMessage(message: string): boolean {
+    const s = String(message || "")
+      .replace(/\[local-coms[\s\S]*?\]\s*/g, " ")
+      .replace(/\[Reply normally[\s\S]*?\]\s*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!s || s.length > 420) return false;
+    return /(只回复一句|只回复|回复[“\"]?收到|不要分析|不要调用工具|收到|ack|ok|okay)/i.test(s);
+  }
+
+  function buildHighEntropyAddCandidate(
+    previousAssistantHighEntropy: string,
+    activatedIds: string[],
+  ): { layer: number; name: string; content: string } | undefined {
+    const crystal = parseHighEntropyCrystal(previousAssistantHighEntropy ? `<HighEntropy>${previousAssistantHighEntropy}</HighEntropy>` : "");
+    const content = (crystal.ok ? crystal.content : previousAssistantHighEntropy).replace(/\s+/g, " ").trim();
+    if (!content || isNgramFragmentContent(content)) return undefined;
+    const parsedLayers = activatedIds.map(parseLayerNodeId).filter(Boolean) as { layer: number; nodeId: string }[];
+    const targetLayer = parsedLayers.length ? parsedLayers.reduce((m, p) => Math.max(m, p.layer), 0) : undefined;
+    return {
+      layer: targetLayer ?? 2,
+      name: crystal.ok ? crystal.name : compressNodeName(content),
+      content,
+    };
+  }
+
   function applySemanticNodeUpdates(net: NonNullable<ReturnType<typeof loadNetwork>>, updates: Record<string, string | { name?: string; content?: string; context?: string }> | undefined, onLog: (msg: string) => void) {
     const result: {
       updated: number;
@@ -2172,7 +2404,7 @@ CRITICAL RULES:
 
       const similar = oldIsArtifact
         ? null
-        : findSimilarKnowledgeNode(net, compressNodeName(validation.content), validation.content, 0.24, parsed.layer, parsed.nodeId);
+        : findSimilarKnowledgeNode(net, compressNodeName(validation.content), validation.content, 0.40, parsed.layer, parsed.nodeId);
       if (similar) {
         const similarId = `L${similar.layer}::${similar.nodeId}`;
         const similarPath = path.join(net.path, `layer_${similar.layer}`, `${similar.nodeId}.html`);
@@ -2237,6 +2469,197 @@ CRITICAL RULES:
     return result;
   }
 
+  // ─── Expanded Auto Backward: edges + node CRUD in one pass ───────────
+  // Replaces old edge-only autoBackward(). Handles weight updates AND
+  // node content create/update/merge based on the single LLM call's output.
+  function autoBackward(
+    net: NonNullable<ReturnType<typeof loadNetwork>>,
+    activatedIds: string[],
+    reward: number,
+    onLog: (msg: string) => void,
+    selectedEdgeIds: string[] = [],
+    edgeRewards?: Map<string, number>,
+    nodeUpdates?: Record<string, string | { name?: string; content?: string; context?: string }>,
+    addNodes?: { layer: number; name?: string; content: string }[],
+    nodeActions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[],
+  ): {
+    changes: number; changedEdges: string[];
+    nodesUpdated: number; nodesAdded: number; nodesMerged: number; nodesDeleted: number; nodesSkipped: number;
+    nodeSkipReasons: string[];
+    changedNodes: { id: string; layer: number; nodeId: string; oldName: string; newName: string; oldContent: string; newContent: string }[];
+  } {
+    // ── Update node stats (success/failure for battle records) ──
+    (() => {
+      const statsP = path.join(net.path, "_node_stats.json");
+      const stats = readJson<Record<string, { success: number; failure: number; lastActivated: string }>>(statsP, {});
+      for (const nid of activatedIds) {
+        if (!stats[nid]) stats[nid] = { success: 0, failure: 0, lastActivated: "" };
+        stats[nid].lastActivated = new Date().toISOString();
+        if (reward > 0.1) stats[nid].success++;
+        else if (reward < -0.3) stats[nid].failure++;
+      }
+      writeJson(statsP, stats);
+    })();
+
+    // ── Edge weight updates ──
+    const lr = net.hyperparams.learningRate;
+    const activeEdgeSet = new Set<string>();
+    for (const edgeId of selectedEdgeIds) {
+      const key = selectedEdgeIdToWeightKey(edgeId);
+      if (key) activeEdgeSet.add(key);
+    }
+    if (activeEdgeSet.size === 0 && activatedIds.length > 1) {
+      const parsedPath = activatedIds
+        .map((id) => ({ raw: id, parsed: parseLayerNodeId(id) }))
+        .filter((x) => x.parsed !== null) as { raw: string; parsed: { layer: number; nodeId: string } }[];
+      parsedPath.sort((a, b) => a.parsed.layer - b.parsed.layer);
+      for (let i = 0; i < parsedPath.length - 1; i++) {
+        const a = parsedPath[i].parsed;
+        const b = parsedPath[i + 1].parsed;
+        if (b.layer === a.layer + 1) activeEdgeSet.add(`${a.layer}_to_${b.layer}:${a.nodeId}:${b.nodeId}`);
+      }
+    }
+
+    let changes = 0;
+    const changedEdges: string[] = [];
+    if (activeEdgeSet.size > 0) {
+      for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
+        for (const edge of edges) {
+          const eid = `${key}:${edge.from}:${edge.to}`;
+          if (!activeEdgeSet.has(eid)) continue;
+          const old = edge.weight;
+          const edgeR = edgeRewards?.get(eid) ?? reward;
+          if (edgeR > 0) edge.weight = clamp(old + lr * edgeR * (1 - old), -1, 1);
+          else if (edgeR < 0) edge.weight = clamp(old + lr * edgeR * (1 + old), -1, 1);
+          if (Math.abs(edge.weight - old) > 0.000001) {
+            changes++;
+            changedEdges.push(`${eid}:${old.toFixed(4)}->${edge.weight.toFixed(4)}`);
+          }
+        }
+      }
+      if (changes > 0) {
+        writeJson(path.join(net.path, "weights.json"), net.weights);
+        onLog(`Textron backward: ${changes} selected edge(s) updated (reward=${reward.toFixed(3)}) for "${path.basename(net.path)}"`);
+      }
+      // Negative reward: lightly penalize ALL edges connected to activated nodes
+      if (reward < 0 && activatedIds.length > 0) {
+        const activatedNodeKeys = new Set<string>();
+        for (const id of activatedIds) {
+          const parsed = parseLayerNodeId(id);
+          if (parsed) activatedNodeKeys.add(parsed.nodeId);
+        }
+        const penaltyRate = lr * Math.abs(reward) * 0.3;
+        let extraChanges = 0;
+        for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
+          for (const edge of edges) {
+            if (activatedNodeKeys.has(edge.from) || activatedNodeKeys.has(edge.to)) {
+              const eid = `${key}:${edge.from}:${edge.to}`;
+              if (activeEdgeSet.has(eid)) continue;
+              const old = edge.weight;
+              edge.weight = clamp(old - penaltyRate * (1 + old), -1, 1);
+              if (Math.abs(edge.weight - old) > 0.000001) {
+                extraChanges++;
+                changedEdges.push(`${eid}:${old.toFixed(4)}->${edge.weight.toFixed(4)} [noise_penalty]`);
+              }
+            }
+          }
+        }
+        if (extraChanges > 0) {
+          writeJson(path.join(net.path, "weights.json"), net.weights);
+          onLog(`Textron backward: ${extraChanges} extra connected-edge(s) penalized (noise suppression) for "${path.basename(net.path)}"`);
+        }
+      }
+    }
+
+    // ── Node content updates ──
+    const nodeResult = applySemanticNodeUpdates(net, nodeUpdates, onLog);
+
+    // ── Node additions ──
+    let nodesAdded = 0, nodesMerged = 0, nodesAddSkipped = 0;
+    const addSkipReasons: string[] = [];
+    for (const node of addNodes || []) {
+      const validation = validateKnowledgeCrystal(node.content, node.layer);
+      if (!validation.ok) {
+        nodesAddSkipped++;
+        addSkipReasons.push(`L${node.layer}:${validation.reason}`);
+        onLog(`Textron autoBackward: skipped add_node L${node.layer} (${validation.reason})`);
+        continue;
+      }
+      const targetLayer = chooseExpansionLayer(net, node.layer);
+      const nodeName = node.name || compressNodeName(validation.content);
+      const similar = findSimilarKnowledgeNode(net, nodeName, validation.content, 0.40, targetLayer);
+      if (similar) {
+        dlog("GATE", `autoBackward: merged similar add_node (${nodeName.slice(0, 30)}) → L${similar.layer}::${similar.nodeId} (${(similar.score*100).toFixed(0)}%)`);
+        updateExistingNodeByPolicy(net, similar.layer, similar.nodeId, nodeName, validation.content, onLog);
+        nodesMerged++;
+        continue;
+      }
+      const created = addPolicyNode(net, node.layer, validation.content, onLog, node.name, undefined, { mergeSimilar: true, similarityThreshold: 0.40 });
+      if (created.added || created.replaced) nodesAdded++;
+      else if (created.merged) nodesMerged++;
+      else if (created.skipped) { nodesAddSkipped++; addSkipReasons.push(`L${node.layer}:${created.reason || "frozen_skip"}`); }
+    }
+
+    // ── Node actions: merge / delete ──
+    let nodesDeleted = 0;
+    for (const action of nodeActions || []) {
+      if (action.action === "merge" && action.source && action.target) {
+        const sp = parseLayerNodeId(action.source);
+        const tp = parseLayerNodeId(action.target);
+        if (!sp || !tp || sp.layer !== tp.layer) continue;
+        const srcPath = path.join(net.path, `layer_${sp.layer}`, `${sp.nodeId}.html`);
+        const tgtPath = path.join(net.path, `layer_${tp.layer}`, `${tp.nodeId}.html`);
+        const srcContent = readNodeContent(srcPath);
+        const tgtContent = readNodeContent(tgtPath);
+        if (!srcContent || !tgtContent) continue;
+        const merged = mergeContent(tgtContent, srcContent);
+        const outEdges = (net.weights.layer_connections[`${tp.layer}_to_${tp.layer + 1}`] || []).filter(e => e.from === tp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(tgtPath, tp.layer, tp.nodeId, merged, outEdges, compressNodeName(merged));
+        // Empty source only transiently; compactEmptyNodes removes/reindexes empty shells below.
+        const srcOutEdges = (net.weights.layer_connections[`${sp.layer}_to_${sp.layer + 1}`] || []).filter(e => e.from === sp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(srcPath, sp.layer, sp.nodeId, "", srcOutEdges);
+        // Reset ngram state for emptied source
+        try {
+          const ngramPath = srcPath.replace(/\.html$/, ".ngram.json");
+          if (fs.existsSync(ngramPath)) writeNgramState(srcPath, createNodeState());
+        } catch {}
+        nodesMerged++;
+        onLog(`Textron autoBackward: merged ${action.source} into ${action.target} — "${preview(srcContent, 40)}" → "${preview(merged, 60)}" (source queued for compaction)`);
+      } else if (action.action === "delete" && action.node) {
+        const dp = parseLayerNodeId(action.node);
+        if (!dp) continue;
+        const nodePath = path.join(net.path, `layer_${dp.layer}`, `${dp.nodeId}.html`);
+        const oldContent = readNodeContent(nodePath);
+        if (!oldContent) continue;
+        const outEdges = (net.weights.layer_connections[`${dp.layer}_to_${dp.layer + 1}`] || []).filter(e => e.from === dp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(nodePath, dp.layer, dp.nodeId, "", outEdges);
+        // Reset ngram state
+        try {
+          const ngramPath = nodePath.replace(/\.html$/, ".ngram.json");
+          if (fs.existsSync(ngramPath)) writeNgramState(nodePath, createNodeState());
+        } catch {}
+        nodesDeleted++;
+        onLog(`Textron autoBackward: deleted ${action.node} — "${preview(oldContent, 60)}"${action.rationale ? ` (${action.rationale})` : ""}`);
+      }
+    }
+
+    // Persist if anything changed
+    const nodesCompacted = compactEmptyNodes(net, onLog);
+
+    if (nodeResult.updated > 0 || nodesAdded > 0 || nodesMerged > 0 || nodesDeleted > 0 || nodesCompacted > 0) {
+      net.hyperparams.updatedAt = new Date().toISOString();
+      writeJson(path.join(net.path, "hyperparams.json"), net.hyperparams);
+    }
+
+    return {
+      changes, changedEdges,
+      nodesUpdated: nodeResult.updated, nodesAdded, nodesMerged, nodesDeleted: nodesDeleted + nodesCompacted,
+      nodesSkipped: nodeResult.skipped + nodesAddSkipped,
+      nodeSkipReasons: [...nodeResult.skipReasons, ...addSkipReasons],
+      changedNodes: nodeResult.changedNodes,
+    };
+  }
+
   async function forcedSemanticBackward(
     taskFamily: string,
     previousTask: string,
@@ -2250,11 +2673,16 @@ CRITICAL RULES:
     const startedAt = new Date(startedMs).toISOString();
     const net = loadNetwork(taskFamily);
     if (!net) return null;
-    const pathAudit = buildPathAudit(net, previousTask, previousAssistantHighEntropy, activatedIds);
-    let result = await semanticBackwardLLM(net, previousTask, previousAssistantHighEntropy, currentUserMessage, activatedIds, ctx);
-    // If all selected nodes are wrong-topic, avoid overwriting unrelated useful memory.
-    // Do NOT force capacity growth; add_nodes now means merge/fill/replace under frozen-shape gates.
-    const shouldPreferAddNode = pathAudit.label === "low" || /新增|add[_ -]?nodes?|new node|wrong-topic|跑题|偏题|不触发|覆盖|容量|novel/i.test(currentUserMessage);
+    const currentIsTrivialTrigger = isTrivialBackwardTriggerMessage(currentUserMessage);
+    const feedbackForLearning = currentIsTrivialTrigger
+      ? "Trigger-only follow-up; learn from previous assistant HighEntropy, not from this acknowledgement."
+      : currentUserMessage;
+    let result = await semanticBackwardLLM(net, previousTask, previousAssistantHighEntropy, feedbackForLearning, activatedIds, ctx);
+
+    // The LLM now judges path relevance itself via reward — no separate pathAudit needed.
+    // Negative reward = LLM determined path was wrong/irrelevant.
+    // shouldPreferAddNode: when user explicitly wants new concepts (regex match).
+    const shouldPreferAddNode = /新增|add[_ -]?nodes?|new node|wrong-topic|跑题|偏题|不触发|覆盖|容量|novel/i.test(currentUserMessage);
     if (shouldPreferAddNode) {
       const originalUpdateIds = Object.keys(result.node_updates || {});
       const repairOnlyUpdates: typeof result.node_updates = {};
@@ -2266,94 +2694,45 @@ CRITICAL RULES:
       }
       if (originalUpdateIds.length !== Object.keys(repairOnlyUpdates).length) {
         result = { ...result, node_updates: repairOnlyUpdates };
-        recordMonitorEvent({ type: "trace", action: "semantic_node_updates_suppressed_for_add_candidate", taskFamily, reason: pathAudit.label === "low" ? "low_path_overlap" : "user_requested_new_concept", suppressedIds: originalUpdateIds.filter((id) => !Object.prototype.hasOwnProperty.call(repairOnlyUpdates, id)), preservedArtifactRepairIds: Object.keys(repairOnlyUpdates) });
+        recordMonitorEvent({ type: "trace", action: "semantic_node_updates_suppressed_for_add_candidate", taskFamily, reason: "user_requested_new_concept", suppressedIds: originalUpdateIds.filter((id) => !Object.prototype.hasOwnProperty.call(repairOnlyUpdates, id)), preservedArtifactRepairIds: Object.keys(repairOnlyUpdates) });
       }
     }
-    if (shouldPreferAddNode && previousAssistantHighEntropy) {
+    if ((shouldPreferAddNode || currentIsTrivialTrigger) && previousAssistantHighEntropy) {
       const existingAdd = result.add_nodes || [];
       if (existingAdd.length === 0) {
-        const targetLayer = activatedIds.map(parseLayerNodeId).filter(Boolean).reduce((m, p) => Math.max(m, (p as { layer: number; nodeId: string }).layer), 0);
-        const crystal = parseHighEntropyCrystal(previousAssistantHighEntropy ? `<HighEntropy>${previousAssistantHighEntropy}</HighEntropy>` : "");
-        const synthesizedContent = crystal.ok ? crystal.content : completeContent(previousAssistantHighEntropy, 120);
-        const synthesizedName = crystal.ok ? crystal.name : compressNodeName(synthesizedContent);
-        if (!synthesizedContent || isNgramFragmentContent(synthesizedContent)) {
-          recordMonitorEvent({ type: "trace", action: "semantic_add_node_synthesize_skip", taskFamily, reason: crystal.reason || "invalid_highentropy", targetLayer, highEntropyPreview: preview(previousAssistantHighEntropy, 180) });
-        } else result = {
-          ...result,
-          add_nodes: [{
-            layer: targetLayer,
-            name: synthesizedName,
-            content: synthesizedContent,
-          }],
-        };
-        recordMonitorEvent({ type: "trace", action: "semantic_add_node_synthesized", taskFamily, reason: pathAudit.label === "low" ? "low_path_overlap" : "user_requested_new_concept", targetLayer, contentPreview: preview(previousAssistantHighEntropy, 180) });
-      }
-    }
-    // Default tiny positive reward only when a real selected edge path exists.
-    // No-edge turns must not reinforce incomplete/bad L0-only paths. Negative
-    // feedback or wrong-topic paths get explicit negative credit assignment.
-    const baseReward = Math.abs(result.reward) < 0.001 ? (selectedEdgeIds.length > 0 ? 0.02 : 0) : result.reward;
-    const credit = assignEdgeCredit({
-      selectedEdgeIds,
-      baseReward,
-      feedbackText: currentUserMessage,
-      pathAuditLabel: pathAudit.label as "high" | "medium" | "low",
-    });
-    const effectiveReward = credit.reward;
-    if (credit.reason !== "normal") {
-      recordMonitorEvent({ type: "trace", action: "semantic_negative_credit", taskFamily, reason: credit.reason, baseReward, effectiveReward, selectedEdgeIds });
-    }
-    const edgeUpdate = autoBackward(net, activatedIds, effectiveReward, log, selectedEdgeIds, credit.edgeRewards);
-    let nodeUpdate = applySemanticNodeUpdates(net, result.node_updates, log);
-    recordMonitorEvent({ type: "trace", action: "semantic_node_update_apply", taskFamily, requestedIds: Object.keys(result.node_updates || {}), updated: nodeUpdate.updated, skipped: nodeUpdate.skipped, skipReasons: nodeUpdate.skipReasons.slice(0, 8), changedNodes: nodeUpdate.changedNodes });
-    let highEntropyFallbackNode = "";
-    if (nodeUpdate.updated === 0 && previousAssistantHighEntropy) {
-      const fallbackUpdates = buildHighEntropyFallbackNodeUpdate(previousAssistantHighEntropy, activatedIds);
-      if (fallbackUpdates) {
-        const fallbackNode = Object.keys(fallbackUpdates)[0] || "";
-        const fallbackUpdate = applySemanticNodeUpdates(net, fallbackUpdates, log);
-        nodeUpdate.updated += fallbackUpdate.updated;
-        nodeUpdate.skipped += fallbackUpdate.skipped;
-        nodeUpdate.skipReasons.push(...fallbackUpdate.skipReasons.map((r) => `fallback:${r}`));
-        nodeUpdate.changedNodes.push(...fallbackUpdate.changedNodes.map((ch) => ({ ...ch, id: `fallback:${ch.id}` })) );
-        recordMonitorEvent({ type: "trace", action: "highentropy_fallback_apply", taskFamily, targetNode: fallbackNode, updated: fallbackUpdate.updated, skipped: fallbackUpdate.skipped, skipReasons: fallbackUpdate.skipReasons.slice(0, 8), changedNodes: fallbackUpdate.changedNodes, highEntropyPreview: preview(previousAssistantHighEntropy, 180) });
-        if (fallbackUpdate.updated > 0) {
-          highEntropyFallbackNode = fallbackNode;
-          log(`Textron semantic backward: HighEntropy fallback updated ${fallbackNode}`);
+        const candidate = buildHighEntropyAddCandidate(previousAssistantHighEntropy, activatedIds);
+        if (!candidate) {
+          recordMonitorEvent({ type: "trace", action: "semantic_add_node_synthesize_skip", taskFamily, reason: "invalid_highentropy", highEntropyPreview: preview(previousAssistantHighEntropy, 180) });
+        } else {
+          result = { ...result, add_nodes: [candidate] };
+          recordMonitorEvent({ type: "trace", action: "semantic_add_node_synthesized", taskFamily, reason: currentIsTrivialTrigger ? "trivial_trigger_highentropy" : "user_requested_new_concept", targetLayer: candidate.layer, contentPreview: preview(candidate.content, 180) });
         }
+      }
+    }
+
+    // Use LLM's reward directly — no external credit adjustment.
+    // Default tiny positive only when real edge path exists and LLM gave neutral reward.
+    const effectiveReward = Math.abs(result.reward) < 0.001 ? (selectedEdgeIds.length > 0 ? 0.02 : 0) : result.reward;
+
+    // Single unified backward: edges + node updates + node additions
+    const bwResult = autoBackward(net, activatedIds, effectiveReward, log, selectedEdgeIds, undefined, result.node_updates, result.add_nodes, result.node_actions);
+    recordMonitorEvent({ type: "trace", action: "semantic_backward_apply", taskFamily, reward: effectiveReward, llmReward: result.reward, edgesUpdated: bwResult.changes, nodesUpdated: bwResult.nodesUpdated, nodesAdded: bwResult.nodesAdded, nodesMerged: bwResult.nodesMerged, nodesSkipped: bwResult.nodesSkipped, skipReasons: bwResult.nodeSkipReasons.slice(0, 8), changedNodes: bwResult.changedNodes });
+
+    // HighEntropy fallback: if no node update happened, synthesize from previous assistant
+    let highEntropyFallbackNode = "";
+    if (bwResult.nodesUpdated === 0 && previousAssistantHighEntropy) {
+      const candidate = buildHighEntropyAddCandidate(previousAssistantHighEntropy, activatedIds);
+      if (candidate) {
+        // Re-run autoBackward with just this fallback add_node
+        const fallbackResult = autoBackward(net, activatedIds, effectiveReward, log, selectedEdgeIds, undefined, undefined, [candidate]);
+        bwResult.nodesAdded += fallbackResult.nodesAdded;
+        bwResult.nodesMerged += fallbackResult.nodesMerged;
+        bwResult.nodesSkipped += fallbackResult.nodesSkipped;
+        highEntropyFallbackNode = `add_candidate:L${candidate.layer}`;
+        recordMonitorEvent({ type: "trace", action: "highentropy_fallback_add_candidate", taskFamily, targetLayer: candidate.layer, highEntropyPreview: preview(candidate.content, 180) });
       } else {
-        recordMonitorEvent({ type: "trace", action: "highentropy_fallback_skip", taskFamily, reason: "no_activated_path_or_empty_highentropy", activatedIds, hasHighEntropy: !!previousAssistantHighEntropy });
+        recordMonitorEvent({ type: "trace", action: "highentropy_fallback_skip", taskFamily, reason: "invalid_or_empty_highentropy", activatedIds, hasHighEntropy: !!previousAssistantHighEntropy });
       }
-    }
-    let added = 0;
-    let merged = 0;
-    let addSkipped = 0;
-    const addSkipReasons: string[] = [];
-    for (const node of result.add_nodes || []) {
-      const validation = validateKnowledgeCrystal(node.content, node.layer);
-      if (!validation.ok) {
-        addSkipped++;
-        addSkipReasons.push(`L${node.layer}:${validation.reason}`);
-        log(`Textron semantic backward: skipped add_node L${node.layer} (${validation.reason})`);
-        continue;
-      }
-      const targetLayer = chooseExpansionLayer(net, node.layer);
-      const nodeName = node.name || compressNodeName(validation.content);
-      const similar = findSimilarKnowledgeNode(net, nodeName, validation.content, 0.24, targetLayer);
-      if (similar) {
-        dlog("GATE", `semantic backward: merged similar add_node (${nodeName.slice(0, 30)}) → L${similar.layer}::${similar.nodeId} (${(similar.score*100).toFixed(0)}%)`);
-        updateExistingNodeByPolicy(net, similar.layer, similar.nodeId, nodeName, validation.content, log);
-        merged++;
-        continue;
-      }
-      const created = addPolicyNode(net, node.layer, validation.content, log, node.name, undefined, { mergeSimilar: true, similarityThreshold: 0.24 });
-      if (created.added || created.replaced) added++;
-      else if (created.merged) merged++;
-      else if (created.skipped) { addSkipped++; addSkipReasons.push(`L${node.layer}:${created.reason || "frozen_skip"}`); }
-    }
-    if (nodeUpdate.updated > 0 || added > 0 || merged > 0) {
-      net.hyperparams.updatedAt = new Date().toISOString();
-      writeJson(path.join(net.path, "hyperparams.json"), net.hyperparams);
     }
 
     // ── n-gram distillation ──
@@ -2431,11 +2810,11 @@ CRITICAL RULES:
     const durationMs = Date.now() - startedMs;
     const qualityScore = clamp(
       (Math.max(0, effectiveReward) * 0.35) +
-      (edgeUpdate.changes > 0 ? 0.20 : 0) +
-      (nodeUpdate.updated > 0 ? 0.25 : 0) +
-      ((added + merged) > 0 ? 0.15 : 0) +
+      (bwResult.changes > 0 ? 0.20 : 0) +
+      (bwResult.nodesUpdated > 0 ? 0.25 : 0) +
+      ((bwResult.nodesAdded + bwResult.nodesMerged) > 0 ? 0.15 : 0) +
       (previousAssistantHighEntropy ? 0.05 : 0) -
-      ((nodeUpdate.updated + added + merged) === 0 ? 0.15 : 0),
+      ((bwResult.nodesUpdated + bwResult.nodesAdded + bwResult.nodesMerged) === 0 ? 0.15 : 0),
       0,
       1,
     );
@@ -2452,24 +2831,24 @@ CRITICAL RULES:
       durationMs,
       hasHighEntropy: !!previousAssistantHighEntropy,
       highEntropyFallbackNode,
-      nodesUpdated: nodeUpdate.updated,
-      nodesAdded: added,
-      nodesMerged: merged,
-      nodesSkipped: nodeUpdate.skipped + addSkipped,
-      skipReasons: [...nodeUpdate.skipReasons, ...addSkipReasons].slice(0, 8),
-      edgesUpdated: edgeUpdate.changes,
-      changedEdges: edgeUpdate.changedEdges,
-      changedNodes: nodeUpdate.changedNodes,
+      nodesUpdated: bwResult.nodesUpdated,
+      nodesAdded: bwResult.nodesAdded,
+      nodesMerged: bwResult.nodesMerged,
+      nodesDeleted: bwResult.nodesDeleted,
+      nodesSkipped: bwResult.nodesSkipped,
+      skipReasons: bwResult.nodeSkipReasons.slice(0, 8),
+      edgesUpdated: bwResult.changes,
+      changedEdges: bwResult.changedEdges,
+      changedNodes: bwResult.changedNodes,
       distillCount,
       distillEvents,
       activatedIds,
       selectedEdgeIds,
-      pathAudit,
       startedAt,
       at: new Date().toISOString(),
     };
     dlog("BACKWARD", "forcedSemanticBackward DONE", lastBackwardState);
-    log(`Textron semantic backward: status=done quality=${qualityLabel}(${qualityScore.toFixed(2)}), reward=${effectiveReward.toFixed(3)} (LLM=${result.reward.toFixed(3)}), edgesUpdated=${edgeUpdate.changes}, nodesUpdated=${nodeUpdate.updated}, nodesAdded=${added}, nodesMerged=${merged}, nodesSkipped=${nodeUpdate.skipped + addSkipped}, durationMs=${durationMs}${result.rationale ? ` — ${result.rationale}` : ""}`);
+    log(`Textron semantic backward: status=done quality=${qualityLabel}(${qualityScore.toFixed(2)}), reward=${effectiveReward.toFixed(3)} (LLM=${result.reward.toFixed(3)}), edgesUpdated=${bwResult.changes}, nodesUpdated=${bwResult.nodesUpdated}, nodesAdded=${bwResult.nodesAdded}, nodesMerged=${bwResult.nodesMerged}, nodesDeleted=${bwResult.nodesDeleted}, nodesSkipped=${bwResult.nodesSkipped}, durationMs=${durationMs}${result.rationale ? ` — ${result.rationale}` : ""}`);
     recordMonitorEvent({ type: "update", taskFamily, action: "semantic_backward_done", ...lastBackwardState });
     broadcast({ type: "update", taskFamily, action: "semantic_backward_done", ...lastBackwardState });
     return lastBackwardState;
@@ -2526,7 +2905,6 @@ CRITICAL RULES:
       const capturedEdges = [...lastSelectedEdgeIds];
       const capturedHighEntropy = lastAssistantHighEntropy;
       const capturedNet = loadNetwork(capturedTF);
-      const capturedPathAudit = capturedNet ? buildPathAudit(capturedNet, capturedPrevTask, capturedHighEntropy, capturedIDs) : null;
       const startedAt = new Date().toISOString();
       const semanticRunId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       lastBackwardState = {
@@ -2536,7 +2914,6 @@ CRITICAL RULES:
         runId: semanticRunId,
         activatedIds: capturedIDs,
         selectedEdgeIds: capturedEdges,
-        pathAudit: capturedPathAudit,
         hasHighEntropy: !!capturedHighEntropy,
         previousTaskChars: capturedPrevTask.length,
         previousRawPromptChars: backwardTaskContext.rawPromptChars,
@@ -2564,7 +2941,6 @@ CRITICAL RULES:
           error: e instanceof Error ? e.message : String(e),
           activatedIds: capturedIDs,
           selectedEdgeIds: capturedEdges,
-          pathAudit: capturedPathAudit,
           hasHighEntropy: !!capturedHighEntropy,
           startedAt,
           at: failedAt,
@@ -2612,8 +2988,41 @@ CRITICAL RULES:
 
     dlog("L0", "calling scoreL0WithLLM...");
     const tScoreStart = Date.now();
-    const l0Scores = await scoreL0WithLLM(l0Nodes, event.prompt, ctx);
+    const l0Scores = await scoreL0WithLLM(l0Nodes, event.prompt, ctx, net.path);
     dlog("L0", `scoring done in ${Date.now() - tScoreStart}ms`, l0Scores);
+
+    // ── Relevance-gated PageRank + anti-lock-in exploration ──
+    const localScores = buildLocalScores(String(event.prompt || ""), l0Nodes);
+    const prScores = computePageRank(net);
+    const PR_BLEND_WEIGHT = 0.15; // centrality supports relevance; it cannot create relevance
+    for (const n of l0Nodes) {
+      const key = `L0::${n.id}`;
+      const llmScore = (l0Scores as Record<string, number>)[key] ?? 0;
+      const localScore = localScores[key] ?? 0;
+      const prScore = prScores[key] ?? 0;
+      if (llmScore < 0.05 && localScore > 0 && prScore > 0.1) {
+        (l0Scores as Record<string, number>)[key] = clamp(localScore * 0.7 + prScore * PR_BLEND_WEIGHT, 0, 1);
+      } else if (llmScore > 0) {
+        (l0Scores as Record<string, number>)[key] = clamp(llmScore * (1 - PR_BLEND_WEIGHT) + prScore * PR_BLEND_WEIGHT, 0, 1);
+      }
+    }
+    const forwardStatsPath = path.join(net.path, "_node_stats.json");
+    const forwardStats = readJson<Record<string, { activations?: number; success?: number; failure?: number; lastActivated?: string }>>(
+      forwardStatsPath,
+      {},
+    );
+    const adjustedL0 = applyExplorationPolicy(l0Scores as Record<string, number>, localScores, forwardStats);
+    for (const key of Object.keys(l0Scores as Record<string, number>)) {
+      (l0Scores as Record<string, number>)[key] = adjustedL0[key] ?? 0;
+    }
+    recordMonitorEvent({
+      type: "trace",
+      action: "l0_exploration_applied",
+      taskFamily: tf,
+      pageRankWeight: PR_BLEND_WEIGHT,
+      topAdjusted: topScores(adjustedL0),
+      localNonzero: Object.values(localScores).filter((v) => v > 0).length,
+    });
 
     const { layers, threshold } = net.hyperparams;
     const scores: Record<string, number> = {};
@@ -2667,41 +3076,64 @@ CRITICAL RULES:
       }
     }
 
-    // Persist all scores for monitor labels. Select a best path for backward independently
-    // from the threshold-gated nodes used for prompt injection.
+    // Persist all scores for monitor labels. Select top-k nodes per layer for backward,
+    // while keeping prompt injection threshold-gated to avoid flooding context.
     currentActivationScores = {};
-    const selectedByLayer = new Map<number, string>();
+    const topK = forwardTopK();
+    const selectedByLayer = new Map<number, string[]>();
     for (const la of layerActivations) {
       for (const node of la.nodes) currentActivationScores[`L${la.layer}::${node.id}`] = node.score;
-      const bestAny = [...la.nodes].filter((node) => node.score > 0).sort((a, b) => b.score - a.score)[0];
-      if (bestAny) {
-        selectedByLayer.set(la.layer, bestAny.id);
+      const ranked = la.layer === 0
+        ? [...la.nodes].filter((node) => node.score > 0).sort((a, b) => b.score - a.score)
+        : rankLayerWithExploration(la.layer, la.nodes, forwardStats);
+      const selected = ranked.slice(0, topK);
+      if (selected.length > 0) selectedByLayer.set(la.layer, selected.map((n) => n.id));
+      for (const node of selected) {
         selectedPath.push({
-          id: bestAny.id,
+          id: node.id,
           layer: la.layer,
-          content: readNodeContent(path.join(net.path, `layer_${la.layer}`, `${bestAny.id}.html`)),
-          activation: bestAny.score,
+          content: readNodeContent(path.join(net.path, `layer_${la.layer}`, `${node.id}.html`)),
+          activation: node.score,
         });
       }
-      if (bestAny && bestAny.score > threshold) {
+      for (const node of selected.filter((n) => n.score > threshold)) {
         contextActivated.push({
-          id: bestAny.id,
+          id: node.id,
           layer: la.layer,
-          content: readNodeContent(path.join(net.path, `layer_${la.layer}`, `${bestAny.id}.html`)),
-          activation: bestAny.score,
+          content: readNodeContent(path.join(net.path, `layer_${la.layer}`, `${node.id}.html`)),
+          activation: node.score,
         });
       }
     }
 
     currentSelectedEdgeIds = [];
+    const selectedEdgeSet = new Set<string>();
     for (let l = 0; l < layers.length - 1; l++) {
-      const from = selectedByLayer.get(l);
-      const to = selectedByLayer.get(l + 1);
-      if (!from || !to) continue;
-      currentSelectedEdgeIds.push(`L${l}::${from}->L${l + 1}::${to}`);
+      const fromSet = new Set(selectedByLayer.get(l) || []);
+      const toSet = new Set(selectedByLayer.get(l + 1) || []);
+      if (fromSet.size === 0 || toSet.size === 0) continue;
+      const edges = net.weights.layer_connections[`${l}_to_${l + 1}`] || [];
+      for (const e of edges) {
+        if (!fromSet.has(e.from) || !toSet.has(e.to)) continue;
+        const srcScore = currentActivationScores[`L${l}::${e.from}`] || 0;
+        const dstScore = currentActivationScores[`L${l + 1}::${e.to}`] || 0;
+        if (srcScore <= 0 || dstScore <= 0 || Math.max(0, e.weight) <= 0) continue;
+        selectedEdgeSet.add(`L${l}::${e.from}->L${l + 1}::${e.to}`);
+      }
     }
+    currentSelectedEdgeIds = [...selectedEdgeSet];
 
     currentActivatedIds = selectedPath.map((n) => `L${n.layer}::${n.id}`);
+    // Count every forward selection, including weak-reward turns. Backward success/failure
+    // counters alone undercount frequency and cannot prevent path lock-in.
+    for (const id of currentActivatedIds) {
+      const stat = forwardStats[id] || { activations: 0, success: 0, failure: 0, lastActivated: "" };
+      const historical = Number(stat.success || 0) + Number(stat.failure || 0);
+      stat.activations = Number(stat.activations ?? historical) + 1;
+      stat.lastActivated = new Date().toISOString();
+      forwardStats[id] = stat;
+    }
+    writeJson(forwardStatsPath, forwardStats);
     const contextIds = contextActivated.map((n) => `L${n.layer}::${n.id}`);
     dlog("PROPAGATE", `selected ${selectedPath.length} path nodes, injecting ${contextActivated.length} context nodes (threshold=${threshold})`, { selectedPathIds: currentActivatedIds, contextIds, selectedEdges: currentSelectedEdgeIds });
     recordMonitorEvent({
@@ -2751,6 +3183,7 @@ CRITICAL RULES:
       type: "trace",
       action: "prompt_injection_prepared",
       taskFamily: tf,
+      compiledContextFull: compiledCtx,
       ...injection.audit,
     });
     currentUserInjection = injection.userInjection;
@@ -2837,7 +3270,10 @@ CRITICAL RULES:
     const ev = event?.assistantMessageEvent;
     if (!ev) return;
     if (ev.type === "text_delta" && ev.delta) currentAssistantBuffer += String(ev.delta);
-    if (ev.type === "text_end" && ev.content) currentAssistantBuffer += String(ev.content);
+    if (ev.type === "text_end" && ev.content) {
+      const ended = String(ev.content);
+      if (!currentAssistantBuffer.endsWith(ended)) currentAssistantBuffer += ended;
+    }
     const extracted = extractHighEntropy(currentAssistantBuffer);
     if (extracted) {
       currentAssistantHighEntropy = extracted;
@@ -2850,12 +3286,8 @@ CRITICAL RULES:
 
   pi.on("message_end", async (event: any, _ctx: any) => {
     if (event?.message?.role !== "assistant") return;
-    const parts = event.message.content;
-    let text = "";
-    if (typeof parts === "string") text = parts;
-    else if (Array.isArray(parts)) text = parts.map((p: any) => p?.text || p?.content || p?.value || "").join("\n");
-    else if (parts) text = JSON.stringify(parts);
-    if (text) currentAssistantBuffer += "\n" + text;
+    const text = assistantMessageText(event.message);
+    if (text && !currentAssistantBuffer.endsWith(text)) currentAssistantBuffer += "\n" + text;
     const extracted = extractHighEntropy(currentAssistantBuffer);
     if (extracted) {
       currentAssistantHighEntropy = extracted;
@@ -2863,8 +3295,6 @@ CRITICAL RULES:
         currentHighEntropyLogged = true;
         recordMonitorEvent({ type: "trace", action: "highentropy_captured", source: "message_end", taskFamily: currentTaskFamily || "", chars: extracted.length, preview: preview(extracted, 220), assistantBufferChars: currentAssistantBuffer.length });
       }
-    } else {
-      recordMonitorEvent({ type: "trace", action: "highentropy_missing_at_message_end", taskFamily: currentTaskFamily || "", assistantBufferChars: currentAssistantBuffer.length, tailPreview: preview(currentAssistantBuffer.slice(-500), 220) });
     }
   });
 
@@ -2872,7 +3302,9 @@ CRITICAL RULES:
   // agent_end → preserve selected path for forced semantic backward on next turn
   // ══════════════════════════════════════════════════════════════════
 
-  pi.on("agent_end", async (_event, _ctx) => {
+  pi.on("agent_end", async (event: any, _ctx) => {
+    console.error(`[textron] agent_end FIRED at ${new Date().toISOString()}`);
+    try {
     // Move current → last for feedback, but keep current* visible for the monitor
     // until the next before_agent_start propagation replaces it.
     dlog("HOOK", "agent_end FIRED — preserving state for next backward", { taskFamily: currentTaskFamily, activatedIds: currentActivatedIds });
@@ -2881,7 +3313,31 @@ CRITICAL RULES:
     lastSelectedEdgeIds = [...currentSelectedEdgeIds];
     lastRawUserPrompt = currentRawUserPrompt;
     lastEffectivePrompt = currentEffectivePrompt;
-    lastAssistantHighEntropy = currentAssistantHighEntropy || extractHighEntropy(currentAssistantBuffer);
+    const runMessages = Array.isArray(event?.messages) ? event.messages : [];
+    const eventHighEntropy = extractLatestHighEntropyFromMessages(runMessages);
+    let finalAssistantText = "";
+    for (let i = runMessages.length - 1; i >= 0; i--) {
+      finalAssistantText = assistantMessageText(runMessages[i]);
+      if (finalAssistantText) break;
+    }
+    if (finalAssistantText && !currentAssistantBuffer.endsWith(finalAssistantText)) {
+      currentAssistantBuffer += `\n${finalAssistantText}`;
+    }
+    const finalCrystal = parseHighEntropyCrystal(currentAssistantBuffer);
+    lastAssistantHighEntropy = eventHighEntropy || currentAssistantHighEntropy || (finalCrystal.ok ? `Name: ${finalCrystal.name}\nContent: ${finalCrystal.content}` : "");
+    if (!lastAssistantHighEntropy) {
+      recordMonitorEvent({
+        type: "trace",
+        action: "highentropy_missing_at_agent_end",
+        taskFamily: currentTaskFamily || "",
+        hasTag: /<HighEntropy>/i.test(`${finalAssistantText}\n${currentAssistantBuffer}`),
+        reason: finalCrystal.reason || "missing",
+        eventMessageCount: runMessages.length,
+        finalAssistantChars: finalAssistantText.length,
+        assistantBufferChars: currentAssistantBuffer.length,
+        tailPreview: preview((finalAssistantText || currentAssistantBuffer).slice(-500), 220),
+      });
+    }
     recordMonitorEvent({
       type: "hook",
       hook: "agent_end",
@@ -2913,6 +3369,9 @@ CRITICAL RULES:
     } catch (e) {
       recordMonitorEvent({ type: "trace", action: "last_state_save_failed", taskFamily: currentTaskFamily || "", error: preview(e instanceof Error ? e.message : String(e), 220) });
     }
+    } catch (hookErr) {
+      console.error(`[textron] agent_end hook crashed:`, hookErr);
+    }
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -2926,11 +3385,9 @@ CRITICAL RULES:
     promptSnippet: "Textron: auto-injects L0 nodes each turn. Call activate with L0 attention scores → programmatic propagation compiles context. Use backward to train.",
     promptGuidelines: [
       "Textron forward+propagate runs automatically each turn — L0 nodes are scored by LLM internally, context is already injected. No manual activation needed.",
-"After completing the task, ALWAYS call Textron action='backward' with feedback ('success'/'failure') AND filledNodes (JSON like {'L0::node_0':'insight','L1::node_2':'detail',...}). Use layer-qualified keys 'L<N>::node_X' to target specific layers.",
-"After completing the task, ALWAYS call Textron action='backward' with feedback ('success'/'failure') AND filledNodes (JSON like {'L0::node_0':'insight','L1::node_2':'detail',...}). Use layer-qualified keys 'L<N>::node_X' to target specific layers.",
-"After completing the task, ALWAYS call Textron action='backward' with feedback ('success'/'failure') AND filledNodes (JSON like {'L0::node_0':'insight','L1::node_2':'detail',...}). Use layer-qualified keys 'L<N>::node_X' to target specific layers.",
-      "Node content MUST be high-entropy: compressed, reusable insights, not raw output. ❌ Never store session summaries, tool listings, or file manifests. ✅ Only store transferable principles applicable to future tasks in the same family.",
-      "If no network matches and under the 10-network cap, call action='init' with a meaningful taskFamily name (e.g. 'react_hooks_debugging'). Then after the task, fill nodes via backward. Note: init now expands the best existing network instead of creating a new one; new networks only created when none exist.",
+      "After completing the task, call Textron action='backward' with feedback and filledNodes using layer-qualified keys like {'L1::node_2':'insight'}.",
+      "Node content MUST be high-entropy: compressed, reusable insights, not raw output. Never store session summaries, tool listings, or file manifests.",
+      "If no network matches, Textron init/backward expands the best existing network; new networks are only created when none exist.",
     ],
     parameters: Type.Object({
       action: StringEnum(["status", "list", "init", "backward"] as const),
@@ -3087,15 +3544,9 @@ CRITICAL RULES:
             : fb.includes("fail") || fb.includes("错") || fb.includes("wrong") ? -0.5 : 0.0;
 
           const activeIds = ids.length > 0 ? ids : currentActivatedIds;
-          const credit = assignEdgeCredit({
-            selectedEdgeIds: currentSelectedEdgeIds,
-            baseReward: reward,
-            feedbackText: params.feedback,
-            pathAuditLabel: reward < 0 ? "low" : "high",
-          });
-          const edgeUpdate = autoBackward(net, activeIds, credit.reward, log, currentSelectedEdgeIds, credit.edgeRewards);
-          if (credit.reason !== "normal") recordMonitorEvent({ type: "trace", action: "manual_negative_credit", taskFamily: tf, reason: credit.reason, baseReward: reward, effectiveReward: credit.reward, selectedEdgeIds: currentSelectedEdgeIds });
-          broadcast({ type: "update", taskFamily: tf, action: "backward", reward: credit.reward, changedEdges: edgeUpdate.changedEdges });
+          // Use reward directly — no external credit adjustment needed.
+          const bwResult = autoBackward(net, activeIds, reward, log, currentSelectedEdgeIds, undefined, undefined, undefined, undefined);
+          broadcast({ type: "update", taskFamily: tf, action: "backward", reward, changedEdges: bwResult.changedEdges });
 
           // Fill/update nodes — supports "L<N>::node_X" layer-qualified keys and legacy flat keys
           // Existing nodes get their content UPDATED (not just filled when empty)
@@ -3119,7 +3570,7 @@ CRITICAL RULES:
                 }
                 const content = validation.content;
                 if (parsed !== null) {
-                  const similar = findSimilarKnowledgeNode(net, compressNodeName(content), content, 0.24, parsed.layer, parsed.nodeId);
+                  const similar = findSimilarKnowledgeNode(net, compressNodeName(content), content, 0.40, parsed.layer, parsed.nodeId);
                   if (similar) {
                     const similarKey = `L${similar.layer}::${similar.nodeId}`;
                     const oldPath = path.join(net.path, `layer_${similar.layer}`, `${similar.nodeId}.html`);
@@ -3181,7 +3632,7 @@ CRITICAL RULES:
                   if (!handled) {
                     const nodeIndex = parseInt(rawKey.replace('node_', ''), 10);
                     if (!isNaN(nodeIndex) && nodeIndex >= 0) {
-                      const created = addPolicyNode(net, undefined, content, log, compressNodeName(content), undefined, { mergeSimilar: true, similarityThreshold: 0.24 });
+                      const created = addPolicyNode(net, undefined, content, log, compressNodeName(content), undefined, { mergeSimilar: true, similarityThreshold: 0.40 });
                       if (created.merged) updateCount++;
                       else if (created.added || created.replaced) newCount++;
                       else if (created.skipped) { skippedCount++; skipReasons.push(`${rawKey}:${created.reason || "frozen_skip"}`); }
@@ -3199,15 +3650,15 @@ CRITICAL RULES:
                   log(`Textron manual backward node ${ch.id}: "${ch.oldContent}" -> "${ch.newContent}"`);
                 }
               }
-              recordMonitorEvent({ type: "update", taskFamily: tf, action: "manual_backward_node_update", reward, changedEdges: edgeUpdate.changedEdges, changedNodes, newCount, updateCount, skippedCount, skipReasons: skipReasons.slice(0, 8) });
-              broadcast({ type: "update", taskFamily: tf, action: "manual_backward_node_update", reward, changedEdges: edgeUpdate.changedEdges, changedNodes, newCount, updateCount, skippedCount, skipReasons: skipReasons.slice(0, 8) });
+              recordMonitorEvent({ type: "update", taskFamily: tf, action: "manual_backward_node_update", reward, changedEdges: bwResult.changedEdges, changedNodes, newCount, updateCount, skippedCount, skipReasons: skipReasons.slice(0, 8) });
+              broadcast({ type: "update", taskFamily: tf, action: "manual_backward_node_update", reward, changedEdges: bwResult.changedEdges, changedNodes, newCount, updateCount, skippedCount, skipReasons: skipReasons.slice(0, 8) });
               if (parts.length > 0) fillMsg = `\nNodes: ${parts.join(", ")}.${skipReasons.length ? ` Skipped: ${skipReasons.slice(0, 3).join("; ")}` : ""}`;
             } catch {}
           }
 
           return {
             content: [{ type: "text", text: `Backward: "${tf}" reward=${reward.toFixed(1)}.${fillMsg}` }],
-            details: { action: "backward", taskFamily: tf, reward, changedEdges: edgeUpdate.changedEdges, changedNodes: manualChangedNodes },
+            details: { action: "backward", taskFamily: tf, reward, changedEdges: bwResult.changedEdges, changedNodes: manualChangedNodes },
           };
         }
 

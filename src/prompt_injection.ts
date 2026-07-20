@@ -29,7 +29,7 @@ function preview(input: string, maxLen = 220): string {
 export function buildTextronPromptInjection(input: PromptInjectionInput): PromptInjectionResult {
   const rawPrompt = input.rawPrompt || "";
   const compiledContext = input.compiledContext || "";
-  const trainingReminder = `\n\nTextron training note: historical prior above is context only. Do not quote/copy it into <HighEntropy>. Final <HighEntropy> must capture this turn's high-entropy experience atom for Textron learning. Name = shortest distinctive symbolic compression of Content. Content = reusable insight that would change future behavior/context selection in similar tasks: constraint, correction, causal mechanism, decision boundary, validation signal, or strategy pattern.`;
+  const trainingReminder = `\n\nTextron training note: historical prior above is context only. Do not quote/copy it into <HighEntropy>. Final <HighEntropy> must capture this turn's high-entropy experience atom for Textron learning. Name = 从 Content 提取 3-6 个最高熵关键术语拼接（技术标识符/领域信号词/数值，取原词、空格分隔）——节点评分/路由只看 name，禁止泛化总结句或 Content 首句截断。Content = reusable insight that would change future behavior/context selection in similar tasks: constraint, correction, causal mechanism, decision boundary, validation signal, or strategy pattern.`;
   const userInjection = input.contextActivatedCount === 0
     ? `\n\n## 🧠 Textron (${input.taskFamily}, 0 nodes activated — path preserved for backward)\n`
     : `\n\n## 🧠 Textron (${input.taskFamily}, ${input.contextActivatedCount}/${input.totalNodeCount} nodes, ${input.selectedPathCount} path)\n${compiledContext}${trainingReminder}`;

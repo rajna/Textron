@@ -1,0 +1,10 @@
+
+=== RESTART 2026-07-17T23:46:34.646004 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname boss --project demo --purpose 主管 --session-id ec5fe538ecf09b28b1958a016495389f --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-18T21:33:55.517230 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname boss --project demo --purpose 主管 --session-id aa4e4f9a6de4e692038ce85490b6245d --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:19:23.273984 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname boss --project demo --purpose 主管 --session-id 8bb5cd4c5ab34769774a8f7a7d106fcf --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:24:12.967159 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname boss --project demo --purpose 主管 --session-id 212e18c097863c793610a94b7cb5f2b7 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:26:42.105359 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname boss --project demo --purpose 主管 --session-id d2c58846bb888dc38e958ef666c61ea7 --model gpt-5.6-sol ===

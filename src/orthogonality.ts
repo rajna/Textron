@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { readNodeContent, readNodeName, writeNodeHtml, writeJson } from "./storage";
 import type { LoadedNetwork } from "./network";
+import { NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
 
 // ─── Textron Orthogonality Helpers ────────────────────────────────────
 
@@ -41,13 +42,29 @@ export function findSimilarNode(
   return best;
 }
 
+function normalizeMergeFragment(fragment: string): string {
+  return String(fragment || "").replace(/\s+/g, "").replace(/[，。！？；、,.!?;：:]/g, "").toLowerCase();
+}
+
 export function mergeNodeContent(oldContent: string, newContent: string): string {
   const oldS = (oldContent || "").trim();
   const newS = (newContent || "").trim();
-  if (!oldS) return newS.slice(0, 120);
-  if (!newS || oldS.includes(newS)) return oldS.slice(0, 120);
-  if (newS.includes(oldS)) return newS.slice(0, 120);
-  return `${oldS}; ${newS}`.slice(0, 120);
+  if (!oldS) return newS.slice(0, NODE_CONTENT_MAX_CHARS);
+  if (!newS || oldS.includes(newS)) return oldS.slice(0, NODE_CONTENT_MAX_CHARS);
+  if (newS.includes(oldS)) return newS.slice(0, NODE_CONTENT_MAX_CHARS);
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const source of [oldS, newS]) {
+    for (const rawPart of source.split(/\s*[|；;]\s*/)) {
+      const part = rawPart.trim();
+      const key = normalizeMergeFragment(part);
+      if (!key || seen.has(key)) continue;
+      if (parts.some((existing) => normalizeMergeFragment(existing).includes(key))) continue;
+      seen.add(key);
+      parts.push(part);
+    }
+  }
+  return parts.join(" | ").slice(0, NODE_CONTENT_MAX_CHARS);
 }
 
 export function updateExistingNodeByPolicy(

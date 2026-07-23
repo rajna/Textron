@@ -1,7 +1,13 @@
 import { distillNodeName, sharesKeywordWithContent } from "./name_distill.ts";
+import { HIGH_ENTROPY_TASK_MAX_CHARS, HIGH_ENTROPY_TECHNIQUE_MAX_CHARS } from "./content_limits.ts";
 
 export interface HighEntropyCrystal {
   name: string;
+  taskType: string;
+  isTask: boolean;
+  task: string;
+  technique: string;
+  /** Backward-compatible alias for technique. */
   content: string;
   raw: string;
   ok: boolean;
@@ -129,7 +135,7 @@ function validateKnowledgeCrystal(raw: string, targetLayer?: number): { ok: bool
   if (!content) return { ok: false, content, reason: "empty" };
   const minLen = targetLayer === 0 ? 18 : 28;
   if (content.length < minLen) return { ok: false, content, reason: "too_short" };
-  if (content.length > 240) return { ok: false, content, reason: "too_long_session_summary" };
+  if (content.length > HIGH_ENTROPY_TECHNIQUE_MAX_CHARS) return { ok: false, content, reason: "too_long_session_summary" };
   const rawOps = /(HTTP\s+20\d|localhost:\d+|PID\s*\d+|nohup|pkill|ps aux|curl\s|tail\s-|log tail|Serving UI|Templates at|Output at|bridge\s*已?重启|重启\s*nbeat\s*UI)/i;
   if (rawOps.test(content)) return { ok: false, content, reason: "raw_operational_trace" };
   if (isTemporalSummary(content)) return { ok: false, content, reason: "temporal_session_summary" };
@@ -149,51 +155,68 @@ export function parseHighEntropyCrystal(text: string): HighEntropyCrystal {
   const match = rawText.match(/<HighEntropy>\s*([\s\S]*?)\s*<\/HighEntropy>/i);
   const rawBlock = match?.[1]?.trim() || "";
   const raw = rawBlock.replace(/\s+/g, " ").trim();
-  if (!raw) return { name: "", content: "", raw, ok: false, reason: "missing" };
-  if (rawBlock.includes("<TextronSkill") || rawBlock.includes("historical Textron network prior")) {
-    return { name: "", content: "", raw, ok: false, reason: "echoed_textron_prior" };
-  }
+  const empty = (reason: string): HighEntropyCrystal => ({ name: "", taskType: "", isTask: false, task: "", technique: "", content: "", raw, ok: false, reason });
+  if (!raw) return empty("missing");
+  if (rawBlock.includes("<TextronSkill") || rawBlock.includes("historical Textron network prior")) return empty("echoed_textron_prior");
 
   let name = "";
-  let content = "";
+  let taskType = "";
+  let isTask = false;
+  let task = "";
+  let technique = "";
   for (const candidate of [rawBlock, raw]) {
     try {
       const parsed = JSON.parse(candidate);
       name = String(parsed?.name || parsed?.Name || "").trim();
-      content = String(parsed?.content || parsed?.Content || parsed?.rule || parsed?.insight || "").trim();
-      if (content) break;
+      task = String(parsed?.task || parsed?.Task || parsed?.任务 || "").trim();
+      technique = String(parsed?.technique || parsed?.Technique || parsed?.技巧 || parsed?.content || parsed?.Content || parsed?.rule || parsed?.insight || "").trim();
+      if (technique) break;
     } catch {}
   }
-  if (!content) {
-    const nameMatch = rawBlock.match(/(?:^|[;；|\n])\s*(?:name|Name|名称|节点名)\s*[:：]\s*([\s\S]*?)(?=(?:[;；|\n]\s*(?:content|Content|内容|规则)\s*[:：])|$)/);
-    const contentMatch = rawBlock.match(/(?:^|[;；|\n])\s*(?:content|Content|内容|规则)\s*[:：]\s*([\s\S]{8,220})/);
-    if (nameMatch) name = nameMatch[1].replace(/\s+/g, " ").trim();
-    if (contentMatch) content = contentMatch[1].trim();
-  }
-  if (!content) {
-    const compactContentMatch = raw.match(/(?:^|[;；|]|\s)(?:content|Content|内容|规则)\s*[:：]\s*([\s\S]{8,220})/);
-    if (compactContentMatch) content = compactContentMatch[1].trim();
-  }
-  if (!content) content = raw.replace(/^(?:name|Name|名称|节点名)\s*[:：][\s\S]*?(?=(?:content|Content|内容|规则)\s*[:：]|$)/i, "").trim();
-  content = completeContent(content.replace(/^content\s*[:：]\s*/i, ""), 180);
-  name = completeContent(name || compressNodeName(content), 64);
 
-  if (isNgramFragmentContent(content)) return { name, content, raw, ok: false, reason: "ngram_fragment" };
-  if (isTemporalSummary(content)) return { name, content, raw, ok: false, reason: "temporal_summary" };
-  const validation = validateKnowledgeCrystal(content);
-  if (!validation.ok) return { name, content, raw, ok: false, reason: validation.reason };
-  // LLM names that share no keywords with content are generic summaries
-  // (e.g. "语法检查不等于可运行") — replace with distilled content keywords.
-  if (isNgramFragmentContent(name) || !sharesKeywordWithContent(name, validation.content)) {
-    name = compressNodeName(validation.content);
+  const readField = (labels: string, nextLabels: string): string => {
+    const field = new RegExp(`(?:^|[;；|\\n])\\s*(?:${labels})\\s*[:：]\\s*([\\s\\S]*?)(?=(?:[;；|\\n]\\s*(?:${nextLabels})\\s*[:：])|$)`, "i");
+    return rawBlock.match(field)?.[1]?.replace(/\s+/g, " ").trim() || "";
+  };
+  if (!name) name = readField("name|名称|节点名", "taskType|任务类别|task|任务|technique|技巧|content|内容|规则");
+  taskType = readField("taskType|任务类别", "isTask|task|任务|technique|技巧|content|内容|规则").slice(0, 15);
+  const isTaskRaw = readField("isTask", "task|任务|technique|技巧|content|内容|规则").toLowerCase();
+  isTask = isTaskRaw === "true" || isTaskRaw === "1" || isTaskRaw === "yes";
+  if (!task) task = readField("task|任务", "technique|技巧|content|内容|规则");
+  if (!technique) technique = readField("technique|技巧|content|内容|规则", "$");
+  if (!technique) {
+    const compactMatch = raw.match(/(?:^|[;；|]|\s)(?:technique|技巧|content|Content|内容|规则)\s*[:：]\s*([\s\S]{8,500})/i);
+    if (compactMatch) technique = compactMatch[1].trim();
   }
-  return { name: completeContent(name, 64), content: validation.content, raw, ok: true };
+  if (!technique) {
+    technique = raw
+      .replace(/(?:^|[;；|]\s*)(?:name|名称|节点名)\s*[:：][^;；|]*/i, "")
+      .replace(/(?:^|[;；|]\s*)(?:task|任务)\s*[:：][^;；|]*/i, "")
+      .trim();
+  }
+
+  task = completeContent(task.replace(/^(?:task|任务)\s*[:：]\s*/i, ""), HIGH_ENTROPY_TASK_MAX_CHARS);
+  technique = completeContent(technique.replace(/^(?:technique|技巧|content|内容)\s*[:：]\s*/i, ""), HIGH_ENTROPY_TECHNIQUE_MAX_CHARS);
+  const retrievalSource = `${task} ${technique}`.trim();
+  name = completeContent(name || compressNodeName(retrievalSource), 64);
+
+  const invalid = (reason: string): HighEntropyCrystal => ({ name, taskType, isTask, task, technique, content: technique, raw, ok: false, reason });
+  if (isNgramFragmentContent(technique)) return invalid("ngram_fragment");
+  if (isTemporalSummary(technique)) return invalid("temporal_summary");
+  const validation = validateKnowledgeCrystal(technique);
+  if (!validation.ok) return invalid(validation.reason || "invalid");
+  // Names must carry distinctive terms from the task/technique packet.
+  if (isNgramFragmentContent(name) || !sharesKeywordWithContent(name, retrievalSource)) {
+    name = compressNodeName(retrievalSource);
+  }
+  return { name: completeContent(name, 64), taskType, isTask, task, technique: validation.content, content: validation.content, raw, ok: true };
 }
 
 export function extractHighEntropy(text: string): string {
   const crystal = parseHighEntropyCrystal(text);
   if (!crystal.ok) return "";
-  return `Name: ${crystal.name}\nContent: ${crystal.content}`;
+  const taskLine = crystal.task ? `\nTask: ${crystal.task}` : "";
+  return `Name: ${crystal.name}${taskLine}\nTechnique: ${crystal.technique}`;
 }
 
 export function assistantMessageText(message: any): string {

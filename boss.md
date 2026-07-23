@@ -37,8 +37,8 @@ planner → coms_send → boss: "请求重启"
 │          ↓                                   │
 │  Step 5: 等 12s，coms_list 验证上线           │
 │          ↓                                   │
-│  Step 6: boss 通知 planner:                   │
-│          "重启完成，请根据交接信息继续任务"     │
+│  Step 6: boss 通过 coms_send 通知 planner:     │
+│          "重启完成，请根据交接信息开始测试"     │
 └─────────────────────────────────────────────┘
 ```
 
@@ -48,7 +48,9 @@ planner → coms_send → boss: "请求重启"
 - **交接文档路径**: `/Users/rama/textron-agent/test.md`（非 HANDOVER.md）
 - **验证方式**: `coms_list --project demo` 确认 planner + coder 均在线
 - **重启命令**: `python3 /Users/rama/textron-agent/agent_restart_service.py restart`
-- 脚本会自动：kill 旧进程 → 打开新 Terminal 窗口 → 归档 test.md
+- **开始测试通知不可省略**：上线验证通过后，boss 必须通过 `coms_send` 主动通知 planner 根据 `/Users/rama/textron-agent/test.md` 顶部交接开始测试；不能只在重启请求的普通回复中报告结果
+- 用户未特别要求时，通知发送成功即可，不等待 planner 回复
+- 脚本会自动：kill 旧进程 → 打开新 Terminal 窗口 → 归档 `/Users/rama/textron/test.md` 占位文件；不会归档 `/Users/rama/textron-agent/test.md`
 
 ---
 
@@ -70,8 +72,10 @@ python3 /Users/rama/textron-agent/agent_restart_service.py restart
 ### 重启完成后
 
 ```
-boss → planner: "planner + coder 已重启上线。请根据 test.md 交接信息继续任务。"
+boss → coms_send → planner: "planner + coder 已重启上线。请根据 /Users/rama/textron-agent/test.md 顶部交接信息立即开始测试。"
 ```
+
+该通知是重启流程的必做步骤。`coms_list` 仅证明进程在线，不代表 planner 已收到开始测试指令。
 
 ---
 
@@ -80,5 +84,5 @@ boss → planner: "planner + coder 已重启上线。请根据 test.md 交接信
 | 文件 | 用途 |
 |------|------|
 | `agent_restart_service.py` | 重启服务脚本 |
-| `test.md` | 交接文档（planner 写入，重启后归档） |
+| `test.md` | 交接文档（planner 写入，路径为 `/Users/rama/textron-agent/test.md`，重启后保留） |
 | `boss.md` | 本文件，boss 工作流程 |

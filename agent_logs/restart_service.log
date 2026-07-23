@@ -1,0 +1,86 @@
+2026-07-17 02:04:58,297 [INFO] Agent restart service on port 8770, project=demo
+2026-07-17 02:04:58,297 [INFO] Registered agents: ['coder', 'planner']
+2026-07-17 02:04:58,297 [INFO] Endpoints:
+2026-07-17 02:04:58,297 [INFO]   GET  http://localhost:8770/status
+2026-07-17 02:04:58,297 [INFO]   GET  http://localhost:8770/health
+2026-07-17 02:04:58,298 [INFO]   POST http://localhost:8770/restart/coder
+2026-07-17 02:04:58,298 [INFO]   POST http://localhost:8770/restart/planner
+2026-07-17 02:04:58,298 [INFO]   POST http://localhost:8770/restart/all
+2026-07-17 02:05:02,038 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-17 02:05:05,876 [INFO] coder restarted: old_pid=3188 → new_pid=9460 session=aa1e968343ad98c66a57c05a0c3fd9b1
+2026-07-17 02:05:05,877 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-17 02:09:21,740 [INFO] Agent restart service on port 8770, project=demo
+2026-07-17 02:09:21,741 [INFO] Registered agents: ['coder', 'planner']
+2026-07-17 02:09:21,742 [INFO] Endpoints:
+2026-07-17 02:09:21,742 [INFO]   GET  http://localhost:8770/status
+2026-07-17 02:09:21,742 [INFO]   GET  http://localhost:8770/health
+2026-07-17 02:09:21,742 [INFO]   POST http://localhost:8770/restart/coder
+2026-07-17 02:09:21,742 [INFO]   POST http://localhost:8770/restart/planner
+2026-07-17 02:09:21,742 [INFO]   POST http://localhost:8770/restart/all
+2026-07-17 02:09:25,796 [INFO] coder restarted: old_pid=9654 → new_pid=9836 session=cf0990764d01e535e57709bbbd8208fd
+2026-07-17 02:09:25,796 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-17 02:09:30,965 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-17 02:12:10,469 [INFO] coder restarted: old_pid=10055 → new_pid=10073 session=7ff6fc9a5f6f7efc2e3c97524023cdbb
+2026-07-17 02:12:10,470 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-17 02:14:01,247 [INFO] Agent restart service on port 8770, project=demo
+2026-07-17 02:14:01,247 [INFO] Registered agents: ['planner']
+2026-07-17 02:14:01,247 [INFO] Endpoints:
+2026-07-17 02:14:01,248 [INFO]   GET  http://localhost:8770/status
+2026-07-17 02:14:01,248 [INFO]   GET  http://localhost:8770/health
+2026-07-17 02:14:01,248 [INFO]   POST http://localhost:8770/restart/planner
+2026-07-17 02:14:01,248 [INFO]   POST http://localhost:8770/restart/all
+2026-07-17 02:14:12,611 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-17 02:58:58,819 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-17 02:59:02,698 [INFO] planner restarted: old_pid=13122 → new_pid=13520 session=8fbccb47ca1572da178f924b00282b7d
+2026-07-17 02:59:02,699 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '200', '-')
+2026-07-17 03:45:12,292 [INFO] coder restarted: old_pid=16769 → new_pid=17689 session=52c5cde167df48b6cd0e4932bec7040e
+2026-07-17 03:45:12,293 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-17 05:17:39,249 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '400', '-')
+2026-07-17 05:17:39,284 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '400', '-')
+2026-07-17 06:35:04,978 [INFO] HTTP ('GET / HTTP/1.1', '404', '-')
+2026-07-17 23:46:15,529 [INFO] HTTP ('GET / HTTP/1.1', '404', '-')
+2026-07-17 23:46:24,753 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-17 23:46:34,670 [INFO] boss restarted: old_pid=5526 → new_pid=5988 session=ec5fe538ecf09b28b1958a016495389f
+2026-07-17 23:46:35,886 [INFO] coder restarted: old_pid=92904 → new_pid=6009 session=5b9f5f2542e3dde74d501a92e0e839e5
+2026-07-17 23:46:36,998 [INFO] planner restarted: old_pid=4931 → new_pid=6030 session=c905415e4a81b73398171d0b6691c60e
+2026-07-17 23:46:37,000 [INFO] HTTP ('POST /restart/all HTTP/1.1', '200', '-')
+2026-07-18 21:33:20,745 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-18 21:33:55,537 [INFO] boss restarted: old_pid=61561 → new_pid=61571 session=aa4e4f9a6de4e692038ce85490b6245d
+2026-07-18 21:33:55,538 [INFO] HTTP ('POST /restart/boss HTTP/1.1', '200', '-')
+2026-07-18 21:34:16,233 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-18 21:35:39,402 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-19 00:19:16,693 [INFO] coder restarted: old_pid=51887 → new_pid=69971 session=a3e1adb4be1c3658e9a8452187fd35b1
+2026-07-19 00:19:16,695 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-19 00:19:19,936 [INFO] planner restarted: old_pid=51869 → new_pid=69996 session=bcae91aec7971db4c10d2daa764c47cf
+2026-07-19 00:19:19,937 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '200', '-')
+2026-07-19 00:19:23,277 [INFO] boss restarted: old_pid=61727 → new_pid=70020 session=8bb5cd4c5ab34769774a8f7a7d106fcf
+2026-07-19 00:19:23,277 [INFO] HTTP ('POST /restart/boss HTTP/1.1', '200', '-')
+2026-07-19 00:19:42,107 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-19 00:24:06,662 [INFO] coder restarted: old_pid=69992 → new_pid=70821 session=fe51d27d31e8d5affcf336dfeca66801
+2026-07-19 00:24:06,662 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-19 00:24:09,810 [INFO] planner restarted: old_pid=70017 → new_pid=70847 session=995afade5151ff2aec20b709da2d3617
+2026-07-19 00:24:09,816 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '200', '-')
+2026-07-19 00:24:12,972 [INFO] boss restarted: old_pid=70051 → new_pid=70871 session=212e18c097863c793610a94b7cb5f2b7
+2026-07-19 00:24:12,973 [INFO] HTTP ('POST /restart/boss HTTP/1.1', '200', '-')
+2026-07-19 00:24:32,858 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-19 00:26:35,829 [INFO] coder restarted: old_pid=70844 → new_pid=71110 session=78e7e1082858d9077b7a24afb259c0d9
+2026-07-19 00:26:35,830 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-19 00:26:38,967 [INFO] planner restarted: old_pid=70869 → new_pid=71135 session=594265670e6c3f1b16709c4043d4ed47
+2026-07-19 00:26:38,968 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '200', '-')
+2026-07-19 00:26:42,109 [INFO] boss restarted: old_pid=70897 → new_pid=71167 session=d2c58846bb888dc38e958ef666c61ea7
+2026-07-19 00:26:42,110 [INFO] HTTP ('POST /restart/boss HTTP/1.1', '200', '-')
+2026-07-19 00:27:00,794 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-19 00:33:36,419 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-21 05:23:30,472 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-21 06:03:47,450 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-22 02:12:40,114 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-22 02:18:39,246 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-23 05:05:23,134 [INFO] planner restarted: old_pid=47097 → new_pid=67051 session=15d81e04abddcfd105e6e1efde2f0b96
+2026-07-23 05:05:23,138 [INFO] HTTP ('POST /restart/planner HTTP/1.1', '200', '-')
+2026-07-23 05:05:24,575 [INFO] coder restarted: old_pid=47117 → new_pid=67073 session=cb41936f223d8ba7b227cc7f5526e88d
+2026-07-23 05:05:24,576 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-23 05:15:20,935 [INFO] HTTP ('GET /status HTTP/1.1', '200', '-')
+2026-07-23 05:40:30,516 [INFO] HTTP ('GET / HTTP/1.1', '404', '-')
+2026-07-23 08:06:14,058 [INFO] coder restarted: old_pid=81255 → new_pid=83282 session=f8e4230c3f9ebe6271350d660c2e76f7
+2026-07-23 08:06:14,060 [INFO] HTTP ('POST /restart/coder HTTP/1.1', '200', '-')
+2026-07-23 08:06:16,087 [INFO] HTTP ('GET /health HTTP/1.1', '200', '-')

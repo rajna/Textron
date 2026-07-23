@@ -1,0 +1,26 @@
+
+=== RESTART 2026-07-17T02:05:05.872568 session=aa1e968343ad98c66a57c05a0c3fd9b1 ===
+Warning: No project session found with id 'aa1e968343ad98c66a57c05a0c3fd9b1'; creating a new session with that id.
+[TEXTRON 18:05:07.656 INIT] Textron extension loaded {"monitorPort":8766}
+
+=== RESTART 2026-07-17T02:09:25.791263 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 写代码 --session-id cf0990764d01e535e57709bbbd8208fd --model deepseek-v4-pro ===
+Warning: No project session found with id 'cf0990764d01e535e57709bbbd8208fd'; creating a new session with that id.
+[TEXTRON 18:09:27.005 INIT] Textron extension loaded {"monitorPort":8766}
+
+=== RESTART 2026-07-17T02:12:10.465008 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 写代码 --session-id 7ff6fc9a5f6f7efc2e3c97524023cdbb --model deepseek-v4-pro ===
+Warning: No project session found with id '7ff6fc9a5f6f7efc2e3c97524023cdbb'; creating a new session with that id.
+[TEXTRON 18:12:11.632 INIT] Textron extension loaded {"monitorPort":8766}
+
+=== RESTART 2026-07-17T03:45:12.283068 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 写代码 --session-id 52c5cde167df48b6cd0e4932bec7040e --model deepseek-v4-pro ===
+
+=== RESTART 2026-07-17T23:46:35.880226 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id 5b9f5f2542e3dde74d501a92e0e839e5 --model kimi-k3 ===
+
+=== RESTART 2026-07-19T00:19:16.671377 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id a3e1adb4be1c3658e9a8452187fd35b1 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:24:06.657721 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id fe51d27d31e8d5affcf336dfeca66801 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:26:35.825623 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id 78e7e1082858d9077b7a24afb259c0d9 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-23T05:05:24.572192 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id cb41936f223d8ba7b227cc7f5526e88d --model deepseek-v4-flash ===
+
+=== RESTART 2026-07-23T08:06:14.040585 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname coder --project demo --purpose 程序员 --session-id f8e4230c3f9ebe6271350d660c2e76f7 --model deepseek-v4-pro ===

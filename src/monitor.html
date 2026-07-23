@@ -20,6 +20,10 @@
   --pink:#ff7eb6;
   --yellow:#ffd166;
   --blue:#8fb8ff;
+  --mint:#7ee2c3;
+  --violet:#c59bff;
+  --amber:#ffbf73;
+  --red:#ff8a9d;
   --mono:SFMono-Regular,Menlo,Monaco,Consolas,monospace;
   --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
@@ -351,6 +355,8 @@ var glowWhite=makeGlow(['rgba(215,228,255,.55)','rgba(160,190,255,.18)']);
 var glowLime=makeGlow(['rgba(215,244,99,.65)','rgba(190,230,80,.20)']);
 var glowBlue=makeGlow(['rgba(143,184,255,.5)','rgba(110,150,255,.16)']);
 var glowPink=makeGlow(['rgba(255,126,182,.5)','rgba(255,110,160,.16)']);
+var glowMagenta=makeGlow(['rgba(255,140,230,.75)','rgba(200,70,180,.22)']);
+var backwardLinger=0; // seconds since last backward event, for fade-out trail
 
 /* ═══════════════ helpers ═══════════════ */
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
@@ -452,9 +458,13 @@ function updateGraphView(name,net,state){
   var selectedIds=state?(state.currentActivatedIds||[]):[];
   var selectedEdges=state?(state.currentSelectedEdgeIds||[]):[];
   var scores=state?(state.currentActivationScores||{}):{};
-  var selected={},selectedE={};
+  var mutations=state?(state.currentNodeMutations||[]):[];
+  var backward=state&&state.lastBackwardState?state.lastBackwardState:null;
+  var backwardEdges=!!(backward&&(backward.status==='running'||Number(backward.edgesUpdated||0)>0));
+  var selected={},selectedE={},mutationMap={};
   for(var i=0;i<selectedIds.length;i++)selected[selectedIds[i]]=1;
   for(var i=0;i<selectedEdges.length;i++)selectedE[selectedEdges[i]]=1;
+  for(var i=0;i<mutations.length;i++)if(mutations[i]&&mutations[i].id)mutationMap[mutations[i].id]=mutations[i];
 
   var byL={};
   for(var i=0;i<net.nodes.length;i++){var nd=net.nodes[i];if(!byL[nd.layer])byL[nd.layer]=[];byL[nd.layer].push(nd)}
@@ -472,18 +482,21 @@ function updateGraphView(name,net,state){
     for(var j=0;j<weights[k].length;j++){var e=weights[k][j];edgeWeights[l][e.from+'_'+e.to]=e.weight}
   }
 
-  var nodes=[],edges=[],selEdges=[],amb=[],goldReal=0,pos={};
+  var nodes=[],edges=[],selEdges=[],amb=[],goldReal=0,pos={},moved=[];
   for(var l=0;l<nL;l++){
     var list=byL[l]||[];
     for(var i=0;i<list.length;i++){
       var nd=list[i],id=qid(l,nd.id);
       var seed=hash32(name+'|'+id);
+      var mut=mutationMap[id];
       var nd2={qid:id,id:nd.id,layer:l,
         cx:x(l)+(rand01(seed^0x9e37)-0.5)*72,
         cy:P+i*GYa+GYa/2+(rand01(seed^0x51f7)-0.5)*GYa*0.42,
         name:nd.name||'',context:nd.context||nd.content||'',
         filled:!!(nd.name||nd.content),sel:!!selected[id],
-        score:scores[id],phase:rand01(seed)*6.283,drift:0.6+rand01(seed^0x77aa)*0.9};
+        score:scores[id],phase:rand01(seed)*6.283,drift:0.6+rand01(seed^0x77aa)*0.9,
+        mutation:mut||null};
+      if(mut)moved.push(nd2);
       nodes.push(nd2);pos[l+'|'+nd.id]=nd2;
     }
   }
@@ -520,7 +533,7 @@ function updateGraphView(name,net,state){
     }
   }
 
-  gv.data={nodes:nodes,edges:edges,selEdges:selEdges,amb:amb,phantom:phantom};
+  gv.data={nodes:nodes,edges:edges,selEdges:selEdges,amb:amb,phantom:phantom,mutations:moved,backwardEdges:backwardEdges};
   gv.R=Rv;
   var dpr=(W*H>1500000)?1:Math.min(2,window.devicePixelRatio||1);
   if(gv.W!==W||gv.H!==H||gv.dpr!==dpr){
@@ -534,7 +547,8 @@ function updateGraphView(name,net,state){
   if(sig!==gv._sig){gv._sig=sig;renderStatic(gv)}
   gv.meta.innerHTML='Network Graph · <b>'+esc(name)+'</b> · layers ['+layers.join(',')+'] · selected '+selectedIds.length+' · threshold '+net.threshold;
   gv.path.textContent=selectedIds.length?selectedIds.join(' → '):'no selected path';
-  gv.foot.textContent='selectedEdges: '+selectedEdges.length+' · real glowing edges: '+goldReal+' · organic canvas + webgl';
+  var backInfo=backwardEdges?'↩ '+(backward.edgesUpdated||0)+' edges':'';
+  gv.foot.textContent='selectedEdges: '+selectedEdges.length+' · real glowing edges: '+goldReal+' · mutations: '+moved.length+' · organic canvas + webgl'+(backInfo?' · '+backInfo:'');
 }
 
 /* static synapse layer — rebuilt per poll, blitted per frame (perf) */
@@ -594,6 +608,62 @@ function drawGraph(gv,t){
     ctx.setLineDash([]);
   }
 
+  // backward propagation — reverse-direction wave (L2→L1→L0), distinct pink/magenta glow
+  if(d.selEdges.length&&(d.backwardEdges||backwardLinger>0)){
+    if(d.backwardEdges)backwardLinger=2.2;else backwardLinger=Math.max(0,backwardLinger-1/60);
+    var bFade=Math.min(1,backwardLinger/0.8);
+    // reverse layer order: build index
+    var revEdges=[];
+    for(i=0;i<d.selEdges.length;i++){e=d.selEdges[i];var lm=parseInt(e.x1,10)||0;revEdges.push({e:i,ly:lm})}
+    revEdges.sort(function(a,b){return b.ly-a.ly});
+    ctx.lineCap='round';
+    ctx.setLineDash([7,9]);ctx.lineDashOffset=-t*30;
+    for(var ri=0;ri<revEdges.length;ri++){
+      e=d.selEdges[revEdges[ri].e];
+      // reverse wave direction: start at L2 end, travel toward L0
+      var rt=((t*0.42+ri*0.19)%1),rp=qbezPt(e,rt);
+      // thick glowing band
+      ctx.strokeStyle='rgba(255,100,200,'+(0.12*bFade*breathe).toFixed(3)+')';ctx.lineWidth=12;
+      ctx.beginPath();ctx.moveTo(e.x1,e.y1);ctx.quadraticCurveTo(e.cx,e.cy,e.x2,e.y2);ctx.stroke();
+      ctx.strokeStyle='rgba(255,140,230,'+(0.50*bFade*breathe).toFixed(3)+')';ctx.lineWidth=5;
+      ctx.beginPath();ctx.moveTo(e.x1,e.y1);ctx.quadraticCurveTo(e.cx,e.cy,e.x2,e.y2);ctx.stroke();
+      ctx.strokeStyle='rgba(255,180,245,'+(0.80*bFade*breathe).toFixed(3)+')';ctx.lineWidth=2.6;
+      ctx.beginPath();ctx.moveTo(e.x1,e.y1);ctx.quadraticCurveTo(e.cx,e.cy,e.x2,e.y2);ctx.stroke();
+      // lead particle (bright)
+      ctx.drawImage(glowMagenta,rp.x-18,rp.y-18,36,36);
+      ctx.fillStyle='rgba(255,240,255,.95)';ctx.beginPath();ctx.arc(rp.x,rp.y,3,0,6.283);ctx.fill();
+      // trailing comet particles
+      for(var tr=1;tr<=3;tr++){
+        var trt=((rt-tr*0.06+1)%1),trp=qbezPt(e,trt);
+        ctx.globalAlpha=0.3*bFade/tr;
+        ctx.drawImage(glowMagenta,trp.x-12,trp.y-12,24,24);
+      }
+      ctx.globalAlpha=1;
+    }
+    ctx.setLineDash([]);
+  }
+
+  if(d.mutations&&d.mutations.length){
+    ctx.lineCap='round';
+    ctx.setLineDash([5,4]);
+    for(i=0;i<d.mutations.length;i++){
+      nd=d.mutations[i];
+      var mt=nd.mutation&&nd.mutation.type||'update';
+      var mutColor='rgba(143,184,255,.82)',mutGlow='rgba(143,184,255,.18)',bend=-32;
+      if(mt==='add'){mutColor='rgba(126,226,195,.82)';mutGlow='rgba(126,226,195,.18)';bend=34;}
+      else if(mt==='merge'){mutColor='rgba(197,155,255,.84)';mutGlow='rgba(197,155,255,.18)';bend=0;}
+      else if(mt==='delete'){mutColor='rgba(255,138,157,.82)';mutGlow='rgba(255,138,157,.18)';bend=56;}
+      var x2=Math.max(24,nd.cx-68-nd.layer*4),y2=nd.cy-10,cp=bezCtrl(nd.cx,nd.cy,x2,y2,bend);
+      ctx.strokeStyle=mutGlow;ctx.lineWidth=9;
+      ctx.beginPath();ctx.moveTo(nd.cx,nd.cy);ctx.quadraticCurveTo(cp.x,cp.y,x2,y2);ctx.stroke();
+      ctx.strokeStyle=mutColor;ctx.lineWidth=2.4;
+      ctx.beginPath();ctx.moveTo(nd.cx,nd.cy);ctx.quadraticCurveTo(cp.x,cp.y,x2,y2);ctx.stroke();
+      var tt=(t*0.42+i*0.13)%1,pp=qbezPt({x1:nd.cx,y1:nd.cy,cx:cp.x,cy:cp.y,x2:x2,y2:y2},tt);
+      ctx.drawImage(mt==='add'?glowLime:mt==='merge'?glowBlue:mt==='delete'?glowPink:glowWhite,pp.x-12,pp.y-12,24,24);
+    }
+    ctx.setLineDash([]);
+  }
+
   // pulses along selected path — signal propagation wavefront
   for(i=0;i<d.selEdges.length;i++){
     e=d.selEdges[i];
@@ -624,6 +694,12 @@ function drawGraph(gv,t){
       var wave=0.55+0.45*Math.sin(t*2.6-nd.layer*0.9);
       var s=52+22*wave;
       ctx.drawImage(glowLime,px-s/2,py-s/2,s,s);
+    }else if(nd.mutation){
+      var mt=nd.mutation.type;
+      var glow=mt==='add'?glowLime:mt==='merge'?glowBlue:mt==='delete'?glowPink:glowWhite;
+      ctx.globalAlpha=mt==='add'?0.95:mt==='merge'?0.88:mt==='delete'?0.82:0.72;
+      ctx.drawImage(glow,px-24,py-24,48,48);
+      ctx.globalAlpha=1;
     }else if(nd.filled){
       ctx.globalAlpha=nd.score!=null?Math.min(1,0.3+nd.score*0.8):0.45;
       ctx.drawImage(glowWhite,px-22,py-22,44,44);
@@ -646,6 +722,13 @@ function drawGraph(gv,t){
       ctx.closePath();
       ctx.fillStyle='#d7f463';ctx.fill();
       ctx.strokeStyle='#eaffb0';ctx.lineWidth=2.5;ctx.stroke();
+    }else if(nd.mutation){
+      var mt=nd.mutation.type;
+      ctx.beginPath();ctx.arc(px,py,Rv+1,0,6.283);
+      ctx.fillStyle=mt==='add'?'rgba(126,226,195,.94)':mt==='merge'?'rgba(197,155,255,.92)':mt==='delete'?'rgba(255,138,157,.92)':'rgba(143,184,255,.92)';
+      ctx.fill();
+      ctx.strokeStyle=mt==='add'?'rgba(183,255,229,.72)':mt==='merge'?'rgba(227,200,255,.72)':mt==='delete'?'rgba(255,185,196,.72)':'rgba(205,220,250,.72)';
+      ctx.lineWidth=1.7;ctx.stroke();
     }else{
       ctx.beginPath();ctx.arc(px,py,Rv,0,6.283);
       if(nd.filled){ctx.fillStyle='rgba(205,220,250,.92)';ctx.fill();ctx.strokeStyle='rgba(235,242,255,.5)';ctx.lineWidth=1.4;ctx.stroke()}
@@ -666,8 +749,8 @@ function drawGraph(gv,t){
       ctx.fillText(Number(nd.score).toFixed(2),px,py-Rv-7);
     }
     ctx.font='9px Inter,sans-serif';
-    ctx.fillStyle=nd.sel?'#d7f463':'#5f6b90';
-    ctx.fillText(short(nd.name||nd.context||'(empty)',34),px,py+Rv+27);
+    ctx.fillStyle=nd.sel?'#d7f463':nd.mutation?(nd.mutation.type==='add'?'#7ee2c3':nd.mutation.type==='merge'?'#c59bff':nd.mutation.type==='delete'?'#ff8a9d':'#8fb8ff'):'#5f6b90';
+    ctx.fillText(short((nd.mutation?nd.mutation.type+' · ':'')+(nd.name||nd.context||'(empty)'),34),px,py+Rv+27);
   }
 }
 
@@ -707,7 +790,9 @@ function renderOverview(s,activeName,net,b){
   h+='<div class="ov-row"><span class="ov-k">Nodes</span><span class="ov-v">'+nodes+'</span></div>';
   h+='<div class="ov-row"><span class="ov-k">Threshold</span><span class="ov-v">'+(net?net.threshold:'—')+'</span></div>';
   h+='<div class="ov-row"><span class="ov-k">Networks</span><span class="ov-v">'+Object.keys(s.networks||{}).length+'</span></div>';
-  h+='<div class="ov-row"><span class="ov-k">Last backward</span><span class="ov-v">'+esc(b?fmtClock(b.at||b.startedAt||''):'—')+'</span></div></div>';
+  h+='<div class="ov-row"><span class="ov-k">Last backward</span><span class="ov-v">'+esc(b?fmtClock(b.at||b.startedAt||''):'—')+'</span></div>';
+  if(b&&b.nodeMutations&&b.nodeMutations.length)h+='<div class="ov-row"><span class="ov-k">Mutations</span><span class="ov-v">'+b.nodeMutations.length+' · update / add / merge / delete</span></div>';
+  h+='</div>';
   return h;
 }
 function renderMutationChart(events){
@@ -716,15 +801,15 @@ function renderMutationChart(events){
     var e=events[i];
     var done=e.action==='semantic_backward_done'||(e.action==='semantic_backward'&&e.status==='done')||(!e.action&&e.status==='done');
     if(done&&typeof e.nodesUpdated==='number'){
-      rows.push({u:+e.nodesUpdated||0,a:+e.nodesAdded||0,d:+e.nodesDeleted||0,ts:String(e.ts||e.at||e.startedAt||'')});
+      rows.push({u:+e.nodesUpdated||0,a:+e.nodesAdded||0,m:+e.nodesMerged||0,d:+e.nodesDeleted||0,ts:String(e.ts||e.at||e.startedAt||'')});
     }
   }
   rows=rows.slice(-40);
   var h='<div class="spanel"><div class="sp-title" style="margin-bottom:8px">Node Mutations</div>';
-  h+='<div class="bars-sub">节点更新 / 新增 / 删除 · 最近 '+rows.length+' 轮 backward</div>';
+  h+='<div class="bars-sub">节点更新 / 新增 / 合并 / 删除 · 最近 '+rows.length+' 轮 backward</div>';
   if(rows.length<2)return h+'<div class="bars-sub">数据不足，等待更多 backward 事件</div></div>';
-  var tu=0,ta=0,td=0,W=296,H=104,PL=8,PR=10,PT=10,PB=18,maxV=2;
-  for(var i=0;i<rows.length;i++){tu+=rows[i].u;ta+=rows[i].a;td+=rows[i].d;maxV=Math.max(maxV,rows[i].u,rows[i].a,rows[i].d)}
+  var tu=0,ta=0,tm=0,td=0,W=296,H=104,PL=8,PR=10,PT=10,PB=18,maxV=2;
+  for(var i=0;i<rows.length;i++){tu+=rows[i].u;ta+=rows[i].a;tm+=rows[i].m;td+=rows[i].d;maxV=Math.max(maxV,rows[i].u,rows[i].a,rows[i].m,rows[i].d)}
   function X(i2){return PL+i2*(W-PL-PR)/Math.max(1,rows.length-1)}
   function Y(v){return PT+(1-v/maxV)*(H-PT-PB)}
   function pathFor(key){
@@ -734,7 +819,8 @@ function renderMutationChart(events){
   }
   h+='<div class="mc-legend">';
   h+='<span class="mc-key"><i style="background:#8fb8ff"></i>更新 <b>'+tu+'</b></span>';
-  h+='<span class="mc-key"><i style="background:#d7f463"></i>新增 <b>'+ta+'</b></span>';
+  h+='<span class="mc-key"><i style="background:#7ee2c3"></i>新增 <b>'+ta+'</b></span>';
+  h+='<span class="mc-key"><i style="background:#c59bff"></i>合并 <b>'+tm+'</b></span>';
   h+='<span class="mc-key"><i style="background:#ff7eb6"></i>删除 <b>'+td+'</b></span>';
   h+='</div>';
   var svg='<svg width="100%" viewBox="0 0 '+W+' '+H+'" style="display:block">';
@@ -743,7 +829,7 @@ function renderMutationChart(events){
     svg+='<line x1="'+PL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PR)+'" y2="'+gy.toFixed(1)+'" stroke="rgba(255,255,255,.06)" stroke-width="1"/>';
   }
   svg+='<text x="'+(W-PR)+'" y="'+(PT-2)+'" text-anchor="end" style="font:9px Menlo;fill:#68739a">max '+maxV+'</text>';
-  var series=[['u','#8fb8ff'],['a','#d7f463'],['d','#ff7eb6']];
+  var series=[['u','#8fb8ff'],['a','#7ee2c3'],['m','#c59bff'],['d','#ff7eb6']];
   for(var si=0;si<series.length;si++){
     var key=series[si][0],col=series[si][1];
     svg+='<path d="'+pathFor(key)+'" fill="none" stroke="'+col+'" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" opacity=".92" />';
@@ -846,6 +932,24 @@ function renderBackwardInner(b){
     h+=kv('蒸馏',b.distillCount||0,b.distillCount>0?'bw-kv-val-good':'');
     h+='</div></div>';
     h+='<div class="bw-row" style="font-size:12px;color:var(--faint)">HighEntropy: '+(b.hasHighEntropy?'✅':'❌')+' · LLM reward: '+Number(b.llmReward||0).toFixed(3)+'</div>';
+    if(b.nodeMutations&&b.nodeMutations.length){
+      h+='<div class="bw-section"><div class="bw-section-label">🧩 节点操作类型</div>';
+      var groups={update:[],add:[],merge:[],delete:[]};
+      for(var mi=0;mi<b.nodeMutations.length;mi++){
+        var mm=b.nodeMutations[mi];
+        if(mm&&groups[mm.type])groups[mm.type].push(mm.id);
+      }
+      var order=[['update','var(--blue)'],['add','var(--mint)'],['merge','var(--violet)'],['delete','var(--red)']];
+      for(var oi=0;oi<order.length;oi++){
+        var key=order[oi][0],color=order[oi][1],items=groups[key];
+        if(!items.length)continue;
+        h+='<div class="bw-row"><span class="bw-path-seg" style="border-color:'+color+';color:'+color+'">'+key+'</span>';
+        for(var ii=0;ii<Math.min(items.length,6);ii++)h+='<span class="bw-path-seg">'+esc(items[ii])+'</span>';
+        if(items.length>6)h+='<span class="bw-path-seg">+'+(items.length-6)+'</span>';
+        h+='</div>';
+      }
+      h+='</div>';
+    }
   }
   if(b.rationale)h+='<div class="bw-rationale">💡 '+esc(b.rationale)+'</div>';
   if(b.selectedEdgeIds&&b.selectedEdgeIds.length){

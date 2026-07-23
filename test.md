@@ -1,770 +1,416 @@
-# Textron 星象+A股预测 RL 闭环测试记录
+# Textron 生命周期改动史 & 流程断因分析
 
-> 最新测试：2026-07-18 第14轮 (单例06-25，正确率1/1)  
-> 活跃网络：`astro_stock_prediction` [11,51,56] thr=0.08 lr=0.12 growth=on  
-> 当前节点：118（L0:11 L1:51 L2:56）
-> 累计正确率：37组 50.0%（19/38）
-> ⚠️ **重启原因**：4个关键修复已部署到 index.ts，需重启生效
-> 🔧 **本次修复**：prompt节点列表缩减(118→top-8)、max_tokens翻倍(1024→2048)、RELATED阈值降低(0.25→0.15)、merge/delete提升为规则#1
-> ✅ **pi 已重启**：网络从52→71节点，semantic_backward 已恢复工作
-> ⚠️ **端口冲突发现**：node(Textron Monitor) 和 Python(数据服务) 同时监听 8768/8769。node 绑 IPv6，Python 绑 IPv4。curl localhost 走 IPv6→命中 Monitor。**必须用 127.0.0.1 (IPv4)** 访问数据服务。
-> 🆕 **Agent 重启服务**：`agent_restart_service.py` 端口 8770，管理 planner+coder 启停
+> 撰写时间：2026-07-22
+> 分析范围：HEAD(bb0e7c5 多路径选择 pagerank扩散) → 当前未提交工作树(15文件+1570行)
 
 ---
 
-## 🔄 交接清单（重启后必读）
-
-### 测试目标
-
-验证 Textron RL 闭环能否提升 coder agent 隔离预测准确率。核心 KPI：coder 正确率从 45.5% 持续提升。
-
-### 🚫 铁律：主AI禁止手动操作Textron网络
-
-backward 是自动触发的（主AI coms_send 反馈给 coder → coder 返回 HighEntropy → 触发 backward），主AI **绝对禁止**：
-- ❌ 调用 `Textron(action='backward', ...)` — backward 是自动的，不是手动调的
-- ❌ 调用 `Textron(action='init', ...)` — 网络由系统管理
-- ❌ 手动编辑 `~/.textron/` 下的节点文件
-
-主AI 的边界：只管步骤①-⑤的数据流（取数据→组用例→发coder→对答案→反馈coder），做完⑤后**停手等待**。步骤⑥是纯观察（读日志/events/节点/边），不修改网络。
-
-### 7 步标准测试流程
-
-```
-① 取数据 ──→ ② 组装用例 ──→ ③ coms发给coder ──→ ④ 对答案 ──→ ⑤ coms发给coder反馈 ──→ ⑥ 检查Textron日志 ──→ ⑦ 循环
-  akshare      前5日K线       隔离预测          更新test.md    reward信号→            轨迹审计
-  +星象API     +当日星象      禁止搜索/行情     算正确率      →等待下轮autoBackward    验证reward符号/边权/节点操作
-               不含当日行情                         🚫做完⑤后停手!                      纯观察，不动网络
-```
-
-| 步骤 | 做什么 | 谁做 | 产出 | 关键点 |
-|------|--------|------|------|--------|
-| ① | 取K线+星象 | 主AI | 原始数据 | `127.0.0.1:8768/kline` + `127.0.0.1:8769/horoscopeFeature` |
-| ② | 组装用例 | 主AI | 测试用例 | 前5日K线+当日星象，**不含当日行情** |
-| ③ | 隔离预测 | coder | 涨跌+置信度 | `coms_send`，coder 禁止搜索/行情 |
-| ④ | 对答案 | 主AI | 正确率 | 更新 test.md 执行记录 |
-| **⑤** | **反馈 coder** | **主AI→coder** | **→ autoBackward** | **做完后停手！等 coder 回复+等下轮 autoBackward。reward 信号在下轮自动消费** |
-| **⑥** | **轨迹审计** | **主AI（只读）** | **观察报告** | **🚫 纯观察不动网络。[a] 读 _sb_logs/semantic_backward.jsonl [b] 读 _events.jsonl 搜 semantic_backward [c] Textron list 对比节点数 [d] 读最近更新的 .html 节点 [e] 若 status=failed/error→报告，不自行修复** |
-| ⑦ | 循环 | 主AI | 下一批日期 | 从上次结束日期+1开始 |
-
-### 已修复的 Bug
-
-- `index.ts:1866`：`recordMonitorEvent` 中引用了未声明的 `messages[0].content`（`messages` 在第1873行才声明）→ `ReferenceError: Cannot access 'messages' before initialization` → **semantic_backward 整个跳过，无 reward、无 node_updates、无 add_nodes**。修复：将 llmInput 日志移到 messages 声明之后
-- `index.ts:3436/3437/3444`：`edgeUpdate` → `bwResult`（重启后生效）
-
-### 当前进度
-
-- 已测试 22 组(02-02~07-09)，累计正确率 54.5%（12/22）
-- 历史批次：02-02~07-16 共11组 45.5% + 04-01~07-09 共11组（新）
-- 下次测试起点：星象服务 `http://localhost:8769/horoscopeFeature` 可用，股票服务 `http://localhost:8768/kline` 可用，无需再写脚本
-- backward 自动触发，**每轮测试后必须执行步骤⑥轨迹审计**
-
-### 网络当前激活节点（astro_stock_prediction，44/45）
-
-| 节点 | 内容 |
-|------|------|
-| L0::node_0 | 反弹被阴线否定=下跌延续已验证。锤子止跌需次日确认。低开高走需量能验证 |
-| L1::node_12 | 超卖补偿原理：暴跌后反弹概率高，空头信号与超卖并存时优先降置信度 |
-| L2::node_8 | 多任务网络中禁手动清理，靠backward自动治理 |
-
-> 注：44/45 节点来自前向 ngram 蒸馏而非 backward LLM（因为 semantic_backward LLM 因 bug 从未成功执行）。修复后 backward 应开始输出 node_updates/add_nodes。
-
----
-
----
-
-## 测试目标
-
-验证 Textron 的完整 RL 学习链路是否高效运转：
-
-1. **轨迹获取**：前向传播是否根据用户输入评分并注入相关知识节点
-2. **奖励驱动**：反向传播是否根据任务结果（reward）更新网络
-3. **节点合并与提炼**：同类节点是否被自动检测并合并、低质量节点是否被删除或降权
-4. **信息更新**：边权重是否根据 reward 调整，使有用路径被强化、无用路径被弱化
-5. **高效学习**：网络是否能积累高熵信息并在后续任务中被前向传播注入利用
-6. **帮助 coder**：前向注入的知识是否能提升隔离预测 agent 的预测准确性
-
----
-
-## 测试流程（2026-07-17 更新）
-
-### 架构
-
-```
-用户输入 → Textron前向传播(注入相关节点) → 主AI组装测试数据
-                                                   ↓
-                                        coms_send → coder agent (隔离预测)
-                                                   ↓
-自动 backward(下轮用户输入触发) ← 对答案 ← 实际结果
-     ↓
-   LLM语义合并:reward/node_updates/add_nodes/merge/delete
-```
-
-### 数据源
-
-- **行情**：上证指数（sh000001），akshare `stock_zh_index_daily` API
-- **星象**：deepastro.cn `horoscopeFeature` 接口，上海坐标(31.23, 121.47)
-- **预测 agent**：**必须用 `coms_send` 发给 `coder` agent**，禁止主AI直接预测
-  - coder 禁止调用搜索/行情/网络工具
-  - coder 只看到历史K线+当日星象，看不到当日实际行情
-  - 每批发 5-6 组，每组含：前5日K线 + 当日星象
-
-### 正确测试流程（重要！）
-
-1. 获取全量K线数据 + 选择测试日期
-2. 批量获取星象数据（`horoscopeFeature` API）
-3. 组装测试用例：每组 = 前5日K线 + 当日星象（**不含当日实际行情**）
-4. **用 `coms_send` 发给 `coder` agent**，等待回复
-5. 对答案：比较 coder 预测 vs 实际涨跌
-6. 给 coder 反馈结果
-7. 更新 test.md
-8. 下次测试从**上次结束日期+1**开始
-
----
-
-## 执行记录
-
-### 第3轮（2026-07-17）— 批量 coms 测试
-
-**测试范围**：2026-02-02 ~ 2026-07-16，18个采样日 + 5个连续日
-
-#### 第1批（02-03月，6组）
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 02-02 | 跌 | 0.82 | -1.57% | ✅ | 四连阳后大阴反转+满月三冲相 |
-| 2 | 02-11 | 涨 | 0.63 | +0.18% | ✅ | V型反弹后高位整理不改趋势 |
-| 3 | 02-27 | 涨 | 0.80 | +0.82% | ✅ | 正常回踩+日月拱&月合木星双吉 |
-| 4 | 03-02 | 跌 | 0.67 | +0.74% | ❌ | 前高阻力+双硬相位遇趋势动量击败 |
-| 5 | 03-17 | 涨 | 0.66 | -0.89% | ❌ | 窄横后突破阳线=假突破 |
-| 6 | 03-31 | 涨 | 0.64 | -0.82% | ❌ | 锤子止跌+金星入金牛未能逆转下跌惯性 |
-
-**第1批正确率：3/6 = 50%**
-
-#### 第2批（07月，5组连续日）
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 7 | 07-10 | 涨 | 0.72 | -1.00% | ❌ | 放量锤子线被墓碑线否定 |
-| 8 | 07-13 | 跌 | 0.78 | -2.06% | ✅ | 放量墓碑线+金刑天/月刑海双硬相位 |
-| 9 | 07-14 | 涨 | 0.68 | +1.36% | ✅ | 3900支撑+巨蟹新月转折 |
-| 10 | 07-15 | 涨 | 0.62 | -0.29% | ❌ | 月冲冥王尾盘压制被低估 |
-| 11 | 07-16 | 涨 | 0.71 | -1.85% | ❌ | 缩量整理在下跌趋势中不可靠 |
-
-**第2批正确率：2/5 = 40%**
-
----
-
-### 第4轮（2026-07-18）— 04-05月星象批
-
-**测试范围**：2026-04-01 ~ 2026-05-19，5个星象采样日
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 04-01 | 跌 | 0.70 | +0.23% | ❌ | 缩量反弹量价背离+月冲土星海王星偏空 |
-| 2 | 04-16 | 涨 | 0.65 | +0.63% | ✅ | 连续3阳放量突破4000后微幅缩量回调 |
-| 3 | 04-30 | 涨 | 0.60 | +0.12% | ✅ | 三连阳+放量突破4100但双负相位压低置信度 |
-| 4 | 05-06 | 跌 | 0.72 | +0.60% | ❌ | 放量滞涨信号+月刑海王土星强化看空 |
-| 5 | 05-19 | 跌 | 0.80 | +1.13% | ❌ | 大阴线否定阳线确立下跌趋势,缩量反弹=下跌中继 |
-
-**第4批正确率：2/5 = 40%**
-
-**错误分析**：5组全部实际为涨，coder过度看跌（3次预测跌全错）。05-19最典型：上升趋势中单日大阴后缩量整理≠下跌中继。05-06"放量滞涨"在趋势初期可能是吸筹而非见顶。
-
----
-
-### 第5轮（2026-07-18）— 05-07月星象批
-
-**测试范围**：2026-05-29 ~ 2026-07-09，6个星象采样日
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 05-29 | 涨 | 0.55 | -1.02% | ❌ | 前3日连阳趋势未破,低开高走=买盘承接 |
-| 2 | 06-01 | 跌 | 0.70 | -0.23% | ✅ | 3日两次-1%阴线+中间弱反弹=空头确认 |
-| 3 | 06-15 | 涨 | 0.80 | +1.06% | ✅ | 五连阳量价齐升+新月日合月强化动能 |
-| 4 | 06-30 | 涨 | 0.65 | +0.89% | ✅ | V型反转+满月转折+木星入狮子偏多 |
-| 5 | 07-01 | 涨 | 0.75 | +0.53% | ✅ | 连两阳确认反转动能持续增强 |
-| 6 | 07-09 | 跌 | 0.60 | +1.48% | ❌ | 5日4阴下跌通道,但缩量至496亿抛压衰竭→仍看跌 |
-
-**第5批正确率：4/6 = 66.7%**
-
-**错误分析**：05-29"低开高走买盘"判断失误（实际放量跌731亿）。07-09已发现"缩量496亿抛压衰竭"但仍看跌，地量+月亮拱金星/入金牛=强反弹信号被忽略。coder自行提取"3日内双-1%阴线"模式并命中，这是正向学习信号。
-
----
-
-### 第7轮（2026-07-18）— 05月上中旬上升通道批
-
-**测试范围**：2026-05-07 ~ 2026-05-27，7个采样日，覆盖从4062→4256的上升通道及后续回调
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 05-07 | 涨 | 0.75 | +0.28% | ✅ | 五连阳量价齐升+跳空突破，日月拱盘中偏多 |
-| 2 | 05-08 | 跌 | 0.70 | +0.39% | ❌ | 六连阳后振幅缩量能衰，追高乏力回调需求增 |
-| 3 | 05-11 | 跌 | 0.80 | +0.56% | ❌ | 八连阳极超买+4180平顶双压，月刑天王触发情绪突变 |
-| 4 | 05-12 | 涨 | 0.72 | -0.35% | ❌ | 放量突破4230创新高，月拱木+日月六合盘中三吉象叠加 |
-| 5 | 05-14 | 涨 | 0.65 | -1.84% | ❌ | 05-13光头光脚看涨吞没+盘中无负面星象 |
-| 6 | 05-21 | 跌 | 0.78 | -2.33% | ✅ | 暴跌后缩量死猫反弹+盘中月刑火星午后抛压 |
-| 7 | 05-27 | 涨 | 0.68 | -1.09% | ❌ | 暴跌后三连阳筑底+量能回升+盘中月拱水星 |
-
-**第7批正确率：2/7 = 28.6%（历史最差）**
-
-**错误分析**：上升通道中连阳后继续涨的概率极高。coder连续两次因"连阳过度"看跌（05-08六连阳、05-11八连阳+平顶），但实际继续上涨。05-14看涨吞没形态后次日暴跌-1.84%，"盘中无星象触发=星象因子归零"的假设错误——盘前月合土星的压抑效应被忽略。05-27暴跌后修复三连阳≠止跌，量能仅恢复到暴跌前的60%。
-
-**coder提炼的模式（反馈后复盘）**：
-- 模式A「趋势反转双确认」：上升通道中需同时满足(1)实体阴线≥0.5%且收<开 (2)收盘<前日最低价，两条件成立前维持原趋势
-- 模式B「盘前星象权重底线」：盘前合土星/刑冲相位各保留≥0.3空头权重，"盘中无触发"不可归零
-
-### 第6轮（2026-07-18）— 06-07月下跌通道批
-
-**测试范围**：2026-06-26 ~ 2026-07-08，6个连续/采样日，覆盖从4163高点→3970低点的下跌通道
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 06-26 | 跌 | 0.55 | -2.26% | ✅ | 反弹无力量能萎缩，太阳刑海王星制造迷惑 |
-| 2 | 07-02 | 跌 | 0.62 | -2.03% | ✅ | 三日反弹逐级衰竭+放量滞涨，月冲木星后合冥王星触发转折 |
-| 3 | 07-03 | 跌 | 0.60 | +0.37% | ❌ | 07-02长上影+收近低=多头反攻失败，月六合土星收缩谨慎 |
-| 4 | 07-06 | 涨 | 0.55 | -0.06% | ❌ | 连续地量后技术性修复需求，月拱水星利好理性交易 |
-| 5 | 07-07 | 涨 | 0.58 | -1.26% | ❌ | 长下影探底4005+回收=多头抵抗信号，地量+月木火相位偏多 |
-| 6 | 07-08 | 跌 | 0.63 | -0.49% | ✅ | 跌破4000心理关口，上弦月+土星双杀压制 |
-
-**第6批正确率：3/6 = 50%**
-
-**错误分析**：连续3组错误(07-03→07-07)形成错误链条。07-02暴跌-2.03%后07-03微涨+0.37%，coder未考虑"暴跌次日技术性修复"的补偿效应（与L1::node_12超卖补偿原理矛盾）。07-06/07-07连续两天将下跌通道中的技术形态误判为看涨信号（地量≠止跌、长下影≠反转），cknown pattern"长下影+次日暴跌确认假信号"虽然提到但未应用。
-
----
-
-### 第8轮（2026-07-17）— 06月上中旬波动区批
-
-**测试范围**：2026-06-08 ~ 2026-06-18，5个采样日，覆盖06-05暴跌后的修复反弹+上升通道启动
-
-| # | 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|---|------|-----------|--------|-------|------|-----------|
-| 1 | 06-08 | UP | - | +1.28% | ✅ | 2连阴后纯粹积极相位(拱+六合)，短线技术反弹 |
-| 2 | 06-10 | DOWN | - | -0.16% | ✅ | 反弹缩量+月合土星压制+水土刑，惯性续跌 |
-| 3 | 06-12 | UP | - | +1.61% | ✅ | 放量743亿突破阳收近高，反转确立上攻 |
-| 4 | 06-16 | UP | - | +0.40% | ✅ | 强上升趋势+良性缩量回调，续涨动能足 |
-| 5 | 06-18 | DOWN | - | +1.78% | ❌ | 量价背离4连涨+金冥冲+月冥冲，高位回调 |
-
-**第8批正确率：4/5 = 80%（历史最高）**
-
-**唯一错误**：06-18。「量价背离4连涨+金冥冲+月冥冲，高位回调」→ 实际暴涨+1.78%突破4164。**冥王对冲在上升趋势确认后的能量被严重高估**。06-12放量743亿突破后已确立上升通道，4连阳中月亮合金星强化趋势，冥王对冲=考验非反转。coder反馈后提炼：趋势状态优先级最高，确立后星象权重降至0.2以下。
-
-**成功模式**：
-- 06-08：暴跌后2连阴+纯粹吉相位（仅拱/六合，无刑冲）=技术性反弹窗口 ✅
-- 06-10：缩量反弹+月合土星（盘中15:29精确压制）=下跌中继 ✅
-- 06-12：放量743亿（20日最大量）+阳线收近高=反转确立信号 ✅
-- 06-16：上升通道中良性缩量回调+趋势惯性=续涨 ✅
-
-#### 汇总
-
-| 批次 | 正确 | 总数 | 正确率 |
-|------|------|------|--------|
-| 第1批 (02-03月) | 3 | 6 | 50% |
-| 第2批 (07月) | 2 | 5 | 40% |
-| 第4批 (04-05月) | 2 | 5 | 40% |
-| 第5批 (05-07月) | 4 | 6 | 66.7% |
-| 第6批 (06-07月) | 3 | 6 | 50% |
-| 第7批 (05月上中旬) | 2 | 7 | 28.6% |
-| 第8批 (06月上中旬) | 4 | 5 | 80% |
-| 第10轮 (单例06-02) | 0 | 1 | 0% |
-| 第11轮 (单例06-22) | 0 | 1 | 0% |
-| 第13轮 (单例06-24) | 0 | 1 | 0% |
-| 第14轮 (单例06-25) | 1 | 1 | 100% |
-| **合计** | **19** | **38** | **50.0%** |
-
----
-
-### 第10轮（2026-07-17）— 单例无泄露，验证 backward 闭环
-
-**日期**: 2026-06-02，预测 06-03
-
-| 日期 | coder预测 | 实际% | 结果 | coder理由 |
-|------|-----------|-------|------|-----------|
-| 06-02 | DOWN | +0.22% | ❌ | 反弹被阴线否定+月刑海王空头双确认 |
-
-**错误根因**: 05-29放量阴线后06-01缩量止跌日(V:676亿<732亿, C:4057→4058微涨)被忽略。月刑海王在17:35盘后不影响当日。
-
----
-
-### 第11轮（2026-07-18）— 单例 06-22，验证上升通道十字星规律
-
-**日期**: 2026-06-22
-
-| 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|------|-----------|--------|-------|------|-----------|
-| 06-22 | DOWN | 0.70 | +1.78% | ❌ | 高位放量十字星见顶+上弦月转折+月冲海王星午后幻灭，三重共振看跌 |
-
-**错误根因**: 上升通道06-12已确立（放量743亿突破+五连阳），此后任何星象空头信号只能产生盘中震荡而非趋势反转。coder将放量十字星解读为见顶信号（连续两次同类误判——06-18和06-22），但上升趋势中放量十字星=换手洗盘非见顶。
-
-**关键现象**: 月冲海王星13:06触发后，指数从~4090一路上涨至4164，海王星负面能量被趋势动能完全碾压。月拱天王+月拱冥王两个三合相位被趋势放大为正面能量。
-
----
-
-### 第12轮（2026-07-18）— 单例 06-23，验证 coder 从十字星误判中学习
-
-**日期**: 2026-06-23
-
-| 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|------|-----------|--------|-------|------|-----------|
-| 06-23 | DOWN | 0.60 | -1.37% | ✅ | 五连阳加速+月冲土星盘前冷却=涨势歇脚，引用L2::node_45中继信号保质期仅1T，不再把十字星当空头依据 |
-
-**成功要点**: coder 明确引用了 Textron 节点 L2::node_45「新阳线刷新→旧见顶信号失效」，不再把 06-18 十字星当空头依据。这是 RL 学习的正向证据——前两轮（06-18/06-22）十字星误判的教训被 backward 蒸馏到了节点中，本轮被前向传播注入使用。
-
-**月冲土星杀伤力评估**: 单月冲土星+无对冲吉相位，实际杀伤力比 coder 预估的 -0.8% 大（-1.37%）。盘中冲高 4175 创阶段新高后大幅回落 90 点。
-
----
-
-### 第13轮（2026-07-18）— 单例 06-24，双刑相位 vs 深度回调修复
-
-**日期**: 2026-06-24
-
-| 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|------|-----------|--------|-------|------|-----------|
-| 06-24 | DOWN | 0.55 | +0.11% | ❌ | 冲高反转阴线+双刑相位(水星+木星)+月入天蝎=连续阴线 |
-
-**错误根因**: 双刑相位（水星+木星）的杀伤力远弱于对冲相位（如月冲土星 -1.37%），全天仅微跌后反弹收阳。06-23 已深度回调 -1.37% 释放风险，次日缩量 645 亿=抛压枯竭→反弹概率>续跌。coder 引用了 L1::node_9 但结论判断反了：深度回调释放风险后应看反弹而非续跌。
-
-**次要教训**: 月入天蝎尾盘不决定方向，仅放大当前情绪。缩量阴线次日=抛压耗尽，应反向看涨而非维持原方向。
-
----
-
-### 第14轮（2026-07-18）— 单例 06-25，双底缩量+星象空窗=反弹
-
-**日期**: 2026-06-25
-
-| 日期 | coder预测 | 置信度 | 实际% | 结果 | coder理由 |
-|------|-----------|--------|-------|------|-----------|
-| 06-25 | UP | 0.65 | +0.23% | ✅ | 4070双底支撑+缩量三级递减(743→709→645)+锤子线+全天星象空窗=反弹窗口 |
-
-**成功要点**: coder 正确应用了 L1::node_9 路径（深度回调→缩量止跌→重启上攻），且正确校准刑相位权重（刑≈0.35×冲，午夜发生=可忽略）。全天无交易时段星象=阻力最小日判断正确。
-
-**涨幅偏保守**: 预估 +0.5%~1.0% vs 实际 +0.23%，缩量环境下反弹动能有限。
-
----
-
-### semanticBackwardLLM 输入/输出（06-02轮）
-
-**触发**: 主AI coms_send 反馈给 coder 后，coder 返回 HighEntropy 时触发
-
-**输入**:
-```
-previousTask = coms_send预测请求: 06-02前5日K线+星象
-previousHighEntropy = coder预测: "反弹被阴线否定+月刑海王的空头双确认"
-currentUserMessage = 反馈: "coder预测DOWN实际UP+0.22%。06-01缩量止跌被忽略。月刑海王盘后不影响"
-selectedPath = L0::node_5 → L1::node_37 → L2::node_29
-network = astro_stock_prediction [11,40,40] 91节点
-```
-
-**输出**:
-```json
-{
-  "reward": -0.6,
-  "rationale": "missed stop-falling day; moon after-hours should not count",
-  "node_updates": {"L0::node_0": "追加缩量止跌覆盖旧信号", "L1::node_4": "追加放量滞涨区分"},
-  "add_nodes": [
-    {"layer":1, "name":"缩量止跌日=抛压耗尽→反向信号优先"},
-    {"layer":1, "name":"盘后星象不作用于当日交易"}
-  ]
-}
-```
-
-**网络变更**:
-- L0::node_0: 追加 `| 缩量止跌日(量缩>10%+微涨/平盘)→前空头信号被消化`
-- L1::node_4: 追加 `| 放量滞涨需区分趋势初期(吸筹)vs末期(出货)`
-- 新增2个L1节点: 缩量止跌反向信号 + 盘后星象排除规则
-- 2条边权重调整
-
-**⚠️ Bug**: nodeAdd=2但新节点HTML内容为空，addPolicyNode写入路径需排查
-
----
-
-### 第10轮 backward 质量分析
-
-**时间**: 20:24:53 UTC，触发于 coms_send 反馈后 coder 返回 HighEntropy
-
-#### 输入质量
-
-| 字段 | 内容 | 评分 |
-|------|------|------|
-| previousTask | coms_send预测请求: 06-02前5日K线全量+星象 | ✅ 完整 |
-| previousHighEntropy | coder预测: "反弹被阴线否定+月刑海王的空头双确认" | ✅ 高熵 |
-| currentUserMessage | 反馈: 预测DOWN实际UP+0.22%，06-01缩量止跌被忽略，月刑海王盘后 | ✅ 含对错+根因 |
-| RELATED nodes | 仅1条: L1::node_3 sim=0.262 to L1::node_4 | ⚠️ 太少 |
-| EXISTING nodes | 全量91节点 | ✅ 完整 |
-| selectedPath | L0::node_5→L1::node_37→L2::node_29 | ✅ 有效路径 |
-
-**结论**: 输入质量高，但 RELATED 近似节点仅1条(sim=0.262)，相似度阈值可能过严。
-
-#### 输出质量
-
-| 字段 | 值 | 评分 |
-|------|-----|------|
-| reward | -0.6 | ✅ 正确反映错误预测 |
-| rationale | "missed stop-falling day; moon after-hours should not count" | ✅ 准确 |
-| nodeUpdateIds | [L0::node_0, L1::node_4] | ✅ 更新已有节点 |
-| addNodes | [缩量止跌, 盘后星象] | ✅ 领域相关 |
-| nodeActions(merge/delete) | [] | ❌ 空—有1条RELATED节点但未产生合并 |
-
-**结论**: 输出核心字段正确，但 nodeActions 始终为空。LLM 看到了 RELATED 节点但未提议合并/删除。
-
-#### 全量统计（54条backward）
-
-| 指标 | 数值 | 评价 |
-|------|------|------|
-| 总条数 | 54 | |
-| 有 node_updates | 3/54 (5.6%) | 🔴 太少 |
-| 有 add_nodes | 35/54 (64.8%) | 🟡 偏多 |
-| 有 merge/delete | 0/54 (0%) | 🔴 从未触发 |
-| 有 RELATED 节点 | 13/54 (24%) | 🟡 覆盖率低 |
-| reward=0 | 28/54 (51.9%) | 🔴 半数无信号 |
-
-#### 问题诊断
-
-1. **RELATED 近似节点查找太弱**: 54条中仅13条找到近似节点，每次仅1-2条。`findSimilarKnowledgeNode` 基于 TF-IDF cosine相似度，阈值0.40。已找到的相似度偏低（如 L1::node_3 sim=0.262）
-2. **LLM 不主动合并**: 即使 RELATED 有节点，LLM 从未输出 nodeActions(merge/delete)。prompt 中的合并指令不够强。**关键断裂点：近似节点传给了LLM，但LLM不产出合并/删除动作**
-3. **node_updates 太少**: 仅5.6%，大量 add_nodes 导致节点膨胀。prompt 指令已修（Rule1: NODE_UPDATE FIRST），待重启验证
-4. **merge/delete 从未触发**: 0%。网络只有增长没有收缩，噪声无法自动清理
-5. **add_nodes 有内容丢失 bug**: nodeAdd=2 但 node_38/node_39 HTML 内容为空
-
-#### 相似节点链路分析
-
-```
-新节点内容 → buildTfidfIndex(全量91节点→词汇表+IDF向量)
-         → tfidfSimilarity(cosine相似度)
-         → findSimilarKnowledgeNode(阈值0.40→返回最佳匹配)
-         → 若匹配: 直接合并到已有节点(updateExistingNodeByPolicy)，不增加新节点
-         → 若不匹配: 进入RELATED节点搜索，找到与 PATH节点 相似的节点
-         → RELATED节点传给LLM prompt
-         → LLM应产出 node_actions(merge/delete) ← 🔴 此处断裂，始终为空
-```
-
-**修复方向**:
-- RELATED 相似度阈值从当前(查找path附近节点)降低，让更多近似节点进入LLM视野
-- Prompt 强化: "If RELATED nodes exist, you MUST emit at least one node_action (merge/delete)"
-
----
-
-### 第1-2轮（历史，2026-07-15 之前）
-
-| 轮次 | 日期 | coder预测 | 置信度 | 实际% | 结果 | 备注 |
-|------|------|-----------|--------|-------|------|------|
-| 1 | 3/02 | 涨 | 0.57 | +0.47% | ✓ | |
-| 2 | 3/03 | 涨 | 0.56 | -1.43% | ✗ | |
-| 3 | 3/04 | 跌 | 0.64 | -0.98% | ✓ | |
-| 4 | 3/05 | 涨 | 0.59 | +0.64% | ✓ | |
-| 5 | 3/06 | 涨 | 0.56 | +0.38% | ✓ | |
-| 6 | 3/09 | 跌 | 0.55 | -0.67% | ✓ | |
-| 7 | 3/10 | 涨 | 0.58 | +0.65% | ✓ | |
-| 8 | 3/11 | 跌 | 0.57 | +0.25% | ✗ | |
-| 9 | 3/12 | 涨 | 0.54 | -0.10% | ✗ | |
-| 10 | 3/13 | 涨 | 0.55 | -0.82% | ✗ | |
-| 11 | 3/16 | 涨 | 0.53 | -0.26% | ✗ | |
-| 12 | 3/17 | 跌 | 0.56 | -0.85% | ✓ | |
-
-**第1-2轮正确率：6/12 = 50%**
-
----
-
-## 关键教训（从22组测试中提取）
-
-### coder 预测模式分析
-
-| 错误类型 | 次数 | 典型案例 | 根因 |
-|----------|------|----------|------|
-| 过度看涨 | 6 | 05-29/07-10/07-15/07-16/03-17/03-31 | 对锤子线/整理形态过于乐观，忽略下跌趋势惯性 |
-| 过度看跌 | 4 | 04-01/05-06/05-19/03-02 | 将趋势初期放量整理误判为见顶信号 |
-| 正确高置信 | 4 | 06-15(涨0.80)/02-02(跌0.82)/02-27(涨0.80)/07-13(跌0.78) | 五连阳+新月/高位大阴+满月多冲/大阴+硬相位 |
-
-### 核心规律
-
-1. **趋势优先于星象**：金星星象（合木星、入金牛）不能单独逆转下跌趋势
-2. **锤子线在下跌趋势中需次日确认**：03-31 和 07-10 的锤子线均失败
-3. **高位大阴+满月多冲相位 = 最可靠反转信号**（02-02 命中）
-4. **日月拱+健康回调 = 可靠做多信号**（02-27 命中）
-5. **三日内双-1%阴线+弱反弹 = 强空头信号**：coder 自行提取的模式，06-01 命中
-6. **地量(≤500亿)+多星象拱相位 = 强反弹信号**：07-09 缩量496亿+月拱金星/入金牛→大涨+1.48%，但 coder 看到了信号却仍看跌
-7. **五连阳量价齐升+新月 = 最强看涨组合**（06-15 命中，置信度0.80）
-8. **趋势中的"放量滞涨"=吸筹非见顶**：05-06 出现5日最大量+最小涨幅后继续涨+0.60%
-9. **🆕 下跌通道中地量≠止跌、长下影≠反转**：第6批07-06/07-07连续两次将下跌中继误判为看涨信号。下跌趋势惯性下，技术形态可靠性大幅下降，需次日阳线确认
-10. **🆕 暴跌次日技术性修复（0.3-0.5%反弹）≠趋势反转**：07-02暴跌-2%后07-03微涨+0.37%，coder忽略超卖补偿原理（已有L1::node_12节点）继续看跌
-11. **🆕 长上影+收近低=空头确认（已验证07-02命中）**：盘中反攻失败收于低点，次日大概率续跌。这是 coder 第6批提炼的可复用 pattern
-12. **🆕 上升通道确立后，放量十字星=换手洗盘非见顶（06-18/06-22双验证）**：放量743亿突破+五连阳确立趋势后，任何星象空头信号只能产生盘中震荡而非趋势反转。放量十字星在上升趋势中是多空激烈换手后继续上行的信号，连续两次将此模式误判为见顶说明星象空头权重在已确立趋势中必须降至0.2以下
-
----
-
-## 已修改项
-
-### 2026-07-18
-
-#### 5. 修复 `messages` 声明前引用 bug（🔴 严重：导致 semantic_backward 完全跳过）
-
-**位置**：`index.ts` line 1866（原）→ 修复后 line 1866
-
-**原问题**：`recordMonitorEvent` 中 `llmInput: { systemPrompt: messages[0].content... }` 引用了未声明的 `messages`（`const messages = [...]` 在第1873行才声明）。JavaScript const 无变量提升 → `ReferenceError: Cannot access 'messages' before initialization` → `semanticBackwardLLM` 崩溃返回 `{reward:0}` → `autoBackward` 无奖励信号、无 node_updates、无 add_nodes。
-
-**后果**：自网络创建以来所有 backward LLM 调用全部失败，44/45 节点增长全来自前向 ngram 蒸馏而非语义学习。
-
-**修复**：删除 `recordMonitorEvent` 中的 `llmInput` 行，改为在 `messages` 声明后单独记录 `semantic_backward_llm_input` 事件。
-
-#### 6. test.md 步骤⑥增强为强制审计子步骤
-
-新增 5 个子步骤 [a-e]：读 semantic_backward.jsonl、读 _events.jsonl、对比节点数、读最近更新节点内容、发现 failed/error 立即修。
-
-#### 7. 部署数据服务
-
-- 星象：`http://localhost:8769/horoscopeFeature?date=&lat=&lng=`
-- 股票：`http://localhost:8768/kline?symbol=&start=&end=` 和 `/kline/range?symbol=&target=&before=`
-- 下次测试直接用 curl 调接口，无需写脚本
-
----
-
-### 2026-07-18（诊断修复）
-
-#### 8. 修复两处 `catch {}` 空块导致日志写入失败静默被吞
-
-**位置**：
-- `index.ts` line 1163：`recordMonitorEvent` 的 catch 块
-- `index.ts` line 2134：`semantic_backward.jsonl` 写入的 catch 块
-
-**原问题**：`catch {}` 空块，任何 fs 写入异常都被静默吞噬，无法诊断 `_events.jsonl` 为何停在 07-16。
-
-**修复**：
-- `recordMonitorEvent` 失败时：console.error + 写 `_events_error.log` 旁路日志
-- `recordMonitorEvent` 成功时：写 `_events_heartbeat` 旁路心跳文件（用于确认函数被调用且写入成功）
-- `semantic_backward.jsonl` 失败时：console.error
-
-**注意**：修改后需重启 pi-agent 才能生效。重启后观察：
-1. `~/.textron/_events_heartbeat` 是否存在且有更新时间 → 确认写入正常
-2. `~/.textron/_events_error.log` 是否有内容 → 确认是否有写入失败
-3. pi stderr 是否有 `[textron] recordMonitorEvent failed:` → 确认具体错误
-
-#### 9. 确认 `semantic_backward.jsonl` 不是空记录（诊断误判纠正）
-
-**发现**：jsonl 有 13 条完整记录（含 ts/taskFamily/mode/model/systemPrompt/userPrompt/parsed），之前用错 key 名解析导致误判为空。
-
----
-
-### 2026-07-17
-
-#### 4. 修复 `edgeUpdate is not defined` bug
-
-**位置**：`index.ts` line 3436, 3437, 3444
-
-**原问题**：手动 backward 节点更新逻辑中引用了不存在的变量 `edgeUpdate`，导致 `Textron(action='backward')` 报错。
-
-**修复**：3 处 `edgeUpdate.changedEdges` → `bwResult.changedEdges`
-
-**注意**：修复后需重启 pi-agent 才能生效（扩展代码被缓存）。
-
-### 2026-07-15
-
-#### 1. Merge 阈值：0.24 → 0.55
-
-**位置**：`learning_policy.ts` line 135
-
-**原问题**：0.24 阈值太低，股票预测知识以 24-44% 低相似度被 merge 进音乐旧节点。
-
-**注意**：0.55 可能偏激进，name Jaccard=0.50 的同域节点会被判定为 add 而非 merge（见单元测试失败）。
-
-#### 2. 满仓驱逐阈值：0.28 → 0.15
-
-**位置**：`index.ts` line 869
-
-**效果**：弱节点可在高信号新知识到来时被替换。
-
-#### 3. 测试流程标准化
-
-- **必须**使用 `coms_send` 发送给 `coder` agent 做隔离预测
-- **禁止**主AI直接预测（信息泄露）
-- 每轮测试后必须给 coder 反馈预测结果
-
----
-
----
-
-## 🔄 交接（2026-07-18 18:03 — pi 重启前）
+## 交接信息（2026-07-22 晚，第26轮测试后）
+
+### 本轮改动（已写入 index.ts，待重启生效）
+
+1. **DELETE 禁止**：systemPrompt schema 移除 `delete`，Rule1 加 `NEVER propose delete`，解析层过滤
+2. **name 蒸馏合并**：node_update 的 name 改为 `distillNodeName(oldName + newName)`，不再全量替换
+3. **MERGE DUTY (Rule 7)**：强制 LLM 扫描 RELATED 重叠节点提 merge
+4. **冷启动虚拟 L0**：0节点时 forward 创建 `_seed_0` 虚拟节点 → backward SEED section 引导 LLM 用 add_nodes 落地
+5. **`_seed_` 写入防护**：`applySemanticNodeUpdates` 拒绝写入虚拟节点到磁盘
+
+### 重启后验证项
+
+| # | 验证项 | 方法 |
+|---|--------|------|
+| 1 | DELETE 不再出现 | 跑一轮预测→反馈→backward，检查 LLM rawResponse 的 node_actions 是否含 delete |
+| 2 | name 保留旧关键词 | backward 后 `cat layer_N/node_X.html` 检查 `<name>` 是否含旧名关键词 |
+| 3 | MERGE DUTY 生效 | backward 后检查 node_actions 是否有 merge 条目 |
+| 4 | 冷启动虚拟 L0 | 发一条域名消息到空/新网络 → 检查 `propagate_done` 的 selectedIds 是否含 `_seed_0` |
+| 5 | 第27轮完整闭环 | Workflow A 完整流程（选历史日期→预测→反馈→审计七层） |
 
 ### 当前状态
 
-| 项目 | 状态 |
-|------|------|
-| pi 主会话 | PID 3201 (TTY s001)，即为 planner agent |
-| coder agent | PID 3188 (TTY s003)，session `aa1e9683...` |
-| 第3个 pi | PID 3355 (TTY s004) |
-| 数据服务 | stock:8768 / horoscope:8769 均正常 |
-| Textron 网络 | astro_stock_prediction 52节点 (L0:9 L1:19 L2:24) |
-| 测试进度 | 28组 50.0%，暂停等待重启 |
+- 网络：`astro_stock_prediction`，42 节点，layers [4, 6, 32+]
+- 第26轮：2025-01-15，预测跌/实际跌，命中，reward=0.8 ✅
+- 待测试：第27轮，从 2025 年数据中选下一个未测日期
 
-### 已修改代码（需重启生效）
-
-| 文件 | 修改 | 目的 |
-|------|------|------|
-| `index.ts` line 1159-1173 | `catch {}` → console.error + 心跳文件 + 错误日志 | 诊断 _events.jsonl 不写入 |
-| `index.ts` line 2131-2135 | `catch {}` → console.error | 诊断 semantic_backward.jsonl 写入失败 |
-| `agent_restart_service.py` | 新建 | 管理 agent 重启，端口 8770 |
-
-### 重启方式
-
-```bash
-# 启动重启服务
-python3 /Users/rama/textron-agent/agent_restart_service.py &
-
-# 或手动 kill + 重启
-kill 3188  # coder
-kill 3201  # planner（会断开当前对话）
+### 审计标准流程（步骤⑥，只读）— 必须逐项执行
+```
+[a] tail -5 semantic_backward.jsonl → 检查 reward、nodeUpdates/addNodes 内容质量
+[b] grep semantic_backward _events.jsonl → 检查 apply 结果、skipReasons
+[c] Textron status → 对比节点数变化
+[d] cat 最新修改的 .html 节点 → 检查 name 是否保留旧关键词、content 是否 `|` 合并而非全换
+[e] 若 status=failed/error → 报告，不自行修复
+[f] 逐项对照七层门控（test.md 第三节）检查有无阻断
+[g] 检查 LLM 输出的 node_actions 是否含 delete（禁止）、是否缺 merge（应提未提）
 ```
 
-重启后检查：
-1. `~/.textron/_events_heartbeat` 是否存在 → 确认 recordMonitorEvent 被调用
-2. `~/.textron/_events_error.log` 是否有内容 → 确认是否有写入失败
-3. pi stderr 是否有 `[textron] recordMonitorEvent failed:` → 确认具体错误
-
 ---
 
-## 当前网络状态（2026-07-18）
+## 一、改动用时间线还原（按引入顺序）
 
-- **活跃网络**：`astro_stock_prediction` [9,14,22] growth=on，**44/45 节点已填充**（L0:9/9 L1:14/14 L2:21/22）
-- **激活路径**：L0::node_0 → L1::node_12 → L2::node_8
-- **44/45来自ngram蒸馏**，非semantic_backward LLM（因bug崩溃）
+### 0. 原始设计（bb0e7c5）
 
-### 最近3次成功的semantic_backward（07-16凌晨）
-
-| 时间 | reward | 激活路径 | 产出 |
-|------|--------|----------|------|
-| 00:12 | -0.5 | L0::0→L1::2→L2::0 | +L1::node_13(避免大量代码) |
-| 14:06 | 0.2 | L0::5→L1::6→L2::9 | 更新L2::node_9(日志) + merge 1 |
-| 14:13 | -0.5 | L0::0→L1::2→L2::3 | +L2::node_20(改啊=直接改) +L2::node_21(补日志字段) |
-
-### 2次manual_backward补救（绕过bug）
-
-| 时间 | reward | 操作 |
-|------|--------|------|
-| 15:59 | -0.5 | 噪声惩罚8条L0::node_0出边 |
-| **16:01** | **1** | 更新L0::node_0(05-29教训)、L1::node_11、L2::node_15 + 升权L1::11→L2::15边 |
-
-### 🔴 6轮股票预测backward全部失败
-
-时间15:23~16:02，路径含L0::node_0+L1::node_4/L1::node_11+L2::node_15，previousTaskChars=2563~2865，
-全部因`messages`bug报`Cannot access 'messages' before initialization` → 重启修复后恢复。
-
----
-
-## 🚀 数据服务（已部署，重启后可用）
-
-| 服务 | 端口 | 接口 |
-|------|------|------|
-| 星象 | `8769` | `GET /horoscopeFeature?date=YYYY-MM-DD&lat=31.23&lng=121.47` |
-| K线 | `8768` | `GET /kline?symbol=sh000001&start=YYYY-MM-DD&end=YYYY-MM-DD` |
-| 预测用例 | `8768` | `GET /kline/range?symbol=sh000001&target=YYYY-MM-DD&before=5` |
-
-启动命令：
-```bash
-cd /Users/rama/Documents/agi_nanobot/nanobot
-nohup python3 nanobot/skills/horoscope-fetcher/scripts/horoscope_service.py --port 8769 > /tmp/horoscope_service.log 2>&1 &
-nohup python3 nanobot/skills/stock-trade/scripts/stock_service.py --port 8768 > /tmp/stock_service.log 2>&1 &
-```
-
-coder agent：`coms_send` → target=`coder`，project=`demo`（需在另一个终端启动）。
-
----
-
-## 下次测试
-
-1. **端口注意**：数据服务必须用 `127.0.0.1` (IPv4) 访问，`localhost` 走 IPv6 会被 Textron Monitor 拦截
-2. 确认数据服务 alive：`curl 127.0.0.1:8768/kline?symbol=sh000001&start=2026-07-01&end=2026-07-17`
-3. 确认 coder 在线：`coms_list` (project=demo)
-4. 选新日期（推荐 05-07~05-28 上升通道中段，或 06-08~06-18 波动区）
-5. 组装用例 → `coms_send` → coder → 对答案 → 反馈
-6. **执行步骤⑥轨迹审计**（参照上方5子步骤）
-7. 预期：semantic_backward 不再报 `messages` 错误，semantic_backward.jsonl 有记录
-
----
-
-## 🧠 对 Textron RL 闭环的理解（2026-07-18 总结）
-
-### 核心认知
-
-**测试对象是 autoBackward，不是 coder 的预测准确率。**
-
-- ①②③④⑤（取数据→组用例→发coder→对答案→反馈）全是铺垫，目的是制造 reward 信号
-- 真正要观察的是：**autoBackward 在下轮对话中是否正确消费了 reward，是否更新了节点/边/权重**
-- coder 正确率是副产品，不是主目标
-
-### 主AI 的边界
-
-| 可以做的 | 禁止做的 |
-|----------|----------|
-| 取数据、组装用例 | 调用 `Textron(action='backward')` |
-| coms_send 发给 coder | 调用 `Textron(action='init')` |
-| 对答案、更新 test.md | 手动编辑 `~/.textron/` 下文件 |
-| 反馈 coder | 手动创建/删除/修改节点 |
-| **读**日志、events、节点（只读） | 自行修复 index.ts bug |
-
-### 正确节奏
+只有一个 before_agent_start 保存 + agent_end 恢复的简单闭环：
 
 ```
-本轮：①→②→③→④→⑤(coder回复后停手)
-下轮：autoBackward自动消费上轮reward → ⑥轨迹审计(只读观察) → ⑦下一批
+before_agent_start:
+  if 有 pending (lastTaskFamily)
+    → 执行 backward → 清理 pending
+  → 前向传播 → 保存激活路径到 current*
+
+agent_end:
+  把 current* 移到 last*（为下一轮 backward 做准备）
+  保存 _last_state.json
 ```
 
-做完⑤后绝对不能手动调 backward。等下轮用户输入时 autoBackward 自己跑。跑完后读日志验证。
+**简洁性**：backward 在每轮 before_agent_start 无条件触发。没有领域过滤、没有 routeUncertain、没有 outcome signal 检测。
 
 ---
 
-## 🔄 交接（2026-07-18 — 重启前）
+### 1. 第一层加锁：`hasBackwardOutcomeSignal`（← lifecycle_feedback.ts，新增文件）
 
-### 当前状态
+**解决问题**：用户发"继续"、"好的"、"知道了"等中间消息时，不应触发 backward。
 
-| 项目 | 状态 |
-|------|------|
-| 测试进度 | 第14轮完毕，19/38=50.0%，上升通道回调段(06-22→06-25)覆盖完成 |
-| 下次测试 | 06-26 开始，或选新日期。上升通道确认后继续测试下跌/震荡段 |
-| 数据服务 | stock:8768 / horoscope:8769 均正常 |
-| coder agent | 在线，最近几轮展现了从节点学习的证据 |
+**引入机制**：
+```
+before_agent_start:
+  if 有 pending AND hasBackwardOutcomeSignal(当前消息)==false
+    → 跳过 backward（保留 pending）
+  if 有 pending AND hasBackwardOutcomeSignal(当前消息)==true
+    → 执行 backward
+```
 
-### 本次重启原因
+**Gate 的四层检测**：
+| 门层 | 关键词 | 设计目标 |
+|------|--------|---------|
+| Gate1 | 涨了/跌了/正确/错误/结果/实际/收盘 | 通用结果评价 |
+| Gate2 | 月冲/月合/月刑/新月/满月/换座/相位... | 星象领域信号 |
+| Gate3 | 上证/A股/放量/缩量/支撑/压力/突破... | 金融领域信号 |
+| Gate4 | 反馈/评价/复盘/总结...（≥30字） | 明确反馈意图 |
 
-**4 个关键修复已部署到 index.ts，需重启 pi-agent 生效：**
-
-| # | 修复 | 原因 |
-|---|------|------|
-| 1 | **prompt 缩减**：existing 节点从全量(118) → 每层 top-8 | prompt 平均 15090 chars 太大，LLM 忽略 merge/delete |
-| 2 | **max_completion_tokens 翻倍**：1024→2048 | LLM 输出空间不足，merge/delete 被截断 |
-| 3 | **RELATED 阈值降低**：0.25→0.15 | 中文 TF-IDF 相似度偏低，近似节点发现太少 |
-| 4 | **prompt 规则重排**：MERGE/DELETE FIRST 提升为规则 #1 | 原来排在最后，LLM 注意力被前面消耗 |
-
-### 重启后验证
-
-1. `coms_list --project demo` 确认 planner+coder 上线
-2. 执行一次预测测试 → 观察 backward 日志 merge/delete 是否开始产出
-3. 检查 `~/.textron/astro_stock_prediction/_sb_logs/semantic_backward.jsonl` 最新记录
-4. 预期指标改善：merge/delete > 0, userPromptChars 从 ~13K → ~5K
+**副作用（第一道裂缝）**：
+- Gate2 包含 40+ 个星象关键词，其中"月冲""月合""月刑""新月""满月""换座"等在 Workflow A 的预测数据消息中频繁出现
+- Gate3 包含"放量""缩量""支撑""压力""突破""跌破"等 K 线描述词
+- **预测消息中的数据描述 ≠ 反馈信号**，但 Gate2/3 无法区分
 
 ---
 
-## 第15轮（2026-07-17 晚，重启后首轮）— 单例 06-26 ✅
+### 2. 第二层加锁：agent_end 的 outcome_feedback 门控（← 同一文件，同一函数，第二次调用）
+
+**解决问题**：反馈消息（"实际跌了..."）本身也会经过 agent_end，如果不加过滤，反馈会覆盖 pending 中的预测任务，下一轮的 backward 会用"反馈消息"当 previousTask。
+
+**引入机制**：
+```
+agent_end:
+  if hasBackwardOutcomeSignal(当前消息) == true
+    → 清空 lastTaskFamily（不保存 pending）
+  else if lastTaskFamily 非空
+    → 保留 pending（中间消息保护）
+  else
+    → 保存当前消息为 pending
+```
+
+**问题**：在 before_agent_start 已经用 `hasBackwardOutcomeSignal` 过滤过一次了。agent_end 再调一次同一个函数，但面对的输入不同：
+- before_agent_start 面对的是**当前轮的第一条消息**
+- agent_end 面对的是**同一消息经过前向传播、LLM 推理、输出后的完成态**
+
+但关键不是"输入不同"，而是**判断目的不同**：
+- before_agent_start 需要判断："这个消息能不能用来做 backward？"（宽泛 OK）
+- agent_end 需要判断："这个消息本身是不是结果反馈？"（必须精确）
+
+用同一个函数做两件语义不同的事，是第一次架构错误。
+
+---
+
+### 3. 第三层加锁：`hasDomainEvidence`（← lifecycle_context.ts）
+
+**解决问题**：非星象/金融领域的消息（改代码、修 bug、重启）不应触发 backward，否则 LLM 在 reward≈0 时会编造 merge/delete。
+
+**引入机制**：
+```
+before_agent_start:
+  if 有 pending AND hasBackwardOutcomeSignal==true
+    → if !hasDomainEvidence(previousTask) AND !lastAssistantHighEntropy
+      → 跳过 backward，清理 pending（"卡住预防"）
+    → else
+      → 执行 backward
+```
+
+**副作用**：
+- `hasDomainEvidence` 也依赖关键词检测，与 `hasBackwardOutcomeSignal` 的门控关键词有重叠但不等价
+- 两个门控串联 → 进入 backward 必须同时满足两条约束
+
+---
+
+### 4. 第四层加锁：MoE 路由（← moe_router.ts，新增文件）
+
+**解决问题**：L0 节点太多时，需要专家路由选择最相关的子集。
+
+**引入机制**：
+- MoE 将 L0 按主题分成 Expert 组
+- 当 L0 领域节点不足时，`moeMaxScore` 偏低 → `routeUncertain=true`
+- `routeUncertain` 后续触发 novelty 策略...
+
+---
+
+### 5. 第五层加锁：Novelty 策略 + `routeUncertain` 抑制（← novelty_policy.ts，新增文件）
+
+**解决问题**：routeUncertain 时系统应偏向 add_node 而非 node_updates（探索新知识）。
+
+**引入机制**：
+```
+if routeUncertain == true
+  → shouldPreferAddNode = true
+  → if 当前不是 outcome feedback
+    → semantic_node_updates_suppressed_for_add_candidate
+    → LLM 返回的 node_updates 被抑制
+```
+
+**副作用（P0.5 bug）**：
+- 真实结果反馈也会被抑制（因为反馈消息本身 routeUncertain=true）
+- 修复：`currentIsOutcomeFeedback` 门控跳过抑制
+- 但 `currentIsOutcomeFeedback` 依赖的还是那个宽泛的 `hasBackwardOutcomeSignal`！
+
+---
+
+### 6. 第六层加锁：`downstreamRelevanceFloor`（← scoring_policy.ts）
+
+**解决问题**：无关下游节点（micme、TUI、DOM/Canvas）被注入上下文。
+
+**引入机制**：
+```
+propagate:
+  for each downstream node:
+    if lexicalRelevance(currentPrompt, nodeContent) < 0.015
+      → score = 0
+```
+
+没有明显副作用，属于纯过滤。
+
+---
+
+### 7. 第七层加锁：`mergeDeleteGate`（reward≥0.05 阈值）
+
+**解决问题**：reward≈0 时禁止 merge/delete 操作，防止 LLM 编造理由。
+
+**引入机制**：
+```
+if abs(reward) < 0.05
+  → 剥离所有 merge/delete action
+```
+
+**副作用**：
+- 弱反馈（reward=0.02-0.04）也无法触发 merge/delete，网络收敛速度降低
+
+---
+
+### 8. 内容限制重构：120c → NODE_CONTENT_MAX_CHARS（← content_limits.ts，新增文件）
+
+**解决问题**：原来硬编码 120/180 字符截断导致关键失效边界丢失。
+
+**引入机制**：
+- `NODE_CONTENT_MAX_CHARS = 1000`
+- `DEFAULT_COMPILED_CONTEXT_MAX_CHARS = 4000`
+- `mergeContent` 从对称截断 120c 改为 `mergeDistinctContentFragments` 去重合并
+
+**副作用**：
+- `validateKnowledgeCrystal` 原来上限 240c，现在上限 1000c → 节点可以变得更长
+- `mergeNodeContent` 逻辑完全重写，从简单截断改为语义去重 → behavior changed
+
+---
+
+### 9. Scale-Rescue（王虹–Zahl 尺度重构，新增一大块逻辑）
+
+**解决问题**：被 gate 拒绝的内容不是垃圾，只是选错尺度。downscale→原子节点，upscale→配对合并。
+
+**副作用**：
+- 增加约 150 行复杂逻辑
+- 在网络节点管理上增加了一个新的缓冲层（`_rescale_pending.json`）
+- 对节点增删路径增加了分支（先 rescale 再决定是否 add）
+
+---
+
+## 二、断因链：Workflow A 为什么在第25轮失败
+
+```
+本轮（2026-01-19，Workflow A，完整数据格式）：
+
+预测任务消息 → before_agent_start → lastTaskFamily=null（重 启后pending丢失），跳过backward
+              → 前向传播 → coder预测（跌0.68） → LLM回复
+
+agent_end:
+  → hasBackwardOutcomeSignal(完整K线+星象数据消息) 
+    → Gate2命中: "月冲""月合""月刑""新月"
+    → Gate3命中: "放量""缩量""支撑""突破"
+    → 返回 true  ❌ 误判！
+  → 清空 lastTaskFamily（但 lastTaskFamily 本来就是空的）
+  → 返回，不保存 pending
+
+反馈消息到达 → before_agent_start:
+  → lastTaskFamily == null（因为 agent_end 没保存）
+  → hasLastTask=false → 跳过 backward ❌ 反馈丢失！
+
+真相：不是"没保存 pending"，而是 agent_end 的 hasBackwardOutcomeSignal
+对包含K线+星象数据的预测任务消息返回了 true，导致 pending 被拦截
+（即使lastTaskFamily为空，也进入清理分支，没有进入"保存"分支）。
+```
+
+---
+
+## 三、七层门控累计效应
+
+```
+消息到达 → 每层判断
+
+第1层 [before_agent_start] hasBackwardOutcomeSignal(当前消息)
+  false → 跳过 backward（保留 pending）| true → 继续 ↓
+
+第2层 [before_agent_start] hasDomainEvidence(previousTask)
+  false AND 无 HighEntropy → 跳过 backward + 清 pending | true → 继续 ↓
+
+第3层 [before_agent_start] routeUncertain 判断
+  true → MoE 低信号的中间试探 | false → 精确路由
+
+第4层 [before_agent_start] novelty 策略
+  routeUncertain → shouldPreferAddNode → 抑制 node_updates
+
+第5层 [backward执行中] mergeDeleteGate(reward)
+  |reward|<0.05 → 剥离所有 merge/delete
+
+第6层 [agent_end] hasBackwardOutcomeSignal(当前消息) ← 同一函数第二次调用
+  true → 清空 pending | false → 保留/保存 pending
+
+第7层 [agent_end] lastTaskFamily 检查
+  非空 → 保留 pending（中间消息保护）| 空 → 保存 pending
+```
+
+**关键问题**：
+- 第1层和第6层用的是同一个函数，但判断目的不同
+- 第6层的误判会直接导致 pending 丢失
+- 每层都有"跳过/阻断"路径，任何一个阻断都会让反馈回路断裂
+- 累计 7 个阻断点，任意一个判断失误 → 闭环断裂
+
+---
+
+## 四、修复方向（仅分析，不碰源码）
+
+### 方向A：精确拆分（最小改动）
+
+把 agent_end 中的 `hasBackwardOutcomeSignal` 替换为只检测**强结果标记**的函数：
+
+```
+isStrongOutcomeFeedback(message):
+  /未命中|命中|结果反馈|预测结果/m → true
+  /实际.*涨|实际.*跌|实际.*收/m → true
+  其他 → false
+```
+
+预测任务消息（含"月冲""放量"）：不匹配 → 正常保存 pending ✅
+结果反馈消息（含"实际涨了""未命中"）：匹配 → 不保存 pending ✅
+
+### 方向B：职责分离（中等改动）
+
+引入 `backwardJustExecuted` 标志。before_agent_start 在成功消费 pending 后设置此标志。agent_end 检查此标志而非调用任何检测函数。
+
+```
+before_agent_start:
+  if backward 执行成功 → backwardJustExecuted = true
+
+agent_end:
+  if backwardJustExecuted → 跳过保存（反馈已被消费）
+  elif lastTaskFamily 非空 → 保留 pending
+  else → 保存 pending
+```
+
+### 方向C：回归简化（大幅改动）
+
+回到原始设计，仅保留一层 `hasBackwardOutcomeSignal` 在 before_agent_start 中。agent_end 不做任何检测，只保存。靠 `_last_state.json` 的一致性来保证反馈不被错误地保存为 previousTask。
+
+---
+
+## 五、本轮测试记录（第25轮，Workflow A，2026-01-19）
 
 | 项目 | 内容 |
 |------|------|
-| 目标日 | 2026-06-26（前5日：06-18/22/23/24/25，真实历史不泄露） |
-| coder 预测 | **DOWN 0.58**（供应区回落+日海刑+月火冲入相） |
-| 实际 | 开4098.69 高4099.78 低4007.86 收4027.26 量660.1亿 → **DOWN -2.26%** ✅ |
-| 累计 | **20/39 = 51.3%** |
-| 关键形态 | 开盘即全天最高(高=开+0.03%)=极端弱势；缩量暴跌=买盘真空非恐慌底；收盘分位21.1%<25%三重共振 |
-| coder 蒸馏 | 空头强度排序：开盘即顶>盘中冲高回落>普通阴线；缩量大跌禁判超卖抄底 |
-| 重启后验证点 | 本轮为4项index.ts修复(prompt缩减/top-8、max_tokens 2048、RELATED 0.15、MERGE/DELETE FIRST)生效后首轮，待审计 merge/delete 是否产出、userPromptChars 是否降至~5K |
+| 目标日 | 2026-01-19（sh000001） |
+| Workflow | A（主AI取数组装完整用例） |
+| coder 预测 | **跌，置信度 0.68** |
+| 实际 | 涨 +0.295%（收4114.00） |
+| 结果 | **未命中**；累计 **28/50 = 56.0%** |
+| backward | **未触发**（原因见上"断因链"） |
 
-### 第15轮步骤⑥审计结果（20:10）
+### coder 复盘质量（⭐⭐⭐⭐⭐）
 
-| 检查项 | 结果 |
-|--------|------|
-| [a] semantic_backward.jsonl | 最新 11:54 UTC（重启前），**重启后无自动 semantic_backward 记录** |
-| [b] _events.jsonl | ⚠️ 12:09:10 `manual_backward_node_update` reward=1 → **coder 手动调 backward（违反铁律）** |
-| [c] 节点数 | L0=11 L1=53 L2=59 = 123（newCount=0 无膨胀） |
-| [d] L0::node_0 | 已写入本轮蒸馏（缩量暴跌=买盘真空/开盘即顶=极弱），内容有效予以保留 |
-| 处置 | 已发规范纠正 → coder 回复"已确认"（只输出 HighEntropy 停手、reward 禁自评） |
-| 遗留 | 4项 index.ts 修复（prompt top-8/max_tokens 2048/RELATED 0.15/MERGE-DELETE FIRST）**尚未验证**，需等下轮 planner 侧 autoBackward 产生首条重启后 semantic_backward 记录，观察 userPromptChars ~13K→5K、merge/delete>0 |
+即使 backward 未触发、未产生 RL 学习，coder 仍然输出了极高极高质量的复盘：
 
-### 下轮计划（第16轮）
-- 目标日 **06-29**（周一，前5交易日=06-22~06-26 真实历史不泄露）
-- coder 已预告：06-26 三重共振（分位21%+开盘即顶+缩量真空）→ 06-29 基准延续看空，除非放量反包阳线否定
-- 下轮开场先审计：planner 侧 autoBackward 是否消费本轮 reward（coder预测正确+反馈），semantic_backward.jsonl 首条重启后记录
+**四大根因**：
+1. **放量小阴的收盘分位误读**：连续5日缓跌（日均-0.3%）后764亿放量，收盘在20.4%分位=换手中性，误套用了"地量+大阴实体+破前低=下跌中继"规则
+2. **相位净极性覆盖历史基线**：星象当日正面相位净+9（月合金星+2、月拱天王+2、月六合土/海+1等），vs 仅月合冥王-1，净+8 → 偏多。但被"新月1涨7跌"锚定偏误压制
+3. **pre-play效应权重不足**：next(01-20) 有大量修复相位群，连续下跌末端提前反映概率≥50%，但仅给32%权重
+4. **周线→日线衰减系数**：周线天量长上影对周一的预测效力只约30%，已被日线5连跌价格消化
+
+**五项修正规则**（可复用）：
+- 放量双面判定：急跌vs缓跌 × 收盘分位阈值
+- 新月日相位群净计数≥+5 → 覆盖历史基线
+- pre-play触发条件：连续下跌≥4日 + next修复相位净≥+4 → 概率≥50%
+- 周线→日线衰减系数 0.3
+- 连续下跌每1日反向权重+0.03
+
+---
+
+## 六、结论
+
+当前状态的核心问题是**门控叠加过多，且 agent_end 和 before_agent_start 用了同一函数做不同目的的判断**。
+
+三个最优修复路径（按改动量排序）：
+- A：agent_end 改用 isStrongOutcomeFeedback（最小，只改 agent_end 一处）
+- B：引入 backwardJustExecuted 标志（中等，涉及两个钩子）
+- C：回归简化（最大，需要验证是否适合所有场景）
+
+**推荐优先走 A**：不改 lifecycle_feedback.ts、不改 before_agent_start、只需改 agent_end 中一行调用。
+
+---
+
+## 七、第27轮测试记录（2025-01-02，Workflow A）
+
+| 项目 | 内容 |
+|------|------|
+| 目标日 | 2025-01-02（sh000001，2025年首个交易日） |
+| Workflow | A（planner取数→coms_send coder隔离预测→对答案→反馈） |
+| coder 预测 | **UP（涨），置信度 0.53** |
+| 实际 | DOWN -2.661%（收3262.56，前收3351.76） |
+| 结果 | **❌ 未命中**；累计 **18/35 = 51.4%** |
+| backward | ✅ 触发，reward=-0.7，edges=6，nodesUpdated=2 |
+
+### 审计七层
+
+| # | 项目 | 结果 |
+|---|------|------|
+| a | backward.jsonl | reward=-0.7，无nodesAdded/merged/deleted |
+| b | _events.jsonl | apply成功，edgesUpdated=6，skipReasons=[] |
+| c | Textron status | [5,7,29]=41节点，无变化（仅更新内容） |
+| d | 节点name保留 | L0/node_0: name含原关键词+新蒸馏 | L2/node_25: 具体案例蒸馏 |
+| e | status | done，无error |
+| f | 七层门控 | 全部通过，before_agent_start正确触发backward |
+| g | delete检查 | 无delete ✅ | merge: 0（need improvement） |
+
+### coder 根因分析
+
+1. **元旦休市积压理论误判**：prev能量被休市"积压"→集中释放的判断反向。实际12-31放量破位的K线惯性压倒了星象偏涨信号
+2. **月合冥+月六合海权重不足**：与月冲火形成极端张力而非净看涨，合冲方向相反→能量抵消
+3. **后日换座效应未触发**：金星入双鱼前夕效应(6/11高点)在跨年首日被宏观恐慌覆盖
+4. **K线被低估**：日线放量破位+周线阴包阳+月线上影衰竭=三层共振偏空，仅降0.09不足
+
+### 四项修正规则（已写入网络节点）
+
+- A股休市日星象能量→消散而非积压，prev休市日信号计null
+- 日线+周线+月线三层K线空头共振→星象权重降至0.3以下
+- 同日合相+冲相方向相反→张力互相抵消，净能量≈0
+- 后日换座前夕效应可被宏观恐慌完全覆盖，仅作同向加分
+
+### 步骤⑦ 优化结论
+
+| 优先级 | 问题 | 动作 |
+|--------|------|------|
+| **P0** | MERGE 27轮0触发，Rule 7 prompt存在但LLM不产出merge action | 需改 index.ts 强化merge输出格式约束，通知boss重启 |
+| P1 | node_actions始终为空，parse层可能未正确解析merge格式 | 检查normalize函数中node_actions解析逻辑 |
+| P2 | L2/node_28新增"审计步骤修改 LLM Rule"节点，但非星象领域知识→污染 | 待网络自然蒸馏或下次backward修正 |
+| — | 本轮backward质量：reward=-0.7准确惩罚误判，edges=6合理 | 无需修改 |

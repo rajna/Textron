@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { TEXTRON_HOME } from "./constants";
 import { distillNodeName } from "./name_distill.ts";
+import { NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
 
 // ─── Textron Storage Helpers ──────────────────────────────────────────
 
@@ -44,7 +45,8 @@ export function readNodeName(filePath: string): string {
 }
 
 export function writeNodeHtml(filePath: string, layer: number, nodeId: string, content: string, outEdges: { toId: string; weight: number }[], name?: string) {
-  const nodeName = (name || compressNodeName(content)).slice(0, 64);
+  const storedContent = String(content || "").slice(0, NODE_CONTENT_MAX_CHARS);
+  const nodeName = (name || compressNodeName(storedContent)).slice(0, 64);
   const edgesHtml = outEdges
     .map((e) => `  <link rel="out" href="../layer_${layer + 1}/${e.toId}.html" data-weight="${e.weight.toFixed(4)}">`)
     .join("\n");
@@ -57,7 +59,7 @@ ${edgesHtml}
 ${nodeName}
 </name>
 <content>
-${content}
+${storedContent}
 </content>
 `, "utf-8");
 }

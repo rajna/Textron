@@ -1,6 +1,6 @@
 declare const process: { exit(code?: number): never };
 
-import { applyExplorationPolicy, buildLocalScores, parseNodeScores, rankLayerWithExploration } from "./scoring_policy.ts";
+import { applyExplorationPolicy, buildLocalScores, lexicalRelevance, parseNodeScores, rankLayerWithExploration } from "./scoring_policy.ts";
 
 let passed = 0;
 let failed = 0;
@@ -22,6 +22,12 @@ const local = buildLocalScores("分析 WebGL 页面卡顿和 Canvas 性能", [
   { id: "node_1", name: "股票反弹信号", content: "量价与星象" },
 ]);
 ok("local relevance gates unrelated nodes", local["L0::node_0"] > 0 && local["L0::node_1"] === 0, JSON.stringify(local));
+
+const astroPrompt = "预测上证指数 sh000001 2026-07-08 跌破4000 月亮合土星 日月刑 月刑水 缩量下影 K线 周K";
+const astroDomain = lexicalRelevance(astroPrompt, "跌破4000+均线/周K压制+月合土星/日月刑/月刑水→破位惯性看跌有效；缩量下影=跌幅收敛非反转。");
+const astroOffTopic = lexicalRelevance(astroPrompt, "用户输入.model时报告模型家族，修复provider认证错误，验证apiKey和JSON。");
+ok("astro downstream relevance keeps domain node", astroDomain > 0.2, `${astroDomain}`);
+ok("astro downstream relevance rejects off-topic engineering node", astroOffTopic === 0, `${astroOffTopic}`);
 
 const adjusted = applyExplorationPolicy(
   { "L0::node_0": 0.8, "L0::node_1": 0.55, "L0::node_2": 0 },

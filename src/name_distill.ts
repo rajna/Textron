@@ -175,6 +175,34 @@ export function distillNodeName(content: string, maxLen = 48): string {
 }
 
 /**
+ * Build an ATOMIC retrieval key from gate-rejected content (scale-rescue downscale).
+ * Wang–Zahl Kakeya insight: any set has fractal structure at the RIGHT scale —
+ * rejected text is not garbage, it was analyzed at the wrong granularity.
+ * The atomic scale keeps only the top-scoring distinctive tokens (identifiers,
+ * numbers, domain terms), joined with "·" so the result never matches the
+ * ngram-fragment quarantine regex (which targets space-separated CJK bigrams).
+ * Returns null when fewer than 2 distinctive tokens exist (truly no structure).
+ */
+export function buildAtomKey(content: string, maxTokens = 6): string | null {
+  const s = String(content || "").replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  const toks = extractNameTokens(s).sort((a, b) => b.score - a.score || a.pos - b.pos);
+  const picked: NameToken[] = [];
+  for (const t of toks) {
+    const lower = t.text.toLowerCase();
+    if (picked.some((p) => p.text.toLowerCase().includes(lower) || lower.includes(p.text.toLowerCase()))) continue;
+    picked.push(t);
+    if (picked.length >= maxTokens) break;
+  }
+  if (picked.length < 2) return null;
+  // Reading order, so the atom reads like the source, not like a score ranking.
+  picked.sort((a, b) => a.pos - b.pos);
+  const atom = picked.map((t) => t.text).join("·");
+  if (atom.length < 8 || atom.length > 120) return null;
+  return atom;
+}
+
+/**
  * Does the (LLM-provided) name actually contain content keywords?
  * Squash-compare (lowercase, separators removed) so "TextronE2E" matches
  * "Textron E2E". Names with near-zero overlap are generic summaries and

@@ -1,0 +1,12 @@
+
+=== RESTART 2026-07-17T02:59:02.689992 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id 8fbccb47ca1572da178f924b00282b7d --model deepseek-v4-pro ===
+
+=== RESTART 2026-07-17T23:46:36.993939 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id c905415e4a81b73398171d0b6691c60e --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:19:19.931343 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id bcae91aec7971db4c10d2daa764c47cf --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:24:09.807224 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id 995afade5151ff2aec20b709da2d3617 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-19T00:26:38.964153 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id 594265670e6c3f1b16709c4043d4ed47 --model gpt-5.6-sol ===
+
+=== RESTART 2026-07-23T05:05:23.084539 cmd=pi -e /Users/rama/.pi/agent/extensions/local-coms.ts --cname planner --project demo --purpose 规划任务 --session-id 15d81e04abddcfd105e6e1efde2f0b96 --model deepseek-v4-pro ===

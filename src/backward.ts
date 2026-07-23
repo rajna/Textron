@@ -5,6 +5,7 @@ import { clamp, parseLayerNodeId } from "./utils";
 import type { LoadedNetwork } from "./network";
 import type { WeightsFile } from "./types";
 import { createNodeState } from "./ngram_distill";
+import { NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
 
 // ─── Textron Auto Backward Propagation ────────────────────────────────
 // Expanded: edge weights + node content CRUD (create/update/merge/delete) in one pass.
@@ -136,7 +137,7 @@ export function autoBackward(
       if (!content) { nodesUpdatedSkipped++; nodeSkipReasons.push(`${id}:empty`); continue; }
       const outEdges = (net.weights.layer_connections[`${parsed.layer}_to_${parsed.layer + 1}`] || [])
         .filter(e => e.from === parsed.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
-      writeNodeHtml(nodePath, parsed.layer, parsed.nodeId, content.slice(0, 120), outEdges, compressNodeName(content));
+      writeNodeHtml(nodePath, parsed.layer, parsed.nodeId, content.slice(0, NODE_CONTENT_MAX_CHARS), outEdges, compressNodeName(content));
       nodesUpdated++;
     }
   }
@@ -173,7 +174,7 @@ export function autoBackward(
       if (!readNodeContent(np)) {
         const outEdges = (net.weights.layer_connections[`${targetLayer}_to_${targetLayer + 1}`] || [])
           .filter(e => e.from === `node_${n}`).map(e => ({ toId: e.to, weight: e.weight }));
-        writeNodeHtml(np, targetLayer, `node_${n}`, node.content.slice(0, 120), outEdges, node.name || compressNodeName(node.content));
+        writeNodeHtml(np, targetLayer, `node_${n}`, node.content.slice(0, NODE_CONTENT_MAX_CHARS), outEdges, node.name || compressNodeName(node.content));
         nodesAdded++;
         filled = true;
         break;
@@ -198,7 +199,7 @@ export function autoBackward(
       const tgtContent = readNodeContent(tgtPath);
       if (!srcContent || !tgtContent) continue;
       // Merge: combine into target, empty source
-      const merged = (tgtContent + "; " + srcContent).slice(0, 120);
+      const merged = (tgtContent + "; " + srcContent).slice(0, NODE_CONTENT_MAX_CHARS);
       const tgtOutEdges = (net.weights.layer_connections[`${tp.layer}_to_${tp.layer + 1}`] || [])
         .filter(e => e.from === tp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
       writeNodeHtml(tgtPath, tp.layer, tp.nodeId, merged, tgtOutEdges, compressNodeName(merged));

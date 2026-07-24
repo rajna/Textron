@@ -1,152 +1,159 @@
-# Textron 星象+A股预测 RL 闭环 — 交接文档
+# 交接：pending 管理修复 + 重启验证
 
-> 生成时间：2026-07-17  
-> 交接人：planner agent  
-> 接收人：后续接手者
+## 已修 Bug
 
----
+### 1. `compactMergeEmptiedNodes` 传参错误（index.ts:1712）
+- **根因**：调用 `compactMergeEmptiedNodes(net, emptiedByMerge, onLog)` 传了 3 个参数，函数签名只有 2 个 `(net, onLog)`
+- **现象**：`onLog is not a function` → 整个 backward apply 阶段崩溃
+- **修复**：改为 `compactMergeEmptiedNodes(net, onLog)`
 
-## 一、当前正在进行的任务
+### 2. fake feedback 抢先消费 pending
+- **根因**：pairing_judge 将"等待/中间消息"误判为反馈 → backward 执行（LLM 返回 reward≈0/零更新）→ 代码无条件消费 pending
+- **现象**：第 31 轮"请等待 planner 对答案"消息消费了"A股涨跌预测"pending，真正反馈到达时无 pending 可匹配
+- **修复**：`forcedSemanticBackward` 返回后加守卫——
+  ```
+  hadLearning = nodesUpdated>0 || nodesAdded>0 || nodesMerged>0
+  hadReward   = abs(reward) >= 0.05
+  shouldConsume = hadLearning || hadReward
+  ```
+  无学习则保留 pending。
 
-### 主任务：验证 Textron RL 闭环能否提升 coder 股票预测准确率
-
-**机制**：主AI 组装测试用例 → coms_send 发给 coder 隔离预测 → 对答案 → 反馈 coder → Textron autoBackward 自动消费 reward 更新网络。
-
-**当前进度**：
-- 累计测试 34 组，正确率 52.9% (18/34)
-- 最新：第10轮单例 06-02，预测错误（DOWN→实际 UP），已完成反馈+backward 审计
-- 网络：`astro_stock_prediction` [11,40,41] = 92节点
-- 下批起点：06-11（需确保前5日不含已测日期的答案，间距≥7交易日）
-
-**正确率趋势**：
-
-| 批次 | 正确率 |
-|------|--------|
-| 第1-2轮 (03月) | 50% |
-| 第5批 (05-07月) | 66.7% |
-| 第8批 (06月上中旬) | 80% |
-| 第9批 (06月下旬) | 60% |
-| 第10轮 (单例06-02) | 0% |
+### 3. 日志埋点
+- `before_agent_start`：内存状态/磁盘读取/pending 列表构建
+- `agent_end`：写盘内容（activeType + stackTypes）
+- 消费后：剩余栈状态
 
 ---
 
-## 二、已完成重点工作
+## 重启后验证
 
-### 2.1 架构搭建
-- 数据服务部署：K线 `127.0.0.1:8768/kline` + 星象 `127.0.0.1:8769/horoscopeFeature`
-- Agent 重启服务：`agent_restart_service.py` 端口 8770
-- coder agent 通过 `coms_send` 隔离预测，禁止搜索/行情工具
-
-### 2.2 Bug 修复（index.ts，需重启 pi 生效）
-
-| 修复项 | 描述 | 状态 |
-|--------|------|------|
-| messages 变量声明前引用 | `Cannot access 'messages' before initialization` → backward 全跳过 | ✅ 已修 |
-| edgeUpdate 未定义 | 3处 `edgeUpdate` → `bwResult` | ✅ 已修 |
-| catch{} 空块 | 改为 console.error + 旁路日志 | ✅ 已修 |
-| **agent_end 外层 try/catch** | 防止 hook 异常静默崩 | ✅ 已修，待重启 |
-| **add_nodes content 空 fallback** | LLM 只返回 name 不返回 content → content=""→拒绝。改为 `n?.content \|\| n?.context \|\| n?.name` | ✅ 已修，待重启 |
-
-### 2.3 Prompt 优化（index.ts，需重启 pi 生效）
-
-| 优化项 | 描述 |
-|--------|------|
-| Rule 1: NODE_UPDATE FIRST | 强制先找已有节点更新，仅全新概念才 add |
-| Rule 2: 重叠>30%→更新 | 原来>50%→新增，改为更新已有 |
-| Rule 5: TASK_FAMILY GATE | 领域外任务→空输出，防噪声节点 |
-| Rule 11: NODE INSPECTION | 去掉死板百分比阈值，AI 自主分析两类节点关系→merge/delete/distill |
-
-### 2.4 第10轮 backward 审计
-
-已验证完整闭环：coms_send反馈 → coder返回HighEntropy → backward消费 → L0::node_0/L1::node_4更新 + 2新节点。详见 test.md「第10轮 backward 质量分析」。
-
----
-
-## 三、待处理事项（按优先级）
-
-### 🔴 P0 — 紧急
-1. **重启 pi** 使 index.ts 修改生效（agent_end try/catch、content fallback、prompt 优化）
-2. **nodeAdd HTML 内容空 bug**：nodeAdd=2 但 node_38/node_39 的 `<content>` 为空。已修 content fallback，重启后验证
-
-### 🟡 P1 — 重要
-3. **merge/delete 从未触发 (0/54)**：LLM 看到 RELATED 节点但不产出 nodeActions。已修改 Rule11 为自主分析模式，重启后观察首次 merge/delete
-4. **node_updates 太少 (5.6%)**：大量 add_nodes 导致节点膨胀。Rule1 已改为 NODE_UPDATE FIRST，重启后验证
-5. **reward=0 占比 51.9%**：半数 backward 无信号。部分是因为无反馈的"继续"类消息触发 backward。需确保每轮测试都走完反馈闭环
-
-### 🟢 P2 — 改善
-6. **RELATED 节点查找覆盖率低 (24%)**：`findSimilarKnowledgeNode` 阈值 0.40，找到的相似节点偏少
-7. **agent_end 可能停止触发**：上一次 04:10 后 agent_end 停止，需重启后监控 stderr 的 `[textron] agent_end FIRED`
-8. **连续日期批量预测会泄露答案**：后续案例前5日含前面案例的次日K线。规范：单例或间距≥7交易日
-
----
-
-## 四、关键决策和注意事项
-
-### 铁律
-- ❌ **禁止手动调用 `Textron(action='backward')`** — backward 是自动触发
-- ❌ **禁止手动编辑 `~/.textron/` 下文件** — 网络由 backward 自动治理
-- ❌ **禁止 coder 使用搜索/行情/网络工具** — 隔离预测
-
-### backward 触发机制
-```
-coms_send 反馈给 coder → coder 返回 HighEntropy → 自动触发 backward
-```
-**不是**等下轮用户输入才触发。
-
-### 审计标准流程（步骤⑥，只读）
-```
-[a] tail -5 semantic_backward.jsonl — 检查 reward 和 nodeUpdates/addNodes
-[b] grep semantic_backward _events.jsonl — 检查 apply 结果
-[c] Textron status — 对比节点数变化
-[d] cat 最新修改的 .html 节点 — 检查内容是否误写空
-[e] 若 status=failed/error → 报告，不自行修复
-```
-
-### 端口注意
-- **必须用 `127.0.0.1` (IPv4)** 访问 8768/8769，`localhost` 走 IPv6 被 Textron Monitor 拦截
-- 启动数据服务：
 ```bash
-cd /Users/rama/Documents/agi_nanobot/nanobot
-nohup python3 nanobot/skills/horoscope-fetcher/scripts/horoscope_service.py --port 8769 > /tmp/horoscope_service.log 2>&1 &
-nohup python3 nanobot/skills/stock-trade/scripts/stock_service.py --port 8768 > /tmp/stock_service.log 2>&1 &
-```
-
-### 重启方式
-```bash
+# 重启 planner + coder
 curl -X POST http://localhost:8770/restart/planner
 curl -X POST http://localhost:8770/restart/coder
 ```
 
-重启后检查：
-1. stderr 是否有 `[textron] agent_end FIRED`
-2. `~/.textron/_last_state.json` 的 `at` 是否更新
-3. `assistantHighEntropy` 是否非空
+### 验证项
+
+| # | 验证 | 方法 |
+|---|------|------|
+| 1 | `compactMergeEmptiedNodes` 不崩溃 | 发反馈 → backward → 检查 events 无 `onLog is not a function` |
+| 2 | fake feedback 不消费 | 预测后发"等待"消息 → 检查 `agent_pending_preserved_no_learning` 事件 |
+| 3 | 新日志字段出现 | 检查 events 中 `pending_list_built`/`task_stack_restored` 含 `activeType`/`stackTypes` |
 
 ---
 
-## 五、Agent 协作状态
+## 当前状态
 
-| Agent | 状态 | 用途 |
-|-------|------|------|
-| **planner** (主AI) | PID 变化，需查 | 取数据、组装用例、对答案、发反馈、审计日志 |
-| **coder** | 在线 (deepseek-v4-pro) | 隔离预测，接收 coms_send，返回 HighEntropy |
-| **boss** | 在线 (deepseek-v4-pro) | 管理协调 |
+- 网络：`astro_stock_prediction` [8,7,29]=44 节点
+- 第 31 轮：2025-01-23，预测 UP 0.55 → 实际 UP +0.515%，命中 ✅
+- 第 32 轮：2025-01-24，预测 DOWN 0.63 → 实际 UP +0.695%，未命中 ❌（backward✅ reward=-0.7）
+- 第 33 轮：2025-01-27，预测 UP 0.58 → 实际 DOWN -0.062%，未命中 ❌（backward🔴未触发）
+- 累计：近 5 轮 2 胜 3 负
 
-### coder 协作规范
-- 发预测请求：单例格式，含前5日K线+当日星象，不含当日行情
-- 接收预测反馈：含对错结果+错误根因分析
-- coder 的 HighEntropy 会被 Textron 捕获作为 reward 信号
+### P0修复验证结果（2026-07-23 第32轮）
+
+| # | 验证项 | 状态 |
+|---|--------|------|
+| 1 | compactMergeEmptiedNodes 不崩溃 | ✅ 通过 |
+| 2 | fake feedback 不消费 pending | ✅ 通过（pairing_judge正确配对，hadLearning守卫生效） |
+| 3 | 日志埋点 | ✅ 通过（activeType/stackTypes正常输出） |
+
+**完整闭环已验证通过**，无需重启。
 
 ---
 
-## 六、关键文件路径
+## 架构变更：backward 移至 agent_end
 
-| 文件 | 路径 |
-|------|------|
-| 测试记录 | `/Users/rama/textron-agent/test.md` |
-| Textron 核心 | `/Users/rama/textron-agent/src/index.ts` |
-| 网络目录 | `~/.textron/astro_stock_prediction/` |
-| backward 日志 | `~/.textron/astro_stock_prediction/_sb_logs/semantic_backward.jsonl` |
-| 事件日志 | `~/.textron/_events.jsonl` |
-| 状态持久化 | `~/.textron/_last_state.json` |
-| 节点文件 | `~/.textron/astro_stock_prediction/layer_N/node_X.html` |
+### 变更
+- **Old**: before_agent_start 中配对后立即执行 backward → LLM 需从 raw 上下文编造 Training signal
+- **New**: before_agent_start 配对后仅设 `_backwardPendingMatch` 标记 → agent_end 提取 assistant 的最新 HighEntropy → 注入 backward LLM 的 prompt 作为 "Assistant's analysis" → 执行 backward
+
+### 优势
+assistant 刚生成的 HighEntropy（root cause analysis + corrective rules）直接作为附加训练信号注入 backward LLM，不再需要 LLM 从零编造。
+
+### 测试
+重启后跑一轮预测→反馈闭环，检查 backward events 中 `mode=agent_end_deferred` 即确认新路径命中。
+
+### 重要变更：预测 HighEntropy 不注入 backward LLM
+`forcedSemanticBackward` 的 `previousAssistantHighEntropy` 参数传 `""`（空字符串），因为错误预测的 HighEntropy 标注为 "training packet" 会误导 backward LLM。替代：`enhancedFeedback` 中已有助理刚生成的深度复盘。
+
+### 待测清单（重启后，第34轮）
+1. `mode=agent_end_deferred` 出现 ← 确认 backward 在新路径触发
+2. coder 复盘生成 HighEntropy 块（含根因+修正规则）← 确认 HIGH_ENTROPY_INSTRUCTION 生效
+3. `agent_end_backward_skipped` 事件 → 若出现看 `reason` 定位断点
+4. 节点内容出现 R/Rx/修正规则 等关键词
+5. backward LLM prompt 中无 "预测UP 0.55" 等预测推理文本
+6. MERGE DUTY 无退化
+7. 冷启动正常
+
+---
+
+## 🔴 第33轮发现：backward 未触发 — 双重根因
+
+**时间**：2026-07-23 第33轮测试（重启后首轮）
+
+**症状**：planner通过coms_send发反馈→coder接收并回复（复盘无HighEntropy）→coder agent_end触发→**backward未执行**
+
+**双重根因**：
+1. **coder复盘无HighEntropy**：HIGH_ENTROPY_INSTRUCTION未强调复盘场景，coder以"收到"结尾，未生成HighEntropy块 → `currentAssistantHighEntropy`为空
+2. **`_backwardPendingMatch` 可能为null**：before_agent_start的配对逻辑触发但可能未正确设置标记（待诊断日志确认）
+
+**证据**：
+- 04:25:15有highentropy_captured（planner预测消息的HE），04:26:18 coder agent_end无highentropy_captured
+- agent_end只有task_stack_persisted，无semantic_backward_start
+- pending列表含"星象预测反馈闭环"（应匹配）
+
+**修复**（已完成，待重启生效）：
+1. **HIGH_ENTROPY_INSTRUCTION增强**（index.ts:94）：`NEVER skip` + `lost learning opportunity` + 复盘`CRITICAL`
+2. **agent_end诊断日志**（index.ts:2619+2691）：打印三个变量值 + else分支记录跳过原因
+
+### 2026-07-23 HIGH_ENTROPY_INSTRUCTION 增强 + agent_end 诊断日志
+
+**问题1**：原HIGH_ENTROPY_INSTRUCTION未强调复盘/反馈场景，coder在复盘回复时跳过HighEntropy（以"收到"结尾）→ agent_end无assistant分析可注入backward → backward LLM训练信号缺失。
+
+**修复1**（index.ts:94 HIGH_ENTROPY_INSTRUCTION）：
+1. 加强制性：`NEVER skip this block — even for short replies like "收到"`
+2. 明后果：`missing HighEntropy = lost learning opportunity`
+3. 复盘专项：Technique字段新增 `CRITICAL for reflection/feedback replies: pack root cause analysis AND corrective rules`
+
+**问题2**：agent_end中backward未触发，无法判断是_backwardPendingMatch为null还是HighEntropy/finalAssistantText为空。
+
+**修复2**（index.ts agent_end）：
+1. 在2619行条件前加console.error诊断，打印三个变量的实际值
+2. 在if块后加else分支，记录`agent_end_backward_skipped`事件并注明跳过原因（no_pending_match vs no_assistant_content）
+
+---
+
+## 2026-07-23 本轮回改（4项，待重启生效）
+
+### 1. merge 内容溢出 → 自动泻出新节点（index.ts:1486+1691）
+
+**问题**：mergeContent/mengeNodeContent 去重后若仍超 NODE_CONTENT_MAX_CHARS (1000c)，多余内容直接丢失。
+
+**修复**：两处溢出防护——
+- **node_update 路径**（line 1486）：mergedContent > 1000c → 截断至 1000c + addDynamicNode(net, layer, overflow, onLog)
+- **merge action 路径**（line 1691）：merged > 1000c → tgtNode 保留前 1000c + overflow → addDynamicNode(net, tp.layer, overflow, onLog)
+
+两者均 `nodesAdded++` + `nodeMutations.push({ type: "add", ... })`。日志标记 `update overflow` / `merge overflow`。
+
+### 2. monitor.html 布局修复：每层独立间距 + 垂直居中
+
+**问题**：全局 maxN * GYa 统一间距导致 L0(4节点)挤在顶部、L2(30节点)拉满全高 → 左短右长。
+
+**修复**：
+- `layerPitch[l] = max(52, min(96, 2600 / cnt))` 每层按节点数独立算间距
+- `layerOffset[l] = (H - (cnt-1) * pitch) / 2 + pitch / 2` 垂直居中偏移
+- 节点 cy = layerOffset[l] + i * pitch - pitch/2 + jitter
+
+各层节点在相同画布高度内居中分布，视觉对齐。monitor.html 通过软链接不需要重启。
+
+### 3. MERGE 语义重叠阈值 30%→15%（index.ts systemPrompt + userPrompt）
+
+**问题**：MERGE DUTY 长期零触发 (0/64+轮)，LLM 持续返回 `"no overlap ≥30%"` → node_actions=[keep]。
+
+**修复**：systemPrompt Rule 7 + userPrompt node_update 条件 + MERGE SCAN 段三处 ≥30% → ≥15%，并加"shared keywords, concepts, or domain"语义描述。依据：TF-IDF RELATED 发现阈值 0.05，related pairs 典型 0.12-0.20，15% 在区间下沿。
+
+### 4. boss.md 路径修正
+
+`/Users/rama/textron/test.md`（缺 -agent）→ `/Users/rama/textron-agent/test.md`

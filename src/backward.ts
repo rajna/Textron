@@ -1,9 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { writeJson, readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "./storage";
-import { clamp, parseLayerNodeId } from "./utils";
-import type { LoadedNetwork } from "./network";
-import type { WeightsFile } from "./types";
+import { writeJson } from "./lib/utils";
+import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "./lib/node_io";
+import { clamp, parseLayerNodeId } from "./lib/utils";
+import type { loadNetwork } from "./lib/network";
+type LoadedNetwork = NonNullable<ReturnType<typeof loadNetwork>>;
+interface WeightsFile { layer_connections: Record<string, { from: string; to: string; weight: number }[]>; }
 import { createNodeState } from "./ngram_distill";
 import { NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
 

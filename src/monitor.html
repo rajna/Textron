@@ -475,6 +475,15 @@ function updateGraphView(name,net,state){
   var Rv=maxN>30?12:(maxN>18?13:15);
   var W=nL*GX+P*2,H=maxN*GYa+P*2;
 
+  // Layer-aware vertical centering: each layer uses its own pitch
+  // to spread nodes evenly, then offset to center within canvas height.
+  var layerPitch={},layerOffset={};
+  for(var l=0;l<nL;l++){
+    var cnt=(byL[l]||[]).length;
+    layerPitch[l]=Math.max(52,Math.min(96,Math.floor(2600/Math.max(1,cnt))));
+    layerOffset[l]=(H-(cnt-1)*layerPitch[l])/2+layerPitch[l]/2;
+  }
+
   var weights=net.weights||{},edgeWeights={};
   for(var k in weights){
     var m=k.match(/^(\d+)_to_(\d+)$/);if(!m)continue;
@@ -491,7 +500,7 @@ function updateGraphView(name,net,state){
       var mut=mutationMap[id];
       var nd2={qid:id,id:nd.id,layer:l,
         cx:x(l)+(rand01(seed^0x9e37)-0.5)*72,
-        cy:P+i*GYa+GYa/2+(rand01(seed^0x51f7)-0.5)*GYa*0.42,
+        cy:layerOffset[l]+i*layerPitch[l]-layerPitch[l]/2+(rand01(seed^0x51f7)-0.5)*layerPitch[l]*0.42,
         name:nd.name||'',context:nd.context||nd.content||'',
         filled:!!(nd.name||nd.content),sel:!!selected[id],
         score:scores[id],phase:rand01(seed)*6.283,drift:0.6+rand01(seed^0x77aa)*0.9,

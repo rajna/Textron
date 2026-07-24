@@ -414,3 +414,253 @@ agent_end:
 | P1 | node_actions始终为空，parse层可能未正确解析merge格式 | 检查normalize函数中node_actions解析逻辑 |
 | P2 | L2/node_28新增"审计步骤修改 LLM Rule"节点，但非星象领域知识→污染 | 待网络自然蒸馏或下次backward修正 |
 | — | 本轮backward质量：reward=-0.7准确惩罚误判，edges=6合理 | 无需修改 |
+
+---
+
+## 八、第28轮测试记录（2025-01-16，Workflow A）
+
+| 项目 | 内容 |
+|------|------|
+| 目标日 | 2025-01-16（sh000001，第26轮2025-01-15命中✅后下一交易日） |
+| Workflow | A（planner取数→coms_send coder隔离预测→对答案→反馈） |
+| coder 预测 | **DOWN（跌），置信度 0.65** |
+| 实际 | UP +0.276%（收3236.03，前收3227.12） |
+| 结果 | **❌ 未命中** |
+| backward | ❌ **全部崩溃** — `.for is not iterable` |
+
+### 审计七层（受限—backward崩溃）
+
+| # | 项目 | 结果 |
+|---|------|------|
+| a | backward.jsonl | ❌ 文件不存在 |
+| b | _events.jsonl | ❌ 无apply事件，4次backward均failed |
+| c | Textron status | [6,7,30]=43节点，无变化 |
+| d | 节点name保留 | ⚠️ 无法验证 |
+| e | status=failed/error | 🔴 `.for is not iterable` ×4次 |
+| f | 七层门控 | backward触发但执行层崩溃 |
+| g | delete/merge | 无可检查 |
+
+### API端口修正
+- kline API：**8780**（非 workflow.md 中的 8768）
+- horoscope3d API：8769 ✅
+
+### coder 根因分析
+1. 放量阳+缩量阴误读：01-14放量长阳+01-15缩量小阴=上涨中继洗盘
+2. 月线空头过度加权：月线三连上影不应否决日线底部结构
+3. 星象方向误判：太阳冲火星=波动率放大器非方向信号
+
+### 修正规则（已产出，未写入网络）
+- 放量长阳+缩量小阴=上涨中继确认，仅低点击穿阳线开盘价→转衰竭
+- 三层冲突时最小时间框架优先，日线底部确认后日线≥50%、月线≤10%
+- 对冲相位仅放大波动率，方向由开盘缺口判定
+
+### P0 待修
+| 问题 | 动作 |
+|------|------|
+| backward `.for is not iterable` 崩溃 | index.ts 已加3处debug try-catch+stack trace，需重启pi生效 |
+| semantic_backward.jsonl 不存在 | backward从未成功写入 |
+| HighEntropy 缺失率 92.2% | agent_end hook 提取逻辑需检查 |
+
+---
+
+## 十、架构变更：backward 从 before_agent_start → agent_end
+
+### 当前流程
+```
+before_agent_start → pairing judge → 如匹配反馈 → 立即执行 backward → forward (L0评分+传播) → LLM推理 → agent_end (保存pending)
+```
+
+**问题**：backward 在 before_agent_start 运行时，LLM 只有 raw 任务上下文 + 反馈消息，没有 assistant 刚刚生成的 HighEntropy 经验总结。backward LLM 需要自己从上下文编造 Training signal，质量差（qualityLabel 持续 low）。
+
+### 新流程（已实现）
+```
+before_agent_start → pairing judge → 如匹配反馈 → 标记 pending → forward → LLM推理 → agent_end (提取HighEntropy → 执行 backward)
+```
+
+**优势**：
+1. backward 在 agent_end 运行时，assistant 刚刚生成了包含经验总结（root cause analysis + corrective rules）的 HighEntropy → 直接注入 backward LLM 的 prompt
+2. 不再需要 LLM 从零编造→ Training signal 质量提高
+3. backward 的 `currentUserMessage` 增加了 `Assistant's analysis:` 段，包含最新生成的 HighEntropy 文本
+
+### 代码位置
+- `before_agent_start`：pairing judge 匹配后不再执行 backward，改为设置 `_backwardPendingMatch` 和 `_backwardPendingCtx` 全局变量
+- `agent_end`：任务栈管理后检查 `_backwardPendingMatch` → 调用 `forcedSemanticBackward` 传入增强后的 feedback（含当前 HighEntropy）
+- 新增变量：`let _backwardPendingMatch`、`let _backwardPendingCtx`
+- agent_end 的 backward 成功后执行 consume 逻辑：移除栈中匹配任务
+
+---
+
+## 九、第32轮测试记录（2025-01-24，Workflow A）
+
+| 项目 | 内容 |
+|------|------|
+| 目标日 | 2025-01-24（sh000001，第31轮2025-01-23命中✅后下一交易日） |
+| Workflow | A（planner取数→coms_send coder隔离预测→对答案→反馈） |
+| coder 预测 | **DOWN，置信度 0.63** |
+| 实际 | UP +0.695%（收3252.63，前收3230.16） |
+| 结果 | **❌ 未命中** |
+| backward | ✅ 触发，reward=-0.7，nodesUpdated=1（L0::node_5） |
+
+### 审计七层
+
+| # | 项目 | 结果 |
+|---|------|------|
+| a | backward.jsonl | reward=-0.7，nodesUpdated=1（L0::node_5），无add/merge/delete |
+| b | _events.jsonl | apply成功，skipReasons=[]，edgesUpdated=0 |
+| c | Textron status | [7,6,29]=42节点，无变化（仅内容蒸馏更新） |
+| d | 节点name保留 | ✅ L0::node_5 旧关键词「放量长阳·缩量横盘不突破·该涨不涨·星象空头共振」保留，追加「放量长上影非必跌·次日阳线修复·该涨不涨需次日验证」 |
+| e | status | done，无error |
+| f | 七层门控 | 全部通过：pending_list_built→pairing_judge(isFeedback=true)→backward触发→apply→闭环 |
+| g | delete检查 | 无delete ✅ | merge: 0 ⚠️（MERGE DUTY 持续零触发） |
+
+### P0修复验证（HANDOVER.md三项）
+
+| # | 验证项 | 状态 |
+|---|--------|------|
+| 1 | compactMergeEmptiedNodes 不崩溃 | ✅ 无 `onLog is not a function` |
+| 2 | fake feedback 抢夺pending | ✅ pairing_judge 正确识别 isFeedback=true，hadLearning通过 reward=-0.7≥0.05，shouldConsume 正确 |
+| 3 | 日志埋点 | ✅ pending_list_built 含 activeType/stackTypes |
+
+### coder 根因分析（⭐⭐⭐⭐⭐ 高质量复盘）
+
+**R1（致命）**：错读01-23 K线——忽略 higher low + higher close。01-23低点3229.57 vs 01-22低点3203.38 抬升26点，收盘3230.16 vs 3213.62 抬升17点。长上影3273是正常压力测试，非空头信号。
+
+**R2（严重）**：月亮入射手权重严重低估。5涨1跌83%胜率应赋主导权重×2，被月六合冥王(-1)等权抵消后倒向空头。
+
+**R3（中等）**：三天能量V型(+2→+1→+2)解读倒置。current日能量浅坑应为「触底反弹」窗口，next的+2对current午后有向上牵引效应。实际：平开→3225微探→一路走高收3252。
+
+**R4（中等）**：「利多出尽」论断条件不足。需同时满足①累计涨幅≥3% ②lower high ③放量滞涨，而01-23是higher low+higher close，三项全不满足。
+
+**R5（轻微）**：水星冲火星=波动放大器，放大当日主导方向（K线向上），不应判为恐慌抛售信号。
+
+### 五项修正规则（已部分写入L0::node_5）
+
+- 单K线多空需对比前日low/close：higher low+higher close+长上影=多头测试蓄力，非空头
+- 月亮入座胜率≥80%信号赋予主导权重×2，不被低胜率信号等权抵消
+- 三天能量V型=current触底反弹（午后受next牵引走高），仅持续衰减才判跌
+- 「利多出尽」需同时满足：累计涨幅≥3% + lower high + 放量滞涨，缺一不可
+- 水星冲火星/拱天王等非月亮相位=波动放大器，放大当日主导方向
+
+### 步骤⑦ 优化结论
+
+| 优先级 | 问题 | 动作 |
+|--------|------|------|
+| P1 | MERGE DUTY 连续多轮零触发，Rule 7 prompt存在但LLM不产出merge | 待研究prompt增强或parse层修复 |
+| P2 | L0 scoring json_mode频繁fallback（remoteErrors=2/轮） | 可能是deepseek模型json_mode兼容问题，暂用local_fallback兜底 |
+| — | P0三修复全部验证通过，闭环完整 | 无需重启 |
+| — | qualityLabel="low" 持续偏低 | 不影响功能，backward内容质量待后续观察 |
+
+---
+
+## 十一、本次修改（2026-07-23）：backward 移至 agent_end
+
+### 修改内容
+
+1. **backward 从 before_agent_start → agent_end**
+   - before_agent_start: pairing judge 匹配后不再执行 backward，改为设 `_backwardPendingMatch` 标记
+   - agent_end: 任务栈持久化后检查标记 → 执行 `forcedSemanticBackward`
+   - `currentUserMessage` 增强为 `原始反馈 + "\n\nAssistant's analysis:\n" + currentAssistantHighEntropy`
+
+2. **预测 HighEntropy 不注入 backward LLM**
+   - `forcedSemanticBackward` 的 `previousAssistantHighEntropy` 参数传 `""`
+   - 原因：错误预测的 HighEntropy 标注为 "training packet" 会误导 backward LLM
+   - 替代：enhancedFeedback 中已有助理刚生成的深度复盘
+
+3. **新增全局变量**
+   - `_backwardPendingMatch: TaskEntry | null`
+   - `_backwardPendingCtx: any`
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/index.ts` | before_agent_start 去backward + agent_end 加backward + 变量 + 头注释 |
+| `test.md` | 新增十节(架构变更) + 十一节(本次修改+待测) |
+| `HANDOVER.md` | 新增架构变更节 |
+
+### 重启后待验证
+
+| # | 验证项 | 方法 |
+|---|--------|------|
+| 1 | backward 在 agent_end 触发 | 跑一轮预测→反馈闭环，检查 `_events.jsonl` 中 `mode=agent_end_deferred` |
+| 2 | assistant 分析注入 backward prompt | backward 后检查节点内容是否出现 R1-R5/修正规则 等关键词（以前只出现规则摘要） |
+| 3 | 无错误的 HighEntropy 污染 | backward LLM race 中不应出现 "预测UP 0.55" 等预测推理文本 |
+| 4 | token 减少 | 对比第32轮 backward LLM 的 `userPromptChars` vs 重启后同量级调用 |
+| 5 | MERGE DUTY 仍可触发 | 无关本次改动，但需确认未退化。backward 后在 node_actions 中查到 merge |
+| 6 | 冷启动 | 新建空网络后发领域消息，L0 虚拟节点应通过 add_nodes 落地 |
+
+---
+
+## 十二、第33轮测试记录（2025-01-27，Workflow A — 重启后首轮）
+
+| 项目 | 内容 |
+|------|------|
+| 目标日 | 2025-01-27（sh000001，第32轮2025-01-24未命中❌后下一交易日） |
+| Workflow | A（planner取数→coms_send coder隔离预测→对答案→反馈） |
+| coder 预测 | **UP（涨），置信度 0.58** |
+| 实际 | DOWN -0.062%（收3250.60，前收3252.63） |
+| 结果 | **❌ 未命中**；累计 近5轮2胜3负 |
+| backward | 🔴 **未触发** — `_backwardPendingMatch` 在 coder 侧为 null |
+
+### 审计七层
+
+| # | 项目 | 结果 |
+|---|------|------|
+| a | backward.jsonl | ❌ 无第33轮记录（最新条目04:20:24非本轮） |
+| b | _events.jsonl | ❌ 无第33轮 backward apply 事件 |
+| c | Textron status | [8,7,29]=44节点，无变化 |
+| d | 节点name保留 | ⚠️ 无节点更新，跳过 |
+| e | status | 🔴 backward 未触发 |
+| f | 七层门控 | 🔴 coder侧before_agent_start未触发配对（coms通信路径问题） |
+| g | delete/merge | 不可检查 |
+
+### 🔴 P0 阻断性发现：coms通信中backward deferred机制断裂
+
+**症状**：planner通过coms_send发送反馈给coder → coder接收消息、生成回复（含HighEntropy复盘）→ coder agent_end捕获HighEntropy → 但backward未执行。
+
+**根因**：backward deferred机制依赖`_backwardPendingMatch`全局变量。该变量在`before_agent_start`的pairing_judge中设置（index.ts:2094），在`agent_end`中检查（index.ts:2619）。但coms通信中，coder接收消息时**before_agent_start钩子可能未被调用**，导致`_backwardPendingMatch`保持null，agent_end跳过backward。
+
+**事件证据**：
+- `_events.jsonl`中有planner的pairing_judge事件（04:23:33，处理boss消息），但无coder的pairing_judge事件
+- 04:25:15有coder的`highentropy_captured`（确认agent_end触发），但无`semantic_backward_start`
+- planner侧pending列表含"星象预测反馈闭环"（第32轮遗留），理论应匹配但配对从未在coder侧执行
+
+**修复方向**：
+1. 确认coms消息接收是否经过before_agent_start钩子；若不经过，需注入配对逻辑
+2. 或在agent_end中实现独立的pending匹配（不依赖before_agent_start设置的_backwardPendingMatch）
+3. 临时方案：回退到before_agent_start中直接执行backward（coms路径下仍有效）
+
+### coder 根因分析（⭐⭐⭐⭐⭐）
+
+**R1（致命）**：误判prev偏涨能量传递方式。prev（01-26周日）+2偏涨能量落在非交易日，假设周一开盘集中释放→冲高。实际：周末无法交易，周五（01-24）阳线收盘已提前吸收利多，周一变成"利多出尽"。
+
+**R2（严重）**：忽略node_7「利多不涨」模式。node_7记录：prev高正分+冲高回落收阴+current低分+next高分=利多不涨判跌。本轮完全命中模式，但被当作"背景信息"未应用。
+
+**R3（中等）**：「无月亮相位」误读为中性偏弱，实际是散户情绪空转→缺乏买入理由的默认抛压。
+
+### 三项修正规则（未写入网络—backward未触发）
+
+- **规则A**：prev落在非交易日且得分≥+2 → 利多能量视为已被前一交易日收盘吸收，不作为current冲高依据
+- **规则B**：current无月亮相位+非月亮相位偏负 → 默认微偏跌(-0.5分)，不可当"中性"处理。仅K线处于明确放量突破趋势中可豁免
+- **规则C**：next后日星换座+current利多不涨=双重空头确认，判跌置信度0.60+
+
+### 待办
+
+| 优先级 | 问题 | 动作 |
+|--------|------|------|
+| **P0** | coder复盘无HighEntropy + backward未触发 | ①workflow.md已增强步骤5反馈模板（含完整上下文+要求HighEntropy）；②需排查agent_end中_backwardPendingMatch是否为null |
+| P1 | 修正规则A/B/C未写入网络 | 待P0修复后下一轮backward写入 |
+| P1 | MERGE DUTY 持续零触发 | 已持续多轮，需研究prompt增强 |
+| P2 | 预测准确率下降（近5轮2胜3负） | 网络未学习本轮教训，待backward恢复后观察 |
+
+### 修复：workflow.md 步骤5 增强
+
+**问题**：原步骤5反馈消息过于简略（仅"预测涨0.58，实际跌-0.062%。请复盘分析"），导致：
+1. coder 复盘缺少完整K线/星象上下文 → 分析质量受限
+2. coder 未生成 `<HighEntropy>` 块 → agent_end 无 assistant 分析可注入 backward LLM
+3. backward LLM 只能从极简反馈文本编造训练信号 → 质量差
+
+**修复**：workflow.md 步骤5 改为强模板：
+- 必须包含原始K线+星象数据（作为复盘引用上下文）
+- 明确要求输出 `<HighEntropy>` 块
+- Technique 需包含根因+修正规则压缩版本

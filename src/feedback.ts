@@ -1,8 +1,9 @@
 import * as path from "node:path";
-import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "./storage";
-import { addPolicyNode } from "./policy";
-import { clamp } from "./utils";
-import type { LoadedNetwork } from "./network";
+import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "./lib/node_io";
+import { addPolicyNode } from "./lib/node_policy";
+import { clamp } from "./lib/utils";
+import type { loadNetwork } from "./lib/network";
+type LoadedNetwork = NonNullable<ReturnType<typeof loadNetwork>>;
 
 // ─── Textron Feedback Detection ───────────────────────────────────────
 

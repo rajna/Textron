@@ -129,6 +129,102 @@ Check hooks.json symlink path
 5. **Filesystem as database** — HTML nodes + JSON weights, inspectable and versionable
 6. **Skill names = node content** — no separate skill concept; a node might just contain "nbeat"
 
+## Lifecycle Hooks
+
+Textron intercepts two pi agent hooks to implement automatic RL training:
+
+### before_agent_start
+
+1. Restores task stack from `_last_state.json`
+2. Builds pending list from active task + task stack
+3. **Pairing judge** scans pending for a task matching current user message (isFeedback detection)
+4. If matched → sets `_backwardPendingMatch` marker (deferred to agent_end)
+5. Forward propagation: L0 scoring → MoE routing → edge propagation → context compilation
+
+### agent_end
+
+1. Captures assistant's `<HighEntropy>` block (Name/Task/Technique)
+2. Manages task stack: pushes new tasks, preserves intermediate messages
+3. Checks `_backwardPendingMatch` → executes `forcedSemanticBackward` in **agent_end_deferred** mode
+4. Backward LLM receives enhanced feedback: original message + `Assistant's analysis:` from HighEntropy
+5. Apply: updates node weights, contents, merges via LLM-directed node_actions
+6. Consumes pending task on successful backward
+
+**Why deferred?** Backward in agent_end can inject assistant's fresh root-cause analysis directly into the backward LLM prompt, replacing raw context with structured learning signal.
+
+## Diagnostic Logging
+
+`agent_end` emits diagnostic events to `_events.jsonl`:
+
+| Event | Meaning |
+|-------|---------|
+| `agent_end_backward_skipped` | Backward not executed |
+| → reason=`no_pending_match` | `_backwardPendingMatch` is null — no feedback paired |
+| → reason=`no_assistant_content` | HighEntropy or finalAssistantText empty |
+| `semantic_backward` mode=`agent_end_deferred` | Backward triggered at agent_end ✅ |
+| `agent_pending_state_cleared` | Pending task consumed after successful backward |
+
+Console diagnostic (stderr): `[textron] agent_end match=T/F he=T/F text=T/F` prints three boolean flags for rapid debugging.
+
+## HIGH_ENTROPY_INSTRUCTION
+
+Every assistant message must end with a `<HighEntropy>` XML block. The system prompt enforces:
+
+- **NEVER skip** — even for short replies like "收到"
+- **Missing = lost learning opportunity**
+- **Reflection/feedback replies CRITICAL**: Technique field must pack root cause analysis AND corrective rules
+
+```xml
+<HighEntropy>
+Name: ≤48 chars of highest-entropy terms
+TaskType: ≤15 chars category label
+isTask: true|false
+Task: ≤100 chars concrete problem statement
+Technique: ≤500 chars reusable principle + concrete method + correction rules
+</HighEntropy>
+```
+
+This block is consumed by agent_end for backward training. Prediction-round HighEntropy is **excluded from backward injection** (empty string passed for `previousAssistantHighEntropy`) to prevent wrong-prediction reasoning from polluting the training signal.
+
+## L0 Scoring
+
+Layer-0 (routing anchor) nodes are scored by LLM each forward pass:
+
+| Strategy | Method | Fallback |
+|----------|--------|----------|
+| `json_mode` | `response_format: json_object` + `temperature: 0` + `max_tokens: 1024` | → tool_call |
+| `tool_call` | Function call with per-node schema | → local TF-IDF |
+| `local_fallback` | TF-IDF lexical similarity | terminal |
+
+**Known issue**: deepseek-v4-pro auto-enables thinking mode, which blocks `json_object` response_format and `tool_choice`. Fix: `reasoning_effort: "minimal"` added to both `callScorer` and `callToolScorer` request bodies to suppress thinking.
+
+## Task Stack
+
+Persisted in `~/.textron/_last_state.json`:
+
+```json
+{
+  "activeTask": { "taskType": "A股涨跌预测", "taskFamily": "astro_stock_prediction", ... },
+  "taskStack": [ ... ]
+}
+```
+
+- **activeTask**: current in-progress task (consumed on backward)
+- **taskStack**: FIFO queue of pending tasks with HighEntropy crystals
+- **Consumption guard**: backward only consumes pending if `nodesUpdated>0 || nodesAdded>0 || nodesMerged>0 || abs(reward)>=0.05` (fake feedback protection)
+
+## Prediction → Feedback Closed Loop
+
+```
+planner fetches data → coms_send coder → coder predicts → planner checks actual
+→ planner sends feedback → coder agent_end triggers backward → network learns
+```
+
+Key constraints:
+- Planner never predicts; coder never searches
+- Actual result must NOT be leaked before prediction
+- Backward uses feedback + coder's reflection HighEntropy as training signal
+
 ## License
 
 MIT

@@ -646,7 +646,7 @@ export default function (pi: ExtensionAPI) {
       const requestBody: Record<string, unknown> = { model: model.id, messages };
       if (attempt.maxParam) requestBody[attempt.maxParam] = attempt.tokens || 4096;
       if (attempt.temperature) requestBody.temperature = 0;
-      if (attempt.reasoningEffort) requestBody.reasoning_effort = "minimal";
+      if (attempt.reasoningEffort) requestBody.reasoning_effort = "low";
       if (attempt.jsonMode) requestBody.response_format = { type: "json_object" };
 
       const res = await fetch(endpoint, {
@@ -708,7 +708,7 @@ export default function (pi: ExtensionAPI) {
         model: model.id,
         messages,
         max_completion_tokens: 512,
-        reasoning_effort: "minimal",
+        reasoning_effort: "low",
         tools: [{
           type: "function",
           function: {
@@ -795,7 +795,7 @@ export default function (pi: ExtensionAPI) {
         messages,
         stream: true,
         max_completion_tokens: 512,
-        reasoning_effort: "minimal",
+        reasoning_effort: "low",
       };
       const res = await fetch(endpoint, {
         method: "POST",
@@ -1048,7 +1048,7 @@ RULES:
 1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
 2. REWARD -1..1 from feedback. Negative=wrong, positive=correct. Off-topic→reward=-1,empty updates.
 3. FAILURE→"avoid X→prefer Y". SUCCESS→encode WHY.
-4. Content≤1000c. name=3-6 keywords from content≤48c. No templates/session summaries.
+4. Content≤1000c. name MUST be a compressed symbolic anchor (like the integral sign ∫ or the term "Transformer"). Think: what ≤48c symbol captures the ESSENCE and can serve as a building block for future combinations? Use domain-specific concise nouns (e.g. "满月极性反转" not "2025-01-24 DOWN UP json_mode"). NEVER use file paths, variable names, or full sentences as names. No templates/session summaries.
 5. Choose layer by content abstraction: L0=compact reusable principle, L1=causal mechanism, L2=concrete rule.
 6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
 7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.` },
@@ -1419,6 +1419,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       changedNodes: { id: string; layer: number; nodeId: string; oldName: string; newName: string; oldContent: string; newContent: string }[];
       nodeMutations: { type: "update" | "add" | "merge" | "delete"; id: string; source?: string; target?: string }[];
     } = { updated: 0, skipped: 0, skipReasons: [], changedNodes: [], nodeMutations: [] };
+    let nodesAdded = 0;
     if (!updates) return result;
 
     for (const [id, update] of Object.entries(updates)) {
@@ -1491,7 +1492,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         const overflowResult = addDynamicNode(net, parsed.layer, overflow, onLog, compressNodeName(overflow));
         if (overflowResult.added) {
           nodesAdded++;
-          nodeMutations.push({ type: "add", id: `L${parsed.layer}::node_${overflowResult.nodeId}` });
+          result.nodeMutations.push({ type: "add", id: `L${parsed.layer}::node_${overflowResult.nodeId}` });
           onLog(`Textron autoBackward: update overflow ${overflow.length}c → new node L${parsed.layer}::node_${overflowResult.nodeId}`);
         }
       }

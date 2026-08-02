@@ -90,8 +90,8 @@ export function extractNameTokens(content: string): NameToken[] {
       if (LATIN_STOP.has(x.text.toLowerCase()) && !identLike) continue;
       if (x.text.length < 3 && !/\d/.test(x.text) && !/^[A-Z]{2}$/.test(x.text)) continue;
       const base = identLike
-        ? 10 + Math.min(x.text.length, 14) / 2
-        : 5 + Math.min(x.text.length, 10) / 3;
+        ? 4 - Math.min(x.text.length, 14) / 4  // penalize paths/vars: shorter ident still ok, long paths lose
+        : 6 + Math.min(x.text.length, 10) / 3;
       tokens.push({ text: x.text, pos: x.index, kind: "latin", score: base + repeatBonus });
       continue;
     }

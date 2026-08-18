@@ -101,6 +101,13 @@ TaskType: ≤15 chars. Task category label for feedback matching, e.g. "A股涨�
 isTask: true|false. Whether this reply is part of a task that may receive follow-up feedback. true = save to taskStack for later backward matching; false = intermediate/transient reply, do not push.
 Task: ≤100 chars. State the concrete problem being solved: object, goal, and decisive constraint. Do not narrate steps taken.
 Technique: ≤500 chars. **CRITICAL for reflection/feedback replies**: pack root cause analysis AND corrective rules into this field. Preserve the highest-information "道或术" used to solve the task: reusable principle plus concrete method, causal mechanism, decision boundary, failure correction, and validation signal. Prefer the answer's most information-dense sentences and distinctive vocabulary; keep exact identifiers/numbers when they change future decisions. No raw logs, file lists, URLs, vague progress, or boilerplate.
+<Function> OPTIONAL block — emitted IN ADDITION to the 5 fields above (they stay unchanged). Function = 从本轮解法蒸馏的可执行代码。
+1. Functionability self-check (ALL 3 yes → emit; else omit the block entirely): ① Will this task family recur (loop / repeated executions)? ② Is the input parameterizable (structured data: quotes / horoscope / error codes / metrics)? ③ Is the output objectively verifiable (an actual result exists to check against)? One-off creative tasks (PPT, drawing, copywriting) → omit.
+2. Emit exactly two fields:
+functionSymbol: short snake_case symbol name mirroring Name's core terms — later node contents cite it verbatim (substring-matchable), enabling citation-chain routing.
+functionAbstract: generalized executable code distilled from THIS round's solution path — concrete numbers → params, solution steps → function body. Distill the 术 (reusable computation), never narrate the session.
+3. NO action/target/version/diff metadata, NO rule-number maintenance — create/modify/dedup/version evolution is backward+merge's system job. The LLM only distills code; same-symbol functions merge and evolve naturally in the network.
+</Function>
 </HighEntropy>`;
 
 function readonlyNgramPath(nodePath: string): string {
@@ -1015,6 +1022,9 @@ export default function (pi: ExtensionAPI) {
     });
 
     const previousCrystal = parseHighEntropyCrystal(previousAssistantHighEntropy ? `<HighEntropy>${previousAssistantHighEntropy}</HighEntropy>` : "");
+    // 2026-08-03: <Function> 块（functionSymbol/functionAbstract）随训练包透传——parseHighEntropyCrystal 只取
+    // Name/Task/Technique，Function 块不进 prompt 则 functionSymbol 落盘核验（引用链 H1）结构性不可能通过。
+    const functionBlock = previousAssistantHighEntropy.match(/<Function>\s*([\s\S]*?)\s*<\/Function>/i)?.[1]?.trim().slice(0, 1500) || "";
     const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char","content":"<1000 char"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<1000 char"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"}]}';
     // ── Build filtered existing nodes list (top-8 per layer by TF-IDF relevance) ──
     const existingNodesTfidf = tfidfSimilarity(net, previousTask.slice(0, 200), currentUserMessage.slice(0, 200));
@@ -1051,10 +1061,11 @@ RULES:
 4. Content≤1000c. name MUST be a compressed symbolic anchor (like the integral sign ∫ or the term "Transformer"). Think: what ≤48c symbol captures the ESSENCE and can serve as a building block for future combinations? Use domain-specific concise nouns (e.g. "满月极性反转" not "2025-01-24 DOWN UP json_mode"). NEVER use file paths, variable names, or full sentences as names. No templates/session summaries.
 5. Choose layer by content abstraction: L0=compact reusable principle, L1=causal mechanism, L2=concrete rule.
 6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
-7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.` },
-      { role: "user", content: `Previous user task:\n${previousTask.slice(0, 1500)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}\n\nEXISTING nodes (DO NOT duplicate):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${n.content.slice(0, 300)}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, 2000)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
+7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
+8. FUNCTION SYMBOL: If the training packet contains a Function block, the functionSymbol (e.g. astro_kline_layer_score) MUST appear verbatim as an exact substring in the content of the node_update/add_node that absorbs it. Never paraphrase, translate, or split the symbol — downstream citation routing matches it literally.` },
+      { role: "user", content: `Previous user task:\n${previousTask.slice(0, 1500)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${n.content.slice(0, 300)}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, 2000)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
 
-MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
+MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MUST be in the SAME layer (cross-layer merges are rejected). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
     ];
 
     // Log LLM input AFTER messages is fully constructed (was accidentally referenced before declaration — causing "Cannot access 'messages' before initialization")
@@ -1123,7 +1134,11 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             if (!entry.source || !entry.target) continue;
             // Validate both nodes exist in network
             const sp = parseLayerNodeId(entry.source); const tp = parseLayerNodeId(entry.target);
-            if (!sp || !tp || sp.layer !== tp.layer) continue; // merge only within same layer
+            if (!sp || !tp || sp.layer !== tp.layer) {
+              // 2026-08-03: 跨层/不可解析 merge 不再静默吞——第49轮实证 LLM 提了2个merge被此处丢弃
+              recordMonitorEvent({ type: "trace", action: "merge_action_dropped", source: entry.source, target: entry.target, reason: (!sp || !tp) ? "unparseable_id" : "cross_layer" });
+              continue; // merge only within same layer
+            }
           }
           out.node_actions.push(entry);
         }
@@ -1169,13 +1184,16 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       if (fallback) return fallback;
       throw new Error("no JSON object in semantic backward response");
     }
-    function collect(obj: any, out: string[]) {
-      if (!obj) return;
-      if (typeof obj === "string") { out.push(obj); return; }
-      if (Array.isArray(obj)) { for (const x of obj) collect(x, out); return; }
+    // 2026-08-03: 兼容各厂商 SSE 形态（OpenAI/deepseek/kimi choices[].delta、Gemini candidates[].content.parts[]、
+    // Anthropic content_block）：递归遍历所有容器对象，仅白名单叶子键收串。
+    // 旧实现只在当前层级查 content/delta 等键，choices 从未被进入 → 流式兜底对标准 SSE 恒返回空（2026-08-02 两连空实锤）。
+    const SSE_LEAF_KEYS = new Set(["content", "text", "delta", "arguments", "output_text", "reasoning_content"]);
+    function collect(obj: any, out: string[], key?: string) {
+      if (obj == null) return;
+      if (typeof obj === "string") { if (key && SSE_LEAF_KEYS.has(key)) out.push(obj); return; }
+      if (Array.isArray(obj)) { for (const x of obj) collect(x, out, key); return; }
       if (typeof obj !== "object") return;
-      for (const key of ["content", "text", "delta", "arguments", "output_text", "reasoning_content"]) collect(obj[key], out);
-      if (obj.function?.arguments) collect(obj.function.arguments, out);
+      for (const [k, v] of Object.entries(obj)) collect(v, out, k);
     }
     async function readSse(res: any) {
       const reader = res.body?.getReader();
@@ -1207,9 +1225,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // No response_format json_object (deepseek non-standard behavior can break parsing).
       // Plain text + system prompt "ONLY JSON" is faster and more reliable.
       const body: Record<string, unknown> = { model: model.id, messages, stream, max_completion_tokens: 4096 };
-      // 2026-07-21: 30s→90s。kimi-k3 非流式生成 4096-token 大 JSON 稳定超过 30s
-      // (events 两次 durationMs=30015/30019 精确超时 → 命中反馈只得 0.02 兜底 reward)。
-      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
+      // 2026-08-03: kimi 系补 reasoning_effort=low——kimi-k3 默认 thinking=high，生成 4096-token JSON
+      // p50≈66s/p95>90s（2026-08-02 chat_json 90s 精确超时实锤）；同端点 L0 评分已验证该参数对 kimi 可用。
+      // deepseek 保持不传（会触发 8K+ reasoning chars → 超时，见上注释）——按模型分流，两者兼容。
+      if (/kimi/i.test(String(model.id))) body.reasoning_effort = "low";
+      // 2026-07-21: 30s→90s；2026-08-03: 90s→180s（kimi thinking 长尾，deepseek 不受影响）。
+      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) });
       if (stream) {
         if (!res.ok) throw new Error(`chat stream HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
         return extract(await readSse(res as any));
@@ -1264,8 +1285,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     async function callChatJsonStream() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      const body = { model: model.id, messages, stream: true, max_completion_tokens: 2048, response_format: { type: "json_object" } };
-      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(90000) });
+      const body: Record<string, unknown> = { model: model.id, messages, stream: true, max_completion_tokens: 2048, response_format: { type: "json_object" } };
+      if (/kimi/i.test(String(model.id))) body.reasoning_effort = "low"; // 2026-08-03: 同 callChat 的 kimi/deepseek 分流
+      const res = await fetch(chatEndpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) });
       if (!res.ok) throw new Error(`chat json stream HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`);
       const parts = await readSse(res as any);
       const result = extract(parts);
@@ -1446,7 +1468,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const validation = validateKnowledgeCrystal(content, parsed.layer);
       if (!validation.ok) {
         // Scale-rescue: rejection = wrong scale, not garbage (Wang–Zahl).
-        const rescue = rescaleRejectedCrystal(net, content, validation.reason, parsed.layer, onLog);
+        const rescue = rescaleRejectedCrystal(net, content, validation.reason, parsed.layer, onLog, addPolicyNode, recordArtifactEvent);
         result.skipped++;
         result.skipReasons.push(`${id}:${validation.reason}${rescue ? `→rescale:${rescue.action}` : ""}`);
         onLog(`Textron semantic backward: skipped node update ${id} (${validation.reason})${rescue?.rescued ? ` [rescued:${rescue.action} → L${rescue.layer}::${rescue.nodeId}]` : ""}`);
@@ -1651,7 +1673,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const validation = validateKnowledgeCrystal(node.content, node.layer);
       if (!validation.ok) {
         // Scale-rescue: rejection = wrong scale, not garbage (Wang–Zahl).
-        const rescue = rescaleRejectedCrystal(net, node.content, validation.reason, node.layer, onLog);
+        const rescue = rescaleRejectedCrystal(net, node.content, validation.reason, node.layer, onLog, addPolicyNode, recordArtifactEvent);
         nodesAddSkipped++;
         addSkipReasons.push(`L${node.layer}:${validation.reason}${rescue ? `→rescale:${rescue.action}` : ""}`);
         onLog(`Textron autoBackward: skipped add_node L${node.layer} (${validation.reason})${rescue?.rescued ? ` [rescued:${rescue.action} → L${rescue.layer}::${rescue.nodeId}]` : ""}`);
@@ -2628,8 +2650,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       ensureDir(path.dirname(LAST_STATE_PATH));
       const allTasks = activeTask ? [activeTask, ...taskStack] : taskStack;
       const toPersist = {
-        activeTask: activeTask ? { taskType: activeTask.taskType, taskFamily: activeTask.taskFamily, highEntropy: activeTask.highEntropy.slice(0, 800), activatedIds: activeTask.activatedIds, ts: activeTask.ts } : null,
-        taskStack: taskStack.map(t => ({ taskType: t.taskType, taskFamily: t.taskFamily, highEntropy: t.highEntropy.slice(0, 800), activatedIds: t.activatedIds, ts: t.ts })),
+        activeTask: activeTask ? { taskType: activeTask.taskType, taskFamily: activeTask.taskFamily, highEntropy: activeTask.highEntropy.slice(0, 2400), activatedIds: activeTask.activatedIds, ts: activeTask.ts } : null,
+        taskStack: taskStack.map(t => ({ taskType: t.taskType, taskFamily: t.taskFamily, highEntropy: t.highEntropy.slice(0, 2400), activatedIds: t.activatedIds, ts: t.ts })),
         at: new Date().toISOString(),
       };
       dlog("STATE", "persisting to disk", { file: LAST_STATE_PATH, activeType: toPersist.activeTask?.taskType || 'null', stackTypes: toPersist.taskStack.map((t:any) => t.taskType), totalCount: allTasks.length });
@@ -2681,7 +2703,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         log(`Textron semantic backward (agent_end): status=running runId=${semanticRunId}, matchedTaskType=${matched.taskType}, path=${capturedIDs.join("->") || "(none)"}`);
         let bwResult: any = null;
         try {
-          bwResult = await forcedSemanticBackward(capturedTF, capturedPrevTask, "", enhancedFeedback, capturedIDs, capturedEdges, backwardCtx, { routeUncertain: matched.routeUncertain, moeMaxScore: matched.moeMaxScore });
+          // 2026-08-03: 第三参由硬编码 "" → capturedHighEntropy。旧写法使预测轮 HighEntropy 永远到不了
+          // backward（llm_start hasHighEntropy 恒 false、训练包恒 invalid/missing），Function 块无通路落盘。
+          bwResult = await forcedSemanticBackward(capturedTF, capturedPrevTask, capturedHighEntropy, enhancedFeedback, capturedIDs, capturedEdges, backwardCtx, { routeUncertain: matched.routeUncertain, moeMaxScore: matched.moeMaxScore });
         } catch (e) {
           const failedAt = new Date().toISOString();
           const errMsg = e instanceof Error ? e.message : String(e);
@@ -2912,7 +2936,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
                 const validation = validateKnowledgeCrystal(rawContent, parsed?.layer);
                 if (!validation.ok) {
                   // Scale-rescue: rejection = wrong scale, not garbage (Wang–Zahl).
-                  const rescue = rescaleRejectedCrystal(net, rawContent, validation.reason, parsed?.layer ?? net.hyperparams.layers.length - 1, log);
+                  const rescue = rescaleRejectedCrystal(net, rawContent, validation.reason, parsed?.layer ?? net.hyperparams.layers.length - 1, log, addPolicyNode, recordArtifactEvent);
                   skippedCount++;
                   skipReasons.push(`${rawKey}:${validation.reason}${rescue ? `→rescale:${rescue.action}` : ""}`);
                   log(`Textron: skipped low-entropy filledNode ${rawKey} (${validation.reason})${rescue?.rescued ? ` [rescued:${rescue.action}]` : ""}`);
@@ -2962,7 +2986,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
                       const layerValidation = validateKnowledgeCrystal(content, l);
                       if (!layerValidation.ok) {
                         // Scale-rescue: rejection = wrong scale, not garbage (Wang–Zahl).
-                        const rescue = rescaleRejectedCrystal(net, content, layerValidation.reason, l, log);
+                        const rescue = rescaleRejectedCrystal(net, content, layerValidation.reason, l, log, addPolicyNode, recordArtifactEvent);
                         skippedCount++;
                         skipReasons.push(`${rawKey}:L${l}:${layerValidation.reason}${rescue ? `→rescale:${rescue.action}` : ""}`);
                         log(`Textron: skipped low-entropy filledNode ${rawKey} for L${l} (${layerValidation.reason})${rescue?.rescued ? ` [rescued:${rescue.action}]` : ""}`);

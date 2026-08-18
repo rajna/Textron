@@ -71,8 +71,10 @@ export function rescaleRejectedCrystal(
   reason: string | undefined,
   targetLayer: number,
   onLog: (msg: string) => void,
-  addPolicyNode: Function,
-  recordArtifactEvent: Function,
+  // 2026-08-03: 防御性默认值——历史上 index.ts 4 个调用点漏传这两参导致
+  // "recordArtifactEvent is not a function" 崩掉 reward=0.8 的 apply。缺参降级为 no-op，不再 crash。
+  addPolicyNode: Function = () => ({ added: false, merged: false, replaced: false }),
+  recordArtifactEvent: Function = () => {},
 ): { rescued: boolean; action: string; nodeId?: string; layer?: number } | null {
   const baseReason = String(reason || "").replace(/\(.*\)$/, "");
   if (RESCALE_DOWN_REASONS.has(baseReason)) {

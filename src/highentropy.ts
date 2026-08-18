@@ -12,6 +12,8 @@ export interface HighEntropyCrystal {
   raw: string;
   ok: boolean;
   reason?: string;
+  /** <Function> 块原文（functionSymbol/functionAbstract），已从 raw 中剥离防吞并。 */
+  functionBlock?: string;
 }
 
 function compressNodeName(content: string): string {
@@ -153,7 +155,11 @@ function validateKnowledgeCrystal(raw: string, targetLayer?: number): { ok: bool
 export function parseHighEntropyCrystal(text: string): HighEntropyCrystal {
   const rawText = String(text || "");
   const match = rawText.match(/<HighEntropy>\s*([\s\S]*?)\s*<\/HighEntropy>/i);
-  const rawBlock = match?.[1]?.trim() || "";
+  const rawBlockFull = match?.[1]?.trim() || "";
+  // 2026-08-03: <Function> 块（functionSymbol/functionAbstract）不属于 Technique——
+  // 不剥离则 readField(technique→$) 会把整块代码吞进 Technique 字段，污染 pairing/prompt。
+  const functionBlock = rawBlockFull.match(/<Function>\s*([\s\S]*?)\s*<\/Function>/i)?.[1]?.trim() || "";
+  const rawBlock = rawBlockFull.replace(/<Function>[\s\S]*?<\/Function>/i, "").trim();
   const raw = rawBlock.replace(/\s+/g, " ").trim();
   const empty = (reason: string): HighEntropyCrystal => ({ name: "", taskType: "", isTask: false, task: "", technique: "", content: "", raw, ok: false, reason });
   if (!raw) return empty("missing");
@@ -209,14 +215,18 @@ export function parseHighEntropyCrystal(text: string): HighEntropyCrystal {
   if (isNgramFragmentContent(name) || !sharesKeywordWithContent(name, retrievalSource)) {
     name = compressNodeName(retrievalSource);
   }
-  return { name: completeContent(name, 64), taskType, isTask, task, technique: validation.content, content: validation.content, raw, ok: true };
+  return { name: completeContent(name, 64), taskType, isTask, task, technique: validation.content, content: validation.content, raw, ok: true, functionBlock: functionBlock || undefined };
 }
 
 export function extractHighEntropy(text: string): string {
   const crystal = parseHighEntropyCrystal(text);
   if (!crystal.ok) return "";
   const taskLine = crystal.task ? `\nTask: ${crystal.task}` : "";
-  return `Name: ${crystal.name}${taskLine}\nTechnique: ${crystal.technique}`;
+  // 2026-08-03: 保留 <Function> 块随 crystal 透传——否则 index.ts 透传 regex 在被剥光的
+  // crystal 上匹配永空（构造性死代码），functionSymbol 无落盘通路（第49轮核验④FAIL根因）。
+  const fn = (crystal.functionBlock || "").slice(0, 1200);
+  const fnBlock = fn ? `\n<Function>\n${fn}\n</Function>` : "";
+  return `Name: ${crystal.name}${taskLine}\nTechnique: ${crystal.technique}${fnBlock}`;
 }
 
 export function assistantMessageText(message: any): string {

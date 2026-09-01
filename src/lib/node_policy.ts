@@ -13,6 +13,78 @@ import { rescaleRejectedCrystal } from "./rescale";
 let _recordArtifactEvent: Function = () => {};
 export function setRecordArtifactEvent(fn: Function) { _recordArtifactEvent = fn; }
 
+/**
+ * 账本完整性检查: 确保节点在 weights.json 中已登记 prevKey 入边(上一层→本节点)与
+ * nextKey 出边(本节点→下一层)。对"扩容后新槽位未登记"与"历史遗留空槽缺边"两类
+ * 孤立节点补建缺失边(去重), 返回是否发生了补边。
+ * 原理: HTML(货架上架)与 weights.json(账本登记)是两步独立操作, 本函数强制
+ * "填充/复用节点前账本必须完整"。
+ */
+// ── 2026-08-19 统一收口: 边变更后必刷 HTML link (唯一出口) ──
+// 根因: backward 边权重更新(index.ts 1678/1703)只写 weights.json 不刷 HTML → 账货不一致 → "假孤立".
+// 原则: 所有边增/改/删后必须调用本函数刷新受影响节点的 HTML <link>, 保证 weights(账) 与 HTML(货) 永远一致.
+export function commitNodeHtmlEdges(
+  net: { hyperparams: { layers: number[] }; path: string; weights: any },
+  layer: number,
+  nodeId: string,
+): void {
+  const np = path.join(net.path, `layer_${layer}`, `${nodeId}.html`);
+  if (!fs.existsSync(np)) return;
+  const content = readNodeContent(np);
+  const name = readNodeName(np);
+  const outEdges = (net.weights?.layer_connections?.[`${layer}_to_${layer + 1}`] || [])
+    .filter((e: any) => e.from === nodeId)
+    .map((e: any) => ({ toId: e.to, weight: e.weight }));
+  writeNodeHtml(np, layer, nodeId, content, outEdges, name);
+}
+
+export function ensureNodeEdges(
+  net: { hyperparams: { layers: number[] }; weights: any },
+  layer: number,
+  nodeId: string,
+  onLog?: (msg: string) => void,
+): boolean {
+  if (!net.weights) return false;
+  if (!net.weights.layer_connections) net.weights.layer_connections = {};
+  let changed = false;
+  // 补 prevKey 入边: 上一层全部节点 → nodeId (layer=0 无入边)
+  if (layer > 0) {
+    const prevKey = `${layer - 1}_to_${layer}`;
+    if (!net.weights.layer_connections[prevKey]) net.weights.layer_connections[prevKey] = [];
+    const existingFrom = new Set(
+      net.weights.layer_connections[prevKey]
+        .filter((e: any) => e.to === nodeId)
+        .map((e: any) => e.from),
+    );
+    for (let p = 0; p < net.hyperparams.layers[layer - 1]; p++) {
+      const from = `node_${p}`;
+      if (!existingFrom.has(from)) {
+        net.weights.layer_connections[prevKey].push({ from, to: nodeId, weight: DEFAULT_WEIGHT });
+        changed = true;
+      }
+    }
+  }
+  // 补 nextKey 出边: nodeId → 下一层全部节点 (最末层无出边)
+  if (layer < net.hyperparams.layers.length - 1) {
+    const nextKey = `${layer}_to_${layer + 1}`;
+    if (!net.weights.layer_connections[nextKey]) net.weights.layer_connections[nextKey] = [];
+    const existingTo = new Set(
+      net.weights.layer_connections[nextKey]
+        .filter((e: any) => e.from === nodeId)
+        .map((e: any) => e.to),
+    );
+    for (let n = 0; n < net.hyperparams.layers[layer + 1]; n++) {
+      const to = `node_${n}`;
+      if (!existingTo.has(to)) {
+        net.weights.layer_connections[nextKey].push({ from: nodeId, to, weight: DEFAULT_WEIGHT });
+        changed = true;
+      }
+    }
+  }
+  if (changed) onLog?.(`Textron: ensureNodeEdges 补建 L${layer}::${nodeId} 缺失边(账本完整性)`);
+  return changed;
+}
+
 export function chooseExpansionLayer(
   net: { hyperparams: { layers: number[] }; path: string },
   requestedLayer?: number,
@@ -116,11 +188,17 @@ export function addPolicyNode(
     // Replace empty node
     const nodeId = `node_${slotIdx}`;
     const np = path.join(net.path, `layer_${layer}`, `${nodeId}.html`);
+    // ★ 账本完整性检查: 填充空槽前确保入边/出边已登记(防"有货无账"孤立节点)
+    const edgesChanged = ensureNodeEdges(net, layer, nodeId, onLog);
     const existing = net.weights?.layer_connections?.[`${layer}_to_${layer + 1}`] || [];
     const outEdges = existing
       .filter((e: any) => e.from === nodeId)
       .map((e: any) => ({ toId: e.to, weight: e.weight }));
     writeNodeHtml(np, layer, nodeId, validation.content, outEdges, name);
+    if (edgesChanged) {
+      // 补建边后必须落盘, 否则 HTML 已写而 weights.json 未同步(货上架账未记)
+      writeJson(path.join(net.path, "weights.json"), net.weights);
+    }
     onLog(`Textron: replaced empty L${layer}::${nodeId} "${previewText(name || validation.content, 40)}"`);
     return { added: true, merged: false, replaced: true, nodeId, layer };
   }

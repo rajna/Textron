@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Textron Trajectory · 轨迹原文</title>
+<style>
+:root{
+  --bg:#1c2334;
+  --panel:rgba(13,18,32,.9);
+  --card:rgba(255,255,255,.045);
+  --card-hi:rgba(255,255,255,.09);
+  --border:rgba(255,255,255,.09);
+  --border-hi:rgba(255,255,255,.18);
+  --text:#f2f5fc;
+  --muted:#9aa6c4;
+  --faint:#68739a;
+  --lime:#d7f463;
+  --pink:#ff7eb6;
+  --yellow:#ffd166;
+  --blue:#8fb8ff;
+  --mint:#7ee2c3;
+  --violet:#c59bff;
+  --amber:#ffbf73;
+  --red:#ff8a9d;
+  --mono:SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{
+  margin:0;min-height:100vh;color:var(--text);font-family:var(--sans);
+  background:linear-gradient(160deg,#252e48,#181f30 70%);
+  -webkit-font-smoothing:antialiased;padding:28px 36px 80px;
+}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:18px;margin-bottom:24px}
+h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em}
+.sub{font-size:13px;color:var(--muted);margin-top:4px}
+.top-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.tabs{display:inline-flex;gap:4px;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:999px;padding:4px}
+.tab-btn{height:34px;padding:0 18px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer}
+.tab-btn.active{background:#fff;color:#141c2e}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:20px 22px;box-shadow:0 24px 60px rgba(8,12,24,.35)}
+.toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.ev-btn{height:30px;min-width:30px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font:12px var(--mono);cursor:pointer;padding:0 10px;transition:background .12s}
+.ev-btn:hover:not(:disabled){background:var(--card-hi)}
+.ev-btn:disabled{opacity:.35;cursor:default}
+.ev-filter{height:30px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font:12px var(--mono);padding:0 10px;width:200px;outline:none}
+.ev-filter:focus{border-color:var(--border-hi)}
+.ev-total{font:11px var(--mono);color:var(--faint)}
+.pager{display:inline-flex;align-items:center;gap:8px;font:12px var(--mono);color:var(--muted)}
+/* 轨迹行 */
+.tr-head,.tr-row{display:grid;grid-template-columns:110px 150px 150px 1fr 70px;gap:10px;align-items:center;padding:9px 2px}
+.tr-head{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;border-bottom:1px dashed var(--border)}
+.tr-row{border-bottom:1px dashed rgba(255,255,255,.05);font-size:12px;cursor:pointer}
+.tr-row:last-of-type{border-bottom:0}
+.tr-row:hover{background:var(--card)}
+.tr-time{font-family:var(--mono);color:var(--muted);font-size:11px}
+.tr-kind{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);font-weight:700;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.tr-net{font:11px var(--mono);color:#cdd8f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tr-prev{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tr-he{text-align:right;font:11px var(--mono);color:var(--faint);white-space:nowrap}
+/* 展开详情 */
+.tr-detail{display:none;padding:14px 16px;background:rgba(0,0,0,.28);border:1px solid var(--border);border-radius:12px;margin:6px 0 12px;font-family:var(--mono);font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:#dbe4f8}
+.tr-detail.open{display:block}
+.tr-detail .dl{color:var(--faint);text-transform:uppercase;font-size:10px;letter-spacing:.09em;margin:12px 0 4px;font-weight:700}
+.tr-detail .dl:first-child{margin-top:0}
+.tr-detail code{color:var(--lime)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 10px}
+.lg{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);color:var(--muted)}
+.lg i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.empty{padding:22px 0;color:var(--faint);font-size:13px;text-align:center}
+a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div>
+    <h1>📜 Textron 轨迹原文</h1>
+    <div class="sub">user 问题 / AI 回复 原文 · LLM 反向传播输入输出 · 点击行展开完整内容</div>
+  </div>
+  <div class="top-right">
+    <div class="tabs">
+      <button class="tab-btn active" id="tabTraj">对话轨迹</button>
+      <button class="tab-btn" id="tabBackward">Backward 输入输出</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panelTraj">
+  <div class="toolbar">
+    <input class="ev-filter" id="trajFilter" placeholder="筛选 关键词…">
+    <button class="ev-btn" id="trajFilterBtn">筛选</button>
+    <span class="pager">
+      <button class="ev-btn" id="trajPrev">‹</button>
+      <span class="ev-total" id="trajTotal"></span>
+      <button class="ev-btn" id="trajNext">›</button>
+    </span>
+    <span style="flex:1"></span>
+    <button class="ev-btn" id="trajReload">↻ 刷新</button>
+  </div>
+  <div class="legend">
+    <span class="lg"><i style="background:var(--blue)"></i>user 消息</span>
+    <span class="lg"><i style="background:var(--yellow)"></i>AI 回复(含 HE)</span>
+    <span class="lg"><i style="background:var(--violet)"></i>backward 输入输出</span>
+    <span class="lg"><i style="background:var(--mint)"></i>激活节点</span>
+    <span class="lg"><i style="background:var(--red)"></i>reward 负向</span>
+  </div>
+  <div id="trajBox"></div>
+</div>
+
+<div class="panel" id="panelBackward" style="display:none;margin-top:20px">
+  <div class="toolbar">
+    <input class="ev-filter" id="bwFilter" placeholder="筛选 关键词…">
+    <button class="ev-btn" id="bwFilterBtn">筛选</button>
+    <span class="pager">
+      <button class="ev-btn" id="bwPrev">‹</button>
+      <span class="ev-total" id="bwTotal"></span>
+      <button class="ev-btn" id="bwNext">›</button>
+    </span>
+    <span style="flex:1"></span>
+    <span class="ev-total" id="bwNet"></span>
+    <button class="ev-btn" id="bwReload">↻ 刷新</button>
+  </div>
+  <div id="bwBox"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id)};
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function kindColor(kind){
+  if(kind==='user')return'var(--blue)';
+  if(kind==='answer')return'var(--yellow)';
+  if(kind==='backward')return'var(--violet)';
+  if(kind==='forward')return'var(--mint)';
+  return'var(--muted)';
+}
+function fmtTime(ts){return String(ts||'').replace('T',' ').slice(5,19)||'--'}
+function pagerBind(prevId,nextId,state,load){
+  $(prevId).addEventListener('click',function(){if(state.page>1){state.page--;load();}});
+  $(nextId).addEventListener('click',function(){state.page++;load();});
+}
+// ── Tab 1: 对话轨迹 (_trajectories.jsonl) ──
+var trajState={page:1,size:20,filter:''};
+function loadTraj(){
+  var box=$('trajBox');
+  box.innerHTML='<div class="empty">加载中…</div>';
+  fetch('/api/trajectories?page='+trajState.page+'&pageSize='+trajState.size+'&filter='+encodeURIComponent(trajState.filter)+'&t='+Date.now(),{cache:'no-store'})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    var totalPages=Math.max(1,Math.ceil((d.total||0)/d.size));
+    var h='<div class="tr-head"><span>时间</span><span>类型</span><span>网络</span><span>摘要</span><span>HE</span></div>';
+    for(var i=0;i<(d.items||[]).length;i++){
+      var it=d.items[i];
+      var col=kindColor('answer');
+      var act='<span class="tr-kind" style="background:'+col+'26;color:'+col+'">'+(it.hasHighEntropy?'AI 回复 · HE':'AI 回复')+'</span>';
+      var prev=String(it.answer||'').replace(/\s+/g,' ').slice(0,120)||String(it.userPrompt||'').replace(/\s+/g,' ').slice(0,120);
+      h+='<div class="tr-row" data-i="'+i+'">'+
+        '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+act+
+        '<span class="tr-net">'+esc(it.taskFamily||'')+'</span>'+
+        '<span class="tr-prev">'+esc(prev)+'</span>'+
+        '<span class="tr-he">'+(it.hasHighEntropy?'🧠':'—')+'</span></div>'+
+        '<div class="tr-detail" id="trd-'+i+'">'+
+        '<div class="dl">👤 user 消息（原文）</div>'+esc(it.userPrompt||'(空)')+
+        '<div class="dl">🤖 AI 回复（原文）</div>'+esc(it.answer||'(空)')+
+        '<div class="dl">🧭 激活节点</div>'+(it.activatedIds||[]).join(' → ')+
+        '</div>';
+    }
+    if(!(d.items||[]).length)h+='<div class="empty">无轨迹数据（记录将从下次 agent 回复开始写入 _trajectories.jsonl）</div>';
+    box.innerHTML=h;
+    $('trajTotal').textContent='共 '+d.total+' 条 · 第 '+d.page+'/'+totalPages+' 页';
+    $('trajPrev').disabled=d.page<=1;
+    $('trajNext').disabled=d.page>=totalPages;
+    var rows=box.querySelectorAll('.tr-row');
+    for(var j=0;j<rows.length;j++){
+      rows[j].addEventListener('click',function(){
+        var det=$('trd-'+this.getAttribute('data-i'));
+        if(det)det.classList.toggle('open');
+      });
+    }
+  })
+  .catch(function(e){box.innerHTML='<div class="empty" style="color:var(--red)">加载失败: '+esc(e.message)+'</div>'});
+}
+// ── Tab 2: Backward 输入输出 (_sb_logs) ──
+var bwState={page:1,size:10,filter:''};
+function loadBw(){
+  var box=$('bwBox');
+  box.innerHTML='<div class="empty">加载中…</div>';
+  fetch('/api/backward-logs?page='+bwState.page+'&pageSize='+bwState.size+'&filter='+encodeURIComponent(bwState.filter)+'&t='+Date.now(),{cache:'no-store'})
+  .then(function(r){return r.json()})
+  .then(function(d){
+    var totalPages=Math.max(1,Math.ceil((d.total||0)/d.size));
+    var h='<div class="tr-head"><span>时间</span><span>类型</span><span>网络</span><span>reward / 摘要</span><span>状态</span></div>';
+    for(var i=0;i<(d.items||[]).length;i++){
+      var it=d.items[i],p=it.parsed||{};
+      var col=kindColor('backward');
+      var act='<span class="tr-kind" style="background:'+col+'26;color:'+col+'">LLM backward</span>';
+      var rw=Number(p.reward);
+      var rwCol=rw<0?'var(--red)':rw>0?'var(--lime)':'var(--muted)';
+      var summary=String(p.rationale||'').replace(/\s+/g,' ').slice(0,140);
+      var upds=Object.keys(p.node_updates||{}).length, adds=(p.add_nodes||[]).length;
+      h+='<div class="tr-row" data-i="'+i+'">'+
+        '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+act+
+        '<span class="tr-net">'+esc(it.net||it.taskFamily||'')+'</span>'+
+        '<span class="tr-prev" style="color:'+rwCol+'">reward='+rw.toFixed(2)+' · '+esc(summary)+'</span>'+
+        '<span class="tr-he">'+(upds?'~'+upds+'n':'')+(adds?' +'+adds:'')+'</span></div>'+
+        '<div class="tr-detail" id="bwd-'+i+'">'+
+        '<div class="dl">📥 LLM 输入 · userPrompt（含 任务/反馈/现有节点）</div>'+esc(it.userPrompt||'(空)')+
+        '<div class="dl">📤 LLM 输出 · parsed</div>'+esc(JSON.stringify(p,null,1))+
+        '<div class="dl">⚙ systemPrompt</div>'+esc(it.systemPrompt||'(空)')+
+        '</div>';
+    }
+    if(!(d.items||[]).length)h+='<div class="empty">该网络暂无 backward 日志</div>';
+    box.innerHTML=h;
+    $('bwTotal').textContent='共 '+d.total+' 条 · 第 '+d.page+'/'+totalPages+' 页';
+    $('bwNet').textContent='网络: '+(d.nets||[]).join(', ')||'';
+    $('bwPrev').disabled=d.page<=1;
+    $('bwNext').disabled=d.page>=totalPages;
+    var rows=box.querySelectorAll('.tr-row');
+    for(var j=0;j<rows.length;j++){
+      rows[j].addEventListener('click',function(){
+        var det=$('bwd-'+this.getAttribute('data-i'));
+        if(det)det.classList.toggle('open');
+      });
+    }
+  })
+  .catch(function(e){box.innerHTML='<div class="empty" style="color:var(--red)">加载失败: '+esc(e.message)+'</div>'});
+}
+// ── 事件绑定 ──
+$('tabTraj').addEventListener('click',function(){
+  $('tabTraj').classList.add('active');$('tabBackward').classList.remove('active');
+  $('panelTraj').style.display='block';$('panelBackward').style.display='none';
+  loadTraj();
+});
+$('tabBackward').addEventListener('click',function(){
+  $('tabBackward').classList.add('active');$('tabTraj').classList.remove('active');
+  $('panelBackward').style.display='block';$('panelTraj').style.display='none';
+  loadBw();
+});
+$('trajFilter').addEventListener('keydown',function(e){if(e.key==='Enter'){trajState.filter=this.value.trim();trajState.page=1;loadTraj();}});
+$('trajFilterBtn').addEventListener('click',function(){trajState.filter=$('trajFilter').value.trim();trajState.page=1;loadTraj();});
+$('trajReload').addEventListener('click',loadTraj);
+$('bwFilter').addEventListener('keydown',function(e){if(e.key==='Enter'){bwState.filter=this.value.trim();bwState.page=1;loadBw();}});
+$('bwFilterBtn').addEventListener('click',function(){bwState.filter=$('bwFilter').value.trim();bwState.page=1;loadBw();});
+$('bwReload').addEventListener('click',loadBw);
+pagerBind('trajPrev','trajNext',trajState,loadTraj);
+pagerBind('bwPrev','bwNext',bwState,loadBw);
+loadTraj();
+setInterval(function(){if(!document.hidden&&$('panelTraj').style.display!=='none')loadTraj()},10000);
+setInterval(function(){if(!document.hidden&&$('panelBackward').style.display!=='none')loadBw()},15000);
+})();
+</script>
+</body>
+</html>

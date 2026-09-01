@@ -149,6 +149,26 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
 }
 .big-btn:hover{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.4)}
 
+/* ── events table (轨迹分页) ── */
+.ev-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.ev-pager{display:inline-flex;align-items:center;gap:8px;font:12px var(--mono);color:var(--muted)}
+.ev-btn{height:30px;min-width:30px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font:12px var(--mono);cursor:pointer;padding:0 10px;transition:background .12s}
+.ev-btn:hover:not(:disabled){background:var(--card-hi)}
+.ev-btn:disabled{opacity:.35;cursor:default}
+.ev-filter{height:30px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font:12px var(--mono);padding:0 10px;width:190px;outline:none}
+.ev-filter:focus{border-color:var(--border-hi)}
+.ev-total{font:11px var(--mono);color:var(--faint)}
+.ev-head,.ev-row{display:grid;grid-template-columns:96px 168px 150px 1fr 150px;gap:10px;align-items:center;padding:9px 2px}
+.ev-head{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;border-bottom:1px dashed var(--border)}
+.ev-row{border-bottom:1px dashed rgba(255,255,255,.05);font-size:12px}
+.ev-row:last-of-type{border-bottom:0}
+.ev-row:hover{background:rgba(255,255,255,.03)}
+.ev-time{font-family:var(--mono);color:var(--muted);font-size:11px}
+.ev-act{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);font-weight:700;padding:3px 9px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:168px}
+.ev-net{font:11px var(--mono);color:#cdd8f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev-prev{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.ev-extra{font:11px var(--mono);color:var(--faint);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 /* ── overview ── */
 .ov-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .live-badge{background:var(--lime);color:#141c2e;font-size:12px;font-weight:800;padding:4px 10px;border-radius:6px}
@@ -248,6 +268,7 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
     <button class="ricon" data-target="sec-steps" title="Pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 13c2-1 3-3 5-3s3 4 5 3 3-5 5-4 2 4 3 5"/></svg></button>
     <button class="ricon" data-target="sec-side" title="Stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg></button>
     <button class="ricon" data-target="sec-diag" title="Diagnostics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg></button>
+    <button class="ricon" data-target="sec-events" title="轨迹"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="4" cy="18" r="1.6"/></svg></button>
   </div>
   <div class="rail-bottom"><div class="avatar">T</div></div>
 </nav>
@@ -272,10 +293,12 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
   <div class="layout">
     <div class="col-main">
       <div id="graphs"></div>
+      <div id="trajSlot"></div>
       <div id="steps-wrap"></div>
       <div id="diag-wrap"></div>
     </div>
-    <aside class="col-side" id="side"></aside>
+    <aside class="col-side" id="side">
+    </aside>
   </div>
 </div>
 
@@ -383,7 +406,14 @@ function relTime(iso){
   if(diff<172800)return'昨天 '+new Date(t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
   return new Date(t).toLocaleDateString('zh-CN',{month:'short',day:'numeric'})+' '+new Date(t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
 }
-function fmtClock(iso){var s=String(iso||'');return s.length>=19?s.slice(5,19).replace('T',' '):s}
+// 2026-08-19 修复: 原 slice(5,19) 直接切 ISO 字符串 → 显示 UTC 时间且丢年份.
+// 改为 new Date() 转本地时区(CST), 显示 完整 年-月-日 时:分:秒.
+function fmtClock(iso){
+  var d=new Date(String(iso||''));
+  if(isNaN(d.getTime())){var s=String(iso||'');return s.length>=19?s.slice(5,19).replace('T',' '):s}
+  function p(n){return (n<10?'0':'')+n}
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
 function setHTML(el,h){if(el.__last!==h){el.__last=h;el.innerHTML=h}}
 function qualityBar(q){
   if(q==null)return'';
@@ -1011,6 +1041,83 @@ function renderRawLLMResponse(events){
 }
 
 /* ═══════════════ render orchestration ═══════════════ */
+// ── Harness 轨迹: 思考→回答 链 + 反馈/沉淀(不显示动作/观察) ──
+function buildTrajectories(events){
+  var trajs=[],cur=null;
+  for(var i=0;i<events.length;i++){
+    var e=events[i];
+    if(e.action==='context_user_message_injected'){
+      if(cur)trajs.push(cur);
+      cur={ts:e.ts,parts:[e]};
+    } else if(cur){cur.parts.push(e);}
+  }
+  if(cur)trajs.push(cur);
+  return trajs.slice(-6).reverse();
+}
+function escTag(s){return String(s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function renderTrajectory(events){
+  var trajs=buildTrajectories(events||[]);
+  // 2026-08-19: 回答取头+尾(中间省略), 用于长回答展示
+  function headTail(s, head, tail){
+    s=String(s||'');
+    if(s.length<=head+tail+6)return s;
+    return s.slice(0,head)+' …[中略 '+(s.length-head-tail)+'字]… '+s.slice(-tail);
+  }
+  var h='<div class="spanel"><div class="sp-title">🔄 Harness 轨迹</div><div class="bars-sub">✦回答 · 📈反馈/🧠沉淀 · 最近 '+trajs.length+' 回合</div>';
+  if(!trajs.length)return h+'<div class="bars-sub">暂无轨迹数据</div></div>';
+  for(var t=0;t<trajs.length;t++){
+    var turn=trajs[t];
+    var inputE=null, injE=null;
+    var chain=[];
+    for(var i=0;i<turn.parts.length;i++){
+      var e=turn.parts[i], a=e.action;
+      if(a==='context_user_message_injected')inputE=e;
+      else if(a==='prompt_injection_prepared')injE=e;
+      // 2026-08-19: 思考不显示(可选关闭)
+      else if(a==='agent_answer'){var ae=e;chain.push({k:'✦ 回答',c:'#22c55e',text:headTail(ae.answerPreview||'',120,80)+(ae.hasHighEntropy?' <span style="color:#f59e0b">[HE]</span>':'')});}
+    var oldData = !chain.some(function(x){return x.k==='✦ 回答'});
+    }
+    var bwE=null, skipE=null;
+    for(var i=0;i<turn.parts.length;i++){
+      var a=turn.parts[i].action;
+      if(a==='semantic_backward_done'||a==='semantic_backward')bwE=turn.parts[i];
+      if(!bwE&&(a==='agent_end_backward_skipped'||a==='semantic_backward_skipped_not_feedback'||a==='backward_deferred_to_agent_end'))skipE=turn.parts[i];
+    }
+    var stAct=injE?('命中 '+String(injE.activatedCount||'?')+'/'+String(injE.totalNodeCount||'?')+'节点 · '+String(injE.selectedPathCount||'?')+'路径'):'—';
+    // 输入: 2026-08-19 问题可以长一点(90→220字符)
+    var inputTxt = (inputE && (inputE.promptPreview||'')) || (inputE && (function(){var s=inputE.injectedPromptPreview||'';var m=s.indexOf('## 🧠 Textron');var core=m>0?s.slice(0,m):s;return core.replace(/^[^\u4e00-\u9fa5A-Za-z0-9]*/,'').slice(0,220)})()) || '(旧采集无输入记录)';
+    var dot=bwE?'<span class="dot dot-done"></span>已沉淀':(skipE?'<span class="dot dot-other"></span>未学习':'<span class="dot dot-running"></span>进行中');
+    // 回合头(仿 f-row 网格: 时间 | 输入+节点 | 状态)
+    h+='<div class="f-row" style="grid-template-columns:92px 1fr auto;padding-top:14px">';
+    h+='<span class="f-time">'+esc(fmtClock(turn.ts))+'</span>';
+    h+='<span class="f-net">'+(t===0?'<span style="color:#fbbf24;font-weight:700">最新 </span>':'')+esc(inputTxt)+((inputTxt.length>200)?'…':'')+' <span style="color:var(--faint);font-family:var(--mono);font-size:11px">'+esc(stAct)+'</span></span>';
+    h+='<span class="f-status">'+dot+'</span></div>';
+    // 链式步骤
+    if(!chain.length){
+      h+='<div class="f-row"><span class="f-time"></span><span class="f-net" style="color:var(--faint)">(旧采集回合: 无思考/回答记录——本会话重启后完整)</span><span class="f-status"></span></div>';
+    } else if(oldData){
+      h+='<div class="f-row"><span class="f-time"></span><span class="f-net" style="color:var(--faint)">(部分旧采集: 无思考记录)</span><span class="f-status"></span></div>';
+    }
+    for(var ci=0;ci<chain.length;ci++){
+      var st=chain[ci];
+      h+='<div class="f-row"><span class="f-time"></span><span class="f-net"><span style="color:'+st.c+';font-weight:600;margin-right:6px">'+st.k+'</span><span style="color:var(--txt);font-weight:400">'+escTag(st.text)+'</span></span><span class="f-status"></span></div>';
+    }
+    // 反馈 + 沉淀
+    var rw='<span style="color:var(--faint)">无反馈信号</span>', lr='<span style="color:var(--faint)">未触发 backward</span>';
+    if(bwE){
+      var rv=bwE.reward!==undefined?Number(bwE.reward).toFixed(2):(bwE.llmReward!==undefined?Number(bwE.llmReward).toFixed(2):null);
+      rw=rv!==null?'<span style="color:#fbbf24;font-weight:600">+'+rv+'</span>':'<span style="color:#fbbf24">✓</span>';
+      if(bwE.rationale)rw+=' <span style="color:var(--faint)">· '+esc((bwE.rationale||'').slice(0,60))+'</span>';
+      var up=Number(bwE.nodesUpdated||0),ad=Number(bwE.nodesAdded||0),rm=Number(bwE.nodesRemoved||0)||Number(bwE.nodesDeleted||0),mg=Number(bwE.nodesMerged||0);
+      lr='<span style="color:#22c55e">更新'+up+'</span> '+(ad?'<span style="color:#3b82f6">新增'+ad+'</span> ':'')+(mg?'<span style="color:#a855f7">合并'+mg+'</span> ':'')+(rm?'<span style="color:var(--pink)">删除'+rm+'</span> ':'')+'<span style="color:var(--faint)">· edges '+String(bwE.edgesUpdated||0)+'</span>';
+    } else if(skipE){rw='<span style="color:var(--pink)">未学习</span> <span style="color:var(--faint)">· '+esc(String(skipE.action||'').replace('semantic_backward_','').replace('agent_end_',''))+'</span>'+(skipE.reason?'<span style="color:var(--faint)"> · 原因: '+esc(String(skipE.reason))+'</span>':'')+(skipE.hasHighEntropy===false?' <span style="color:var(--faint)">· 无HE</span>':'')+(skipE.hasMatch===false?' <span style="color:var(--faint)">· 无匹配任务</span>':'');}
+    else {rw='<span style="color:var(--faint)">等待反馈…</span>';lr='<span style="color:var(--faint)">等待 backward…</span>';}
+    h+='<div class="f-row"><span class="f-time"></span><span class="f-net"><span style="color:#fbbf24;font-weight:600;margin-right:6px">📈 反馈</span><span style="color:var(--txt)">'+rw+'</span></span><span class="f-status"></span></div>';
+    h+='<div class="f-row" style="padding-bottom:14px"><span class="f-time"></span><span class="f-net"><span style="color:#ec4899;font-weight:600;margin-right:6px">🧠 沉淀</span><span style="color:var(--txt)">'+(lr||'—')+'</span></span><span class="f-status"></span></div>';
+  }
+  return h+'</div>';
+}
+
 function render(s){
   var names=Object.keys(s.networks||{});
   if(!names.length){graphsEl.innerHTML='<div class="panel">No Textron networks.</div>';return}
@@ -1032,6 +1139,10 @@ function render(s){
   }
 
   renderSteps(s,activeIds,b);
+
+  // 轨迹面板 + 模板面板(主列挂载)
+  var trajEl=document.getElementById("trajSlot");
+  if(trajEl)trajEl.innerHTML=renderTrajectory(s.backwardEvents||[]);
 
   var dh='<details class="panel diag-details"'+diagAttrs('backward')+'><summary>↩ Semantic Backward 详情</summary><div class="diag-body">'+renderBackwardInner(b)+'</div></details>';
   var rawHtml=renderRawLLMResponse(s.backwardEvents||[]);
@@ -1059,6 +1170,11 @@ async function poll(){
 var ricons=document.querySelectorAll('.ricon');
 for(var ri=0;ri<ricons.length;ri++){
   ricons[ri].addEventListener('click',function(){
+    // 轨迹图标 → 独立页新窗口打开(不在主页面内嵌)
+    if(this.getAttribute('data-target')==='sec-events'){
+      window.open('/trajectory','_blank');
+      return;
+    }
     for(var j=0;j<ricons.length;j++)ricons[j].classList.remove('active');
     this.classList.add('active');
     var t=$(this.getAttribute('data-target'));
@@ -1088,8 +1204,10 @@ function loop(ts){
 requestAnimationFrame(loop);
 
 var evt;
-try{evt=new EventSource('/events');evt.addEventListener('propagate_live',function(){poll()});evt.addEventListener('update',function(){poll()})}catch(e){}
-poll();setInterval(poll,1500);
+try{evt=new EventSource('/events');evt.addEventListener('propagate_live',function(){if(!document.hidden)poll()});evt.addEventListener('update',function(){if(!document.hidden)poll()})}catch(e){}
+poll();setInterval(function(){if(!document.hidden)poll()},1500);
+// 2026-08-19: 后台标签页暂停轮询(节省资源, 回前台立即刷新)
+document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
 })();
 </script>
 </body>

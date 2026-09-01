@@ -60,7 +60,7 @@ import { RESCALE_DOWN_REASONS, RESCALE_UP_REASONS, RESCALE_PENDING_LIMIT,
          writeRescalePending, tryUpscalePair, rescaleRejectedCrystal,
          type RescalePendingItem } from "./lib/rescale";
 import { setRecordArtifactEvent, chooseExpansionLayer, updateExistingNodeByPolicy,
-         addPolicyNode, compactMergeEmptiedNodes, compactEmptyNodes, addDynamicNode } from "./lib/node_policy";
+         addPolicyNode, compactMergeEmptiedNodes, compactEmptyNodes, addDynamicNode, commitNodeHtmlEdges } from "./lib/node_policy";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -91,22 +91,45 @@ interface ActivatedNode {
 
 // ─── Remaining locals (not extracted) ───────────────────────────────
 
+// const HIGH_ENTROPY_INSTRUCTION = `
+
+// ## Textron HighEntropy Output Contract
+// At the very end of your final user-facing answer, append exactly one XML block. **NEVER skip this block** — even for short replies like "收到" or brief summaries. Textron backward consumes it as training data; missing HighEntropy = lost learning opportunity.
+// <HighEntropy>
+// Name: ≤48 chars. Join 3-6 highest-entropy ORIGINAL terms lifted from Task+Technique (identifiers, domain signals, key numbers). Routing sees only Name, so avoid generic summary sentences or prefix truncation.
+// TaskType: ≤15 chars. Task category label for feedback matching, e.g. "A股涨跌预测" "Textron协议修复" "代码审查". Write in the language of the task domain.
+// isTask: true|false. Whether this reply is part of a task that may receive follow-up feedback. true = save to taskStack for later backward matching; false = intermediate/transient reply, do not push.
+// Task: ≤100 chars. State the concrete problem being solved: object, goal, and decisive constraint. Do not narrate steps taken.
+// Technique: ≤500 chars. **CRITICAL for reflection/feedback replies**: pack root cause analysis AND corrective rules into this field. Preserve the highest-information "道或术" used to solve the task: reusable principle plus concrete method, causal mechanism, decision boundary, failure correction, and validation signal. Prefer the answer's most information-dense sentences and distinctive vocabulary; keep exact identifiers/numbers when they change future decisions. No raw logs, file lists, URLs, vague progress, or boilerplate.
+// <Function> OPTIONAL block — emitted IN ADDITION to the 5 fields above (they stay unchanged). Function = 从本轮解法蒸馏的可执行代码。
+// 1. Functionability self-check (ALL 3 yes → emit; else omit the block entirely): ① Will this task family recur (loop / repeated executions)? ② Is the input parameterizable (structured data: quotes / horoscope / error codes / metrics)? ③ Is the output objectively verifiable (an actual result exists to check against)? One-off creative tasks (PPT, drawing, copywriting) → omit.
+// 2. Emit exactly two fields:
+// functionSymbol: short snake_case symbol name mirroring Name's core terms — later node contents cite it verbatim (substring-matchable), enabling citation-chain routing.
+// functionAbstract: generalized executable code distilled from THIS round's solution path — concrete numbers → params, solution steps → function body. Distill the 术 (reusable computation), never narrate the session.
+// 3. NO action/target/version/diff metadata, NO rule-number maintenance — create/modify/dedup/version evolution is backward+merge's system job. The LLM only distills code; same-symbol functions merge and evolve naturally in the network.
+// </Function>
+// </HighEntropy>`;
+
 const HIGH_ENTROPY_INSTRUCTION = `
 
-## Textron HighEntropy Output Contract
-At the very end of your final user-facing answer, append exactly one XML block. **NEVER skip this block** — even for short replies like "收到" or brief summaries. Textron backward consumes it as training data; missing HighEntropy = lost learning opportunity.
+## Textron HighEntropy 输出契约
+在面向用户的最终回答的末尾，**必须追加一个且仅一个XML代码块**。**绝不允许省略该代码块**——即便是“收到”这类简短回复、简短摘要也不能例外。Textron的反向流程会将该块用作训练数据；缺失HighEntropy等同于丢失训练学习机会。
 <HighEntropy>
-Name: ≤48 chars. Join 3-6 highest-entropy ORIGINAL terms lifted from Task+Technique (identifiers, domain signals, key numbers). Routing sees only Name, so avoid generic summary sentences or prefix truncation.
-TaskType: ≤15 chars. Task category label for feedback matching, e.g. "A股涨跌预测" "Textron协议修复" "代码审查". Write in the language of the task domain.
-isTask: true|false. Whether this reply is part of a task that may receive follow-up feedback. true = save to taskStack for later backward matching; false = intermediate/transient reply, do not push.
-Task: ≤100 chars. State the concrete problem being solved: object, goal, and decisive constraint. Do not narrate steps taken.
-Technique: ≤500 chars. **CRITICAL for reflection/feedback replies**: pack root cause analysis AND corrective rules into this field. Preserve the highest-information "道或术" used to solve the task: reusable principle plus concrete method, causal mechanism, decision boundary, failure correction, and validation signal. Prefer the answer's most information-dense sentences and distinctive vocabulary; keep exact identifiers/numbers when they change future decisions. No raw logs, file lists, URLs, vague progress, or boilerplate.
-<Function> OPTIONAL block — emitted IN ADDITION to the 5 fields above (they stay unchanged). Function = 从本轮解法蒸馏的可执行代码。
-1. Functionability self-check (ALL 3 yes → emit; else omit the block entirely): ① Will this task family recur (loop / repeated executions)? ② Is the input parameterizable (structured data: quotes / horoscope / error codes / metrics)? ③ Is the output objectively verifiable (an actual result exists to check against)? One-off creative tasks (PPT, drawing, copywriting) → omit.
-2. Emit exactly two fields:
-functionSymbol: short snake_case symbol name mirroring Name's core terms — later node contents cite it verbatim (substring-matchable), enabling citation-chain routing.
-functionAbstract: generalized executable code distilled from THIS round's solution path — concrete numbers → params, solution steps → function body. Distill the 术 (reusable computation), never narrate the session.
-3. NO action/target/version/diff metadata, NO rule-number maintenance — create/modify/dedup/version evolution is backward+merge's system job. The LLM only distills code; same-symbol functions merge and evolve naturally in the network.
+Name：≤25字符。从Task与Technique中提取3‑6个信息熵最高的原始术语拼接而成（标识符、领域特征、关键数值）。路由模块仅读取Name字段，因此禁止使用泛化概括语句，也不要做前缀截断。
+TaskType：≤15字符。用于反馈匹配的任务分类标签，示例：“A股涨跌预测”“Textron协议修复”“代码审查”。使用任务所属领域的专业语言填写。
+isTask：true|false。标记该回复是否属于会接收后续反馈的任务。true = 存入任务栈，供后续反向匹配；false = 中间临时回复，不压入任务栈。
+Task：≤100字符。描述待解决的具体问题：对象、目标、决定性约束条件。不要复述执行步骤。
+Technique：≤500字符:本字段需要抽象，归纳，总结，泛化，解决同类任务时信息密度最高的“道或术”：成功经验，失败教训，模式识别 ，未来遇到同样问题的可复用原理+具体方法、因果机制、判定边界、错误修正方案、校验信号。优先选用回答中信息最密集的语句与专属术语，满足高熵 凝练 抽象 压缩 多维 正交原则；凡是会影响后续决策的标识符、数值必须原样保留。禁止原始日志、文件列表、链接、模糊进度描述、模板套话。
+<Function> 可选块 — 在上述5个字段之外额外输出（原有5个字段保持不变）。Function = 基于上面Technique的分析，落地解决同类任务的可执行python代码。
+1. 功能可用性自检（全部3项满足才输出该块，否则直接省略整个块）：
+① 该类任务会重复发生（循环/可多次执行/可泛化）？
+② 输入可参数化（结构化数据：行情、星象、错误码、指标等）？
+③ 输出可客观校验（存在可供核对的真实结果）？
+一次性创作类任务（PPT、绘图、文案撰写）→ 省略该块。
+2. 仅输出两个字段：
+functionSymbol：简短函数名，命名符号高熵，任务相关；后续节点会直接引用该名称（支持子串匹配），实现引用链路由。
+functionAbstract：由本轮求解路径抽象得到的通用可执行代码 — 把硬编码具体数值改为参数，求解步骤转为函数体。只提炼可复用的“术”（计算逻辑），不要复述会话过程，不要重复Technique。
+3. 禁止动作/目标/版本/差异元数据，无需维护规则编号；函数的创建、修改、去重、版本迭代由后端合并系统负责。大模型只负责蒸馏代码；同名符号的函数会在网络中自动完成合并迭代。
 </Function>
 </HighEntropy>`;
 
@@ -208,6 +231,21 @@ export default function (pi: ExtensionAPI) {
   let lastBackwardState: Record<string, unknown> | null = null;
   let _backwardPendingMatch: TaskEntry | null = null;  // backward deferred to agent_end
   let _backwardPendingCtx: any = null;
+  // 2026-08-19: 异步 backward 串行队列 —— 防并发写网络文件(节点/边/权重)
+  let _backwardChain: Promise<void> = Promise.resolve();
+  function enqueueBackward(fn: () => Promise<void>) {
+    _backwardChain = _backwardChain.then(fn).catch((e) => console.error(`[textron] async backward crashed:`, e));
+  }
+  // 2026-08-20: enqueueBackward 变体——返回执行结果(供手动触发 backward 的 HTTP 接口 await 结果)
+  function enqueueBackwardWithResult<T>(fn: () => Promise<T>): Promise<T> {
+    let resolveFn!: (v: T) => void;
+    let rejectFn!: (e: any) => void;
+    const p = new Promise<T>((res, rej) => { resolveFn = res; rejectFn = rej; });
+    enqueueBackward(async () => {
+      try { resolveFn(await fn()); } catch (e) { rejectFn(e); }
+    });
+    return p;
+  }
 
   const log = (msg: string) => {
     try { pi.appendEntry("textron-log", { msg, ts: new Date().toISOString() }); } catch {}
@@ -312,6 +350,65 @@ export default function (pi: ExtensionAPI) {
       return lines.map((line) => JSON.parse(line)).filter((e) => e && typeof e === "object");
     } catch { return []; }
   }
+
+  // 从 _events.jsonl 尾部读最后 n 行（分页需要，避免 42MB 全量读）
+  function readTailLines(filePath: string, n: number): string[] {
+    try {
+      const fd = fs.openSync(filePath, "r");
+      const size = fs.fstatSync(fd).size;
+      if (size <= 0) { fs.closeSync(fd); return []; }
+      const CHUNK = 128 * 1024;
+      const collected: string[] = [];
+      let pos = size;
+      let carry = "";
+      while (pos > 0 && collected.length < n) {
+        const readLen = Math.min(CHUNK, pos);
+        pos -= readLen;
+        const buf = Buffer.alloc(readLen);
+        fs.readSync(fd, buf, 0, readLen, pos);
+        const text = buf.toString("utf-8") + carry;
+        const lines = text.split("\n");
+        carry = lines[0];
+        for (let i = lines.length - 1; i >= 1 && collected.length < n; i--) {
+          const l = lines[i].trim();
+          if (l) collected.push(l);
+        }
+      }
+      if (carry.trim() && collected.length < n) collected.push(carry.trim());
+      fs.closeSync(fd);
+      return collected.reverse(); // 旧→新
+    } catch { return []; }
+  }
+
+  // 事件总数（流式数换行，带 size+mtime 缓存，42MB 全读仅当文件变化时发生一次）
+  let _eventsCountCache = { size: 0, mtimeMs: 0, count: 0 };
+  function countEventsLines(): number {
+    try {
+      const stat = fs.statSync(EVENTS_PATH);
+      if (_eventsCountCache.size === stat.size && _eventsCountCache.mtimeMs === stat.mtimeMs) return _eventsCountCache.count;
+      const content = fs.readFileSync(EVENTS_PATH, "utf-8");
+      let count = 0;
+      for (let i = 0; i < content.length; i++) if (content.charCodeAt(i) === 10) count++;
+      _eventsCountCache = { size: stat.size, mtimeMs: stat.mtimeMs, count };
+      return count;
+    } catch { return 0; }
+  }
+
+  // 通用 jsonl 行数统计（带 size+mtime 缓存）——trajectories/backward-logs 分页 total
+  let _jsonlCountCache: Record<string, { size: number; mtimeMs: number; count: number }> = {};
+  function countJsonlLines(filePath: string): number {
+    try {
+      const stat = fs.statSync(filePath);
+      const c = _jsonlCountCache[filePath];
+      if (c && c.size === stat.size && c.mtimeMs === stat.mtimeMs) return c.count;
+      const content = fs.readFileSync(filePath, "utf-8");
+      let count = 0;
+      for (let i = 0; i < content.length; i++) if (content.charCodeAt(i) === 10) count++;
+      _jsonlCountCache[filePath] = { size: stat.size, mtimeMs: stat.mtimeMs, count };
+      return count;
+    } catch { return 0; }
+  }
+
   function monitorEventTime(e: Record<string, unknown> | null | undefined): number {
     if (!e) return 0;
     const raw = e.ts || e.at || e.startedAt;
@@ -344,6 +441,144 @@ export default function (pi: ExtensionAPI) {
       const state = buildStateJSON();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(state));
+      return;
+    }
+
+    // 轨迹事件分页: ?page=1&pageSize=50&filter=xxx (倒序, 最新在前)
+    if (urlPath === "/api/events") {
+      try {
+        const u = new URL(req.url || "/", "http://localhost");
+        const page = Math.max(1, parseInt(u.searchParams.get("page") || "1", 10) || 1);
+        const pageSize = Math.min(200, Math.max(10, parseInt(u.searchParams.get("pageSize") || "50", 10) || 50));
+        const filter = String(u.searchParams.get("filter") || "").toLowerCase().trim();
+        const total = countEventsLines();
+        const tailLines = readTailLines(EVENTS_PATH, page * pageSize);
+        // tailLines = 最后 page*pageSize 行(旧→新)。本页取其中更旧的 pageSize 条：
+        // page=1 取最后 pageSize 条；page=k 取倒数第 ((k-1)*pageSize+1)..(k*pageSize) 条
+        const endIdx = tailLines.length - (page - 1) * pageSize;
+        const startIdx = Math.max(0, endIdx - pageSize);
+        const pageLines = tailLines.slice(startIdx, endIdx);
+        const events: Record<string, unknown>[] = [];
+        for (const line of pageLines) {
+          try {
+            const e = JSON.parse(line);
+            if (!e || typeof e !== "object") continue;
+            if (filter && !JSON.stringify(e).toLowerCase().includes(filter)) continue;
+            events.push(e);
+          } catch { /* 坏行跳过 */ }
+        }
+        events.reverse(); // 最新在前
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ total, page, pageSize, events }));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
+      }
+      return;
+    }
+
+    // 完整对话轨迹分页: ?page=1&pageSize=50 (倒序, 最新在前) — user原文+AI回复原文
+    if (urlPath === "/api/trajectories") {
+      try {
+        const u = new URL(req.url || "/", "http://localhost");
+        const page = Math.max(1, parseInt(u.searchParams.get("page") || "1", 10) || 1);
+        const pageSize = Math.min(100, Math.max(5, parseInt(u.searchParams.get("pageSize") || "20", 10) || 20));
+        const filter = String(u.searchParams.get("filter") || "").toLowerCase().trim();
+        const trajPath = path.join(TEXTRON_HOME, "_trajectories.jsonl");
+        const tail = readTailLines(trajPath, page * pageSize);
+        const end = tail.length - (page - 1) * pageSize;
+        const start = Math.max(0, end - pageSize);
+        const items: Record<string, unknown>[] = [];
+        for (const line of tail.slice(start, end)) {
+          try {
+            const e = JSON.parse(line);
+            if (!e || typeof e !== "object") continue;
+            if (filter && !JSON.stringify(e).toLowerCase().includes(filter)) continue;
+            items.push(e);
+          } catch { /* 坏行跳过 */ }
+        }
+        items.reverse();
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ total: countJsonlLines(trajPath), page, pageSize, items }));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
+      }
+      return;
+    }
+
+    // Backward 输入输出分页: ?page=1&pageSize=20&net=astro_stock_prediction (读 _sb_logs/semantic_backward.jsonl)
+    if (urlPath === "/api/backward-logs") {
+      try {
+        const u = new URL(req.url || "/", "http://localhost");
+        const page = Math.max(1, parseInt(u.searchParams.get("page") || "1", 10) || 1);
+        const pageSize = Math.min(50, Math.max(5, parseInt(u.searchParams.get("pageSize") || "10", 10) || 10));
+        const filter = String(u.searchParams.get("filter") || "").toLowerCase().trim();
+        const allNets = listNetworks();
+        const net = String(u.searchParams.get("net") || "").trim() || allNets[0] || "";
+        const logPath = net ? path.join(TEXTRON_HOME, net, "_sb_logs", "semantic_backward.jsonl") : "";
+        const tail = logPath ? readTailLines(logPath, page * pageSize) : [];
+        const end = tail.length - (page - 1) * pageSize;
+        const start = Math.max(0, end - pageSize);
+        const items: Record<string, unknown>[] = [];
+        for (const line of tail.slice(start, end)) {
+          try {
+            const e = JSON.parse(line);
+            if (!e || typeof e !== "object") continue;
+            if (filter && !JSON.stringify(e).toLowerCase().includes(filter)) continue;
+            // 2026-08-20: 返回完整入参原文(不截断)，供手动触发/审查 backward 输入输出
+            items.push({ ts: e.ts, taskFamily: e.taskFamily, mode: e.mode, model: e.model, systemPrompt: e.systemPrompt, userPrompt: e.userPrompt, parsed: e.parsed });
+          } catch { /* 坏行跳过 */ }
+        }
+        items.reverse();
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ total: logPath ? countJsonlLines(logPath) : 0, page, pageSize, net, nets: allNets, items }));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
+      }
+      return;
+    }
+
+    // 手动触发 backward: POST body {taskFamily, previousTask, previousAssistantHighEntropy|answer, currentUserMessage, activatedIds, selectedEdgeIds}
+    // 用途: 某条轨迹未自动触发反向传播时，手动补学。经串行队列执行防并发写网络文件。
+    if (urlPath === "/api/manual-backward" && req.method === "POST") {
+      let body = "";
+      req.on("data", (c: Buffer) => { body += c.toString("utf-8"); if (body.length > 300000) req.destroy(); });
+      req.on("end", () => {
+        try {
+          const p = JSON.parse(body || "{}");
+          const tf = String(p.taskFamily || "");
+          const prevTask = String(p.previousTask || "").slice(0, 3000);
+          const he = String(p.previousAssistantHighEntropy || extractHighEntropy(String(p.answer || "")) || "");
+          const feedback = String(p.currentUserMessage || "手动触发 backward（无显式反馈）").slice(0, 3000);
+          const ids = Array.isArray(p.activatedIds) ? p.activatedIds.map(String).slice(0, 40) : [];
+          const edges = Array.isArray(p.selectedEdgeIds) ? p.selectedEdgeIds.map(String).slice(0, 40) : [];
+          if (!tf) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "taskFamily required" })); return; }
+          log(`Textron manual backward queued: ${tf} he=${he.length}c feedback=${feedback.length}c`);
+          enqueueBackwardWithResult(async () => {
+            const r = await forcedSemanticBackward(tf, prevTask, he, feedback, ids, edges, {}, {});
+            log(`Textron manual backward done: ${tf} reward=${r?.reward} updated=${r?.nodesUpdated} added=${r?.nodesAdded} merged=${r?.nodesMerged}`);
+            return r;
+          }).then((result: any) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, result: { reward: result?.reward, nodesUpdated: result?.nodesUpdated, nodesAdded: result?.nodesAdded, nodesMerged: result?.nodesMerged, nodesSkipped: result?.nodesSkipped, changedNodes: (result?.changedNodes || []).length } }));
+          }).catch((e: any) => {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+          });
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
+        }
+      });
+      return;
+    }
+
+    // 独立轨迹页
+    if (urlPath === "/trajectory") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(getTrajectoryHTML());
       return;
     }
 
@@ -474,6 +709,16 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function getTrajectoryHTML(): string {
+    try {
+      const realDir = fs.realpathSync(__dirname);
+      const trajPath = path.join(realDir, "trajectory.html");
+      return fs.readFileSync(trajPath, "utf-8");
+    } catch {
+      return "<h1>Textron Trajectory</h1><p>trajectory.html not found</p>";
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════
   // Auto-routing: keyword overlap between prompt and node contents
   // ══════════════════════════════════════════════════════════════════
@@ -525,6 +770,19 @@ export default function (pi: ExtensionAPI) {
 
     apiKey = resolveConfigValue((model as any)?.apiKey || (model as any)?.provider?.apiKey);
     if (apiKey) return { apiKey, source: "model.apiKey" };
+
+    // 2026-08-19: authStorage 在子进程(local-coms sender/worker)不可用时, 直接读 auth.json
+    // (pi 主进程同款来源: ~/.pi/agent/auth.json = {provider: {type:'api_key', key}})
+    // 否则 backward/pairing LLM 调用 401 (apiKey=none)。
+    try {
+      const authPath = path.join(process.env.HOME || process.env.USERPROFILE || "~", ".pi", "agent", "auth.json");
+      const auth = readJson<any>(authPath, {});
+      const authEntry = provider ? auth?.[provider] : undefined;
+      if (authEntry) {
+        apiKey = resolveConfigValue(authEntry.key || (typeof authEntry === "string" ? authEntry : ""));
+        if (apiKey) return { apiKey, source: "auth.json" };
+      }
+    } catch {}
 
     try {
       const configPath = path.join(process.env.HOME || process.env.USERPROFILE || "~", ".pi", "agent", "models.json");
@@ -1056,13 +1314,14 @@ export default function (pi: ExtensionAPI) {
 
 RULES:
 1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
-2. REWARD -1..1 from feedback. Negative=wrong, positive=correct. Off-topic→reward=-1,empty updates.
+2. REWARD -1..1: Quantify the UPSTREAM FEEDBACK ITSELF — the user's explicit criticism/correction/approval, or objective assertion outcomes. The HighEntropy packet below is a POST-hoc summary (temporally AFTER the feedback): it is training material for node content ONLY and must NOT drive your reward judgment. Judge reward from the feedback's own polarity/strength and the previous task's completion status — NOT from how well the summary is written. Negative feedback (criticism/"错了"/"做错了"/unfulfilled promise) → reward≤0. Positive only when the feedback confirms a verifiable completed result. Off-topic → reward=-1, empty updates.
 3. FAILURE→"avoid X→prefer Y". SUCCESS→encode WHY.
 4. Content≤1000c. name MUST be a compressed symbolic anchor (like the integral sign ∫ or the term "Transformer"). Think: what ≤48c symbol captures the ESSENCE and can serve as a building block for future combinations? Use domain-specific concise nouns (e.g. "满月极性反转" not "2025-01-24 DOWN UP json_mode"). NEVER use file paths, variable names, or full sentences as names. No templates/session summaries.
 5. Choose layer by content abstraction: L0=compact reusable principle, L1=causal mechanism, L2=concrete rule.
 6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
+6b. L1 DOMAIN CHECK (soft, NOT mandatory): Consider whether the activated L1 nodes are semantically DISTANT from this task's domain (e.g. weapon/music/engineering content while the task is stock trading). If so, the causal layer may be MISSING a domain node — you MAY add 1 L1 domain node (causal mechanism: 若A则B因为C) when the mechanism is genuinely novel and reusable. This is a per-case judgment, not a rule: analyze concretely. A layer being at capacity is NOT by itself a reason to force-add (merging similar content is often the better choice); likewise an off-domain L1 is NOT always wrong — judge by actual semantic distance and reuse value.
 7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
-8. FUNCTION SYMBOL: If the training packet contains a Function block, the functionSymbol (e.g. astro_kline_layer_score) MUST appear verbatim as an exact substring in the content of the node_update/add_node that absorbs it. Never paraphrase, translate, or split the symbol — downstream citation routing matches it literally.` },
+8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).` },
       { role: "user", content: `Previous user task:\n${previousTask.slice(0, 1500)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${n.content.slice(0, 300)}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, 2000)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
 
 MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MUST be in the SAME layer (cross-layer merges are rejected). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
@@ -1158,30 +1417,73 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
       addCandidate(fence?.[1]);
 
+      // 2026-09-01: 字符串感知的平衡括号扫描——跳过字符串内的 { } 与转义字符，
+      // 避免 content/reasoning 字段内的花括号误切（与 /api/step 提取器同款逻辑）。
       const balanced: string[] = [];
       for (let i = 0; i < raw.length; i++) {
         if (raw[i] !== "{") continue;
         let d = 0;
+        let inString = false;
+        let escaped = false;
         for (let j = i; j < raw.length; j++) {
-          if (raw[j] === "{") d++;
-          else if (raw[j] === "}" && --d === 0) { balanced.push(raw.slice(i, j + 1)); break; }
+          const ch = raw[j];
+          if (inString) {
+            if (escaped) escaped = false;
+            else if (ch === "\\") escaped = true;
+            else if (ch === '"') inString = false;
+            continue;
+          }
+          if (ch === '"') inString = true;
+          else if (ch === "{") d++;
+          else if (ch === "}" && --d === 0) { balanced.push(raw.slice(i, j + 1)); break; }
         }
       }
       for (const c of balanced.sort((a, b) => b.length - a.length)) addCandidate(c);
+
+      // 2026-09-01: 实质形状判定。截断残骸（如 {"reward":0} 碎片）只含 reward 键，
+      // 不得视为有效 backward 响应——必须带 node_updates/add_nodes/node_actions 之一。
+      // 否则截断会被静默“部分吞掉”，退化成 reward=0 空更新（P1 病灶）。
+      function hasBackwardShape(parsed: any): boolean {
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+        const hasUpdates = !!parsed.node_updates && typeof parsed.node_updates === "object";
+        const hasAdds = Array.isArray(parsed.add_nodes);
+        const hasActions = Array.isArray(parsed.node_actions);
+        return hasUpdates || hasAdds || hasActions;
+      }
 
       let fallback: ReturnType<typeof normalize> | null = null;
       for (const candidate of candidates) {
         try {
           const parsed = JSON.parse(candidate);
           const normalized = normalize(parsed);
-          const hasBackwardShape = Object.prototype.hasOwnProperty.call(parsed, "reward") ||
-            Object.prototype.hasOwnProperty.call(parsed, "node_updates") ||
-            Object.prototype.hasOwnProperty.call(parsed, "add_nodes");
-          if (hasBackwardShape) return normalized;
-          fallback ||= normalized;
+          if (hasBackwardShape(parsed)) return normalized;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+              Object.prototype.hasOwnProperty.call(parsed, "reward")) {
+            // 仅含 reward 的候选：可能是截断残骸，也可能是有意空更新；先暂存，继续找更大的候选
+            fallback ||= normalized;
+          }
         } catch {}
       }
-      if (fallback) return fallback;
+      if (fallback) {
+        // 只有 raw 整体可完整解析（非截断）时，reward-only 才视为“有意空更新”并接受；
+        // 否则判定为截断/部分吞掉，显式失败而不是静默 reward=0。
+        try {
+          const full = JSON.parse(raw);
+          if (full && typeof full === "object" && !Array.isArray(full) &&
+              Object.prototype.hasOwnProperty.call(full, "reward")) {
+            return fallback;
+          }
+        } catch {}
+        const reason = "semantic backward response truncated/non-substantive: only reward-only fragment found";
+        onLog(`Textron semantic backward: ${reason}`);
+        recordMonitorEvent({ type: "error", action: "semantic_backward_truncated_fragment", taskFamily: path.basename(net.path), reason, rawContentChars: raw.length, rawPreview: raw.slice(0, 400) });
+        try {
+          const logDir = path.join(net.path, "_sb_logs");
+          ensureDir(logDir);
+          fs.appendFileSync(path.join(logDir, "_truncated_response.log"), `${new Date().toISOString()} ${reason}\n${raw.slice(0, 1000)}\n\n`, "utf-8");
+        } catch {}
+        throw new Error(reason);
+      }
       throw new Error("no JSON object in semantic backward response");
     }
     // 2026-08-03: 兼容各厂商 SSE 形态（OpenAI/deepseek/kimi choices[].delta、Gemini candidates[].content.parts[]、
@@ -1630,6 +1932,25 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
       if (changes > 0) {
         writeJson(path.join(net.path, "weights.json"), net.weights);
+        // 2026-08-19 统一收口: 边权重变更后立即刷新受影响节点 HTML link (账货一致)
+        try {
+          const affected = new Set<string>();
+          for (const ce of changedEdges) {
+            const parts = ce.split(":");
+            if (parts.length >= 3) {
+              const [fromL, toL] = parts[0].split("_to_").map(Number);
+              if (!Number.isNaN(fromL) && parts[1].startsWith("node_")) affected.add(`${fromL}:${parts[1]}`);
+              if (!Number.isNaN(toL) && parts[2] && parts[2].startsWith("node_")) affected.add(`${toL}:${parts[2]}`);
+            }
+          }
+          for (const af of affected) {
+            const [l, nid] = af.split(":");
+            commitNodeHtmlEdges(net, Number(l), nid);
+          }
+          if (affected.size > 0) onLog(`Textron backward: refreshed HTML edges for ${affected.size} affected node(s)`);
+        } catch (e) {
+          console.error(`[textron] refresh HTML edges after backward failed:`, e);
+        }
         onLog(`Textron backward: ${changes} selected edge(s) updated (reward=${reward.toFixed(3)}) for "${path.basename(net.path)}"`);
       }
       // Negative reward: lightly penalize ALL edges connected to activated nodes
@@ -1657,6 +1978,22 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         }
         if (extraChanges > 0) {
           writeJson(path.join(net.path, "weights.json"), net.weights);
+          // 2026-08-19 统一收口: 负奖励惩罚边后同样刷新受影响节点 HTML link
+          try {
+            const affected = new Set<string>();
+            for (const ce of changedEdges) {
+              const parts = ce.split(":");
+              if (parts.length >= 3) {
+                const [fromL, toL] = parts[0].split("_to_").map(Number);
+                if (!Number.isNaN(fromL) && parts[1].startsWith("node_")) affected.add(`${fromL}:${parts[1]}`);
+                if (!Number.isNaN(toL) && parts[2] && parts[2].startsWith("node_")) affected.add(`${toL}:${parts[2]}`);
+              }
+            }
+            for (const af of affected) {
+              const [l, nid] = af.split(":");
+              commitNodeHtmlEdges(net, Number(l), nid);
+            }
+          } catch { /* 忽略 */ }
           onLog(`Textron backward: ${extraChanges} extra connected-edge(s) penalized (noise suppression) for "${path.basename(net.path)}"`);
         }
       }
@@ -2089,18 +2426,22 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // Use a fast LLM call to judge which task (if any) this message is feedback for
       let bestMatchIdx = -1;
       let isFeedbackMatch = false;
+      // before_agent_start receives the current TUI model. The session snapshot is
+      // only a fallback for Pi versions that omit ctx.model in this lifecycle hook.
+      const pairingModel = (ctx as any).model || _textronModel;
       try {
-        const model = _textronModel;
-        if (model?.id && model?.baseUrl) {
-          const baseUrl = String(model.baseUrl).replace(/\/+$/, "");
+        if (pairingModel?.id && pairingModel?.baseUrl) {
+          const baseUrl = String(pairingModel.baseUrl).replace(/\/+$/, "");
           const chatEndpoint = joinApiEndpoint(baseUrl, "/chat/completions");
-          const { apiKey } = await resolveModelApiKey(ctx, model);
-          const pairingPrompt = `You are a task-feedback pairing judge. Given a list of pending tasks and a user message, determine which task (if any) the user message is feedback for.\n\nPENDING TASKS:\n${taskListForLLM}\n\nUSER MESSAGE: ${currentRawUserPrompt.slice(0, 500)}\n\nOutput ONLY raw JSON: {"matchIdx":-1,"isFeedback":false,"rationale":"≤60 chars"}.\n- matchIdx: index of matched task (0=${activeTask ? "active" : "first stack"}, -1=none)\n- isFeedback: true if this message evaluates/corrects/responds to the matched task; false if it's a new task or unrelated.\n- Key signals of feedback: error correction, result report, criticism, approval, "没改好"/"改好了"/"对了"/"错了"/"为什么没有" etc.\n- Key signals of NOT feedback: new task instructions, unrelated questions, continuation words.`;
+          const { apiKey } = await resolveModelApiKey(ctx, pairingModel);
+          const pairingPrompt = `You are a task-feedback pairing judge. Given a list of pending tasks and a user message, determine which task (if any) the user message is feedback for.\n\nPENDING TASKS:\n${taskListForLLM}\n\nUSER MESSAGE: ${currentRawUserPrompt.slice(0, 500)}\n\nOutput ONLY raw JSON: {"matchIdx":-1,"isFeedback":false,"rationale":"≤60 chars"}.\n- matchIdx: index of matched task (0=${activeTask ? "active" : "first stack"}, -1=none)\n- isFeedback: true if this message evaluates/corrects/responds to the matched task; false if it's a new task or unrelated.\n- Key signals of feedback: error correction, result report, criticism, approval, "没改好"/"改好了"/"对了"/"错了"/"为什么没有", and EXECUTION RESULTS: trade_result, portfolio, decision JSON, 复盘/反思/打分 reviews (these respond to a prior decision task).\n- coms messages ("[local-coms from ...]") that carry decision/result/review/score content ARE feedback for the sender's pending task — NOT new tasks.\n- Key signals of NOT feedback: brand-new task instructions unrelated to any pending task, pure greetings, continuation words like "继续"/"好的" alone.\n- IMPORTANT: when in doubt with a pending task present, default isFeedback=true (conservative pairing beats losing the learning signal).`;
           const res = await fetch(chatEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
             body: JSON.stringify({
-              model: "deepseek-v4-flash",
+              // Pair with the model currently selected in the TUI. A hard-coded
+              // DeepSeek model breaks GPT-only gateways and splits feedback semantics.
+              model: pairingModel.id,
               messages: [{ role: "user", content: pairingPrompt }],
               max_tokens: 200,
               temperature: 0,
@@ -2114,7 +2455,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             bestMatchIdx = typeof parsed.matchIdx === "number" ? parsed.matchIdx : -1;
             isFeedbackMatch = !!parsed.isFeedback;
             dlog("BACKWARD", "pairing judge", { matchIdx: bestMatchIdx, isFeedback: isFeedbackMatch, rationale: parsed.rationale });
-            recordMonitorEvent({ type: "trace", action: "pairing_judge_done", matchIdx: bestMatchIdx, isFeedback: isFeedbackMatch, rationale: parsed.rationale || "", pendingCount: allPendingTasks.length });
+            recordMonitorEvent({ type: "trace", action: "pairing_judge_done", matchIdx: bestMatchIdx, isFeedback: isFeedbackMatch, rationale: parsed.rationale || "", pendingCount: allPendingTasks.length, modelId: pairingModel.id, provider: pairingModel.provider || "" });
           } else {
             throw new Error(`pairing judge fetch failed: ${res.status}`);
           }
@@ -2122,10 +2463,32 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           throw new Error("no model available for pairing judge");
         }
       } catch (e) {
-        // Fallback: if pairing LLM fails, try simple heuristic — match by taskFamily
-        dlog("BACKWARD", "pairing judge failed, fallback to first active", { error: (e as Error).message });
-        bestMatchIdx = 0; // Default to activeTask
-        isFeedbackMatch = true; // Conservative: assume it's feedback
+        const error = e instanceof Error ? e.message : String(e);
+        // A failed pairing request must remain visible. Only use a deterministic
+        // fallback when one pending task exists and the message has feedback markers.
+        const feedbackMarker = /(?:trade_result|portfolio|decision\s*JSON|复盘|反思|打分|评分|反馈|收益率|盈亏|没改好|改好了|为什么没有|对了|错了)/i;
+        const canFallback = allPendingTasks.length === 1 && feedbackMarker.test(currentRawUserPrompt);
+        dlog("BACKWARD", "pairing judge failed", { error, canFallback, pendingCount: allPendingTasks.length });
+        recordMonitorEvent({
+          type: "error",
+          action: "pairing_judge_failed",
+          error,
+          fallbackApplied: canFallback,
+          pendingCount: allPendingTasks.length,
+          modelId: pairingModel?.id || "",
+          msgPreview: currentRawUserPrompt.slice(0, 160),
+        });
+        if (canFallback) {
+          bestMatchIdx = 0;
+          isFeedbackMatch = true;
+          recordMonitorEvent({
+            type: "trace",
+            action: "pairing_judge_fallback_matched",
+            matchIdx: bestMatchIdx,
+            pendingCount: allPendingTasks.length,
+            reason: "single_pending_task_with_feedback_marker",
+          });
+        }
       }
 
       if (isFeedbackMatch && bestMatchIdx >= 0 && bestMatchIdx < allPendingTasks.length) {
@@ -2455,6 +2818,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       action: "prompt_injection_prepared",
       taskFamily: tf,
       compiledContextFull: compiledCtx,
+      activatedCount: contextActivated.length,
+      totalNodeCount: layers.reduce((a, b) => a + b, 0),
+      selectedPathCount: selectedPath.length,
       ...injection.audit,
     });
     currentUserInjection = injection.userInjection;
@@ -2480,6 +2846,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
               type: "trace",
               action: "context_user_message_injected",
               taskFamily: currentTaskFamily || "",
+              promptPreview: preview(currentRawUserPrompt, 260),
               rawPromptChars: currentRawUserPrompt.length,
               effectivePromptChars: currentEffectivePrompt.length,
               hasTextronMarker: true,
@@ -2503,6 +2870,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           type: "trace",
           action: "context_user_message_injected",
           taskFamily: currentTaskFamily || "",
+          promptPreview: preview(currentRawUserPrompt, 260),
           rawPromptChars: currentRawUserPrompt.length,
           effectivePromptChars: currentEffectivePrompt.length,
           hasTextronMarker: true,
@@ -2569,6 +2937,34 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     }
   });
 
+  // 轨迹可视化数据源: 工具调用记录(Monitor 轨迹面板用)
+  pi.on("tool_call", async (event: any) => {
+    try {
+      const inputPreview = JSON.stringify(event?.input || {}).replace(/\s+/g, " ").slice(0, 300);
+      recordMonitorEvent({
+        type: "trace", action: "tool_call",
+        taskFamily: currentTaskFamily || "",
+        tool: String(event?.toolName || "?"),
+        inputPreview,
+      });
+    } catch { /* 忽略 */ }
+  });
+
+  // 轨迹可视化: 工具执行结果(Observation)——DeepSeek harness 链的"观察"
+  pi.on("tool_result", async (event: any) => {
+    try {
+      const content = String(event?.content ?? "");
+      recordMonitorEvent({
+        type: "trace", action: "tool_result",
+        taskFamily: currentTaskFamily || "",
+        tool: String(event?.toolName || "?"),
+        resultPreview: preview(content.replace(/\s+/g, " ").slice(0, 300), 220),
+        resultChars: content.length,
+        isError: !!event?.isError,
+      });
+    } catch { /* 忽略 */ }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // agent_end → preserve selected path for forced semantic backward on next turn
   // ══════════════════════════════════════════════════════════════════
@@ -2587,6 +2983,60 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     if (finalAssistantText && !currentAssistantBuffer.endsWith(finalAssistantText)) {
       currentAssistantBuffer += `\n${finalAssistantText}`;
     }
+    // 轨迹可视化: 记录 AI 回答摘要(Monitor 轨迹面板)
+    try {
+      recordMonitorEvent({
+        type: "trace", action: "agent_answer",
+        taskFamily: currentTaskFamily || "",
+        answerPreview: preview(finalAssistantText, 300),
+        answerChars: finalAssistantText.length,
+        hasHighEntropy: /<HighEntropy>/i.test(finalAssistantText),
+      });
+    } catch { /* 忽略 */ }
+    // 2026-08-20: 完整对话轨迹持久化(user 原文 + AI 回复原文)，供独立轨迹页 /trajectory 展示
+    try {
+      if (finalAssistantText || currentRawUserPrompt) {
+        const trajPath = path.join(TEXTRON_HOME, "_trajectories.jsonl");
+        const trajLine = JSON.stringify({
+          ts: new Date().toISOString(),
+          taskFamily: currentTaskFamily || "",
+          userPrompt: String(currentRawUserPrompt || "").slice(0, 4000),
+          answer: String(finalAssistantText || "").slice(0, 8000),
+          hasHighEntropy: /<HighEntropy>/i.test(String(finalAssistantText || "")),
+          activatedIds: (currentActivatedIds || []).slice(0, 30),
+        }) + "\n";
+        ensureDir(TEXTRON_HOME);
+        fs.appendFileSync(trajPath, trajLine, "utf-8");
+        // FIFO 限长 ≤800 条(防无限膨胀)
+        try {
+          const all = fs.readFileSync(trajPath, "utf-8").split("\n").filter(Boolean);
+          if (all.length > 800) fs.writeFileSync(trajPath, all.slice(-800).join("\n") + "\n", "utf-8");
+        } catch { /* 忽略 */ }
+      }
+    } catch { /* 轨迹记录失败不影响主流程 */ }
+    // 轨迹可视化: 提取思考链(thinking/reasoning)——DeepSeek harness 的"思考"步
+    try {
+      const thoughts: string[] = [];
+      for (const m of runMessages) {
+        if (m?.role !== "assistant") continue;
+        const c = m.content;
+        if (typeof c === "string") { if (c.trim()) thoughts.push(c); }
+        else if (Array.isArray(c)) {
+          for (const p of c) {
+            const t = String(p?.thinking ?? p?.reasoning_content ?? "").trim();
+            if (t) thoughts.push(t);
+          }
+        }
+      }
+      if (thoughts.length) {
+        recordMonitorEvent({
+          type: "trace", action: "agent_thought",
+          taskFamily: currentTaskFamily || "",
+          thoughtCount: thoughts.length,
+          thoughtsPreview: preview(thoughts.map((t) => t.replace(/\s+/g, " ")).join(" ⏎ ").slice(0, 400), 360),
+        });
+      }
+    } catch { /* 忽略 */ }
     const finalCrystal = parseHighEntropyCrystal(currentAssistantBuffer);
     const highEntropy = eventHighEntropy || currentAssistantHighEntropy || (finalCrystal.ok ? `Name: ${finalCrystal.name}\n${finalCrystal.task ? `Task: ${finalCrystal.task}\n` : ""}Technique: ${finalCrystal.technique}` : "");
     const taskType = finalCrystal.taskType || "";
@@ -2668,7 +3118,15 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const backwardCtx = _backwardPendingCtx;
       _backwardPendingMatch = null;
       _backwardPendingCtx = null;
-
+      // 2026-08-19 关键修复: Textron 不应阻塞 agent_end 事件分发。
+      // 原同步 await forcedSemanticBackward(LLM 调用 840ms+) 拉长 isStreaming 窗口:
+      // local-coms 回复先发→sender 以为空闲→下一条 followUp 排队→before_agent_start 不触发→配对失效。
+      // 改为异步执行; 上下文立即捕获(异步时模块级变量会被下一条消息覆盖); 串行队列防并发写网络文件。
+      const _capturedHE = currentAssistantHighEntropy;
+      const _capturedText = finalAssistantText;
+      const _capturedRaw = currentRawUserPrompt;
+      setTimeout(() => {
+        enqueueBackward(async () => {
       const backwardTaskContext = buildBackwardTaskContext({
         rawPrompt: matched.rawUserPrompt,
         effectivePrompt: matched.effectivePrompt,
@@ -2685,8 +3143,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         recordMonitorEvent({ type: "trace", action: "semantic_backward_skipped_no_domain_evidence", taskFamily: capturedTF });
       } else {
         // Inject current assistant's HighEntropy (经验总结) into feedback context
-        const assistantAnalysis = (currentAssistantHighEntropy || finalAssistantText || "").slice(0, 2000);
-        const enhancedFeedback = currentRawUserPrompt + "\n\nAssistant's analysis (from HighEntropy):\n" + assistantAnalysis;
+        const assistantAnalysis = (_capturedHE || _capturedText || "").slice(0, 2000);
+        const enhancedFeedback = _capturedRaw + "\n\nAssistant's analysis (from HighEntropy):\n" + assistantAnalysis;
 
         const startedAt = new Date().toISOString();
         const semanticRunId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2737,6 +3195,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           recordMonitorEvent({ type: "trace", action: "agent_pending_preserved_no_learning", taskFamily: capturedTF, reason: "backward_noop_at_agent_end", matchedTaskType: matched.taskType, reward: bwResult?.reward });
         }
       }
+        });
+      }, 0);
     } else {
       console.error(`[textron] agent_end backward SKIPPED: match=${!!_backwardPendingMatch}, HE=${!!currentAssistantHighEntropy}, text=${!!finalAssistantText}`);
       recordMonitorEvent({ type: "trace", action: "agent_end_backward_skipped", reason: !_backwardPendingMatch ? "no_pending_match" : "no_assistant_content", hasMatch: !!_backwardPendingMatch, hasHighEntropy: !!currentAssistantHighEntropy, hasFinalText: !!finalAssistantText });

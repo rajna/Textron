@@ -20,6 +20,15 @@ export const RESCALE_PAIR_MIN_SIM = 0.2;
 
 export interface RescalePendingItem { content: string; layer: number; reason: string; ts: string; }
 
+// ── 2026-08-20: rescale 递归深度守卫 ──
+// 根因: rescaleRejectedCrystal ↔ addPolicyNode 互调无终止条件 → content 反复
+// validation 失败(atom 太短→upscale→merged 又失败→downscale→…)时无限递归,
+// 触发 "Maximum call stack size exceeded" 崩掉整个 backward。
+// 原则: rescue 最多尝试 2 层(原始内容→atom/merged→addPolicyNode), 超限即放弃
+// 本次 rescue(返回 not rescued), 绝不再次进入 addPolicyNode。
+const MAX_RESCALE_DEPTH = 2;
+let rescaleDepth = 0;
+
 export function rescalePendingPath(netPath: string): string { return path.join(netPath, "_rescale_pending.json"); }
 
 export function readRescalePending(netPath: string): RescalePendingItem[] {
@@ -75,6 +84,29 @@ export function rescaleRejectedCrystal(
   // "recordArtifactEvent is not a function" 崩掉 reward=0.8 的 apply。缺参降级为 no-op，不再 crash。
   addPolicyNode: Function = () => ({ added: false, merged: false, replaced: false }),
   recordArtifactEvent: Function = () => {},
+): { rescued: boolean; action: string; nodeId?: string; layer?: number } | null {
+  if (rescaleDepth >= MAX_RESCALE_DEPTH) {
+    if (typeof onLog === "function") {
+      onLog(`Textron rescale: 深度超限(${MAX_RESCALE_DEPTH}), 放弃 rescue(内容反复 validation 失败)`);
+    }
+    return { rescued: false, action: "rescale_depth_exceeded" };
+  }
+  rescaleDepth++;
+  try {
+    return rescaleRejectedCrystalInner(net, content, reason, targetLayer, onLog, addPolicyNode, recordArtifactEvent);
+  } finally {
+    rescaleDepth--;
+  }
+}
+
+function rescaleRejectedCrystalInner(
+  net: { hyperparams: { layers: number[] }; path: string },
+  content: string,
+  reason: string | undefined,
+  targetLayer: number,
+  onLog: (msg: string) => void,
+  addPolicyNode: Function,
+  recordArtifactEvent: Function,
 ): { rescued: boolean; action: string; nodeId?: string; layer?: number } | null {
   const baseReason = String(reason || "").replace(/\(.*\)$/, "");
   if (RESCALE_DOWN_REASONS.has(baseReason)) {

@@ -35,6 +35,9 @@ body{
 }
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;border-bottom:1px solid var(--border);padding-bottom:18px;margin-bottom:24px}
 h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em}
+.page-brand{display:flex;align-items:center;gap:14px}
+.page-brand img{width:48px;height:48px;object-fit:contain;filter:drop-shadow(0 5px 12px rgba(0,0,0,.28))}
+.textron-logo{display:block;width:48px;height:48px;background:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA+CAMAAACsn+1dAAAAPFBMVEVMS0uNjIzu7u53dnZubW2BgIBAPz9RUFAZGBheXV0hICAxMDBtbGx4d3ebm5teXV1GRUUkIyNoZ2ednJxyBonpAAAAFHRSTlOyLAFDtJHS6v6R+/LicHPR6ted+n8H0h0AAAP5SURBVEjHpZeJcts6DEVJgeCGiIxe//9f3wWo1VYmctvxdEKZONguoMQ556fTP3J0PvrA0+XrSNfb7FKOZ0Kp6Xz0VS7HVM9AH/OXI7kQvOT5ZwBf76Ys5KYXAl9MrgCSeqKT2k9ueiEgBP4JEM4XKaq9Al4Isz2/A+AevfgfgCsBmYV7gMvpzX4AlHAUn05GZwAqQG/2K+ASA0IodwCX47v9BjDCxp/rXoUTgETau/3keh8/0ndO28Nlb8QJEPYKHAlTVCXKQKAtG2HezQ6A3yuwB0u95uTI1SxFb9GyEVAFfgXwFoD612s+SBYmZxmtj2Qj8BbjDtglvtnDqvZVSJ6V5Y8vj3h3wFxHl9b4fUDc5A8dIBt9rln4UbF+BaxJwa+6QL3quga2Ns4oJlsvzBN6RmfAeh72vsjRsQ0weVcV2iQbug8xbQCXLdeu/cf/NRzy2tWNQdb4kWSwg0WyAvyY46D2OoWneT0BVj3PUsuuuxUwhMFq39IR/lCiREmd6ZAom5K7BbIC7AAya4prO7inuEh3SaTmnCUqA4TF4zpSmW10BsAnhGO54YJ1i0VgVAUAT8QcEs6qRy2zh2jKKoUBsAEP+k1UtnYhSwrMjY5pLKlqcvDjxjh27fwAFPWNRnrLH1lIpLc2Tn5etLxNM+3QkYl/AKI9ClqdNkG2sd13YbQZtfbqrglsDaAnC0BTg30/b/ozYDTadmLMwav4DNDwsnF4qBvBUpx+BCCGqGvZc00QDA8AZ6f7cK3Cxf8rYLIoYy7ag6K9UADK2VB9HbCS09X+FYAb4ovdZrzHBiDW2WUGk6+vpluALiN1j/knpG6ARVqshKyAjtMvgImtYgUJs+ZcrSUNwghWifYrQN1TXQgvchgqoNWos7kG8StAR199QjhgKIBzh7AgZ+qZp98BhOxhGtSsKCDkgA/i8CL0AKA5wD2rmQJw6AYMdP1t4yeA7k9IZ84JDANUAP7r+rRPTwCs8SbKMo/Mo5Uz1XZXgjsAYWfk1GTBTjGANrQNxjMAjGpVALqJAf6WIIsCpPpHAL/oXQBYDKCKWH9+CJBsRupYARZKqY7rMj0CoA3zUnkBQDVsgIgpKNk9BGD0XOWojBWg1v0TQMFKWFYANiw0YYDwEGDiL9gCi1lXgXXQDz8EhBtA1w99AmCUUkb835y/lPgYgBS+MEAA1FGAYIDlMYA2AHaIAUZRlvoYUAEI/QD07FDB+AEg/VGfJ0BxuqCeA77+aBaogQ7WDpB/BMjHgCJbCvVDgPrcI5hVgwPQngIqOn+KIP49IP9bBDN+wT618XMAG4D/FtAVoO/Y2gO6UD8AeFfIzS0ROwr4k2Km2GZHxd3s1Ol/aSNHH6644fYAAAAASUVORK5CYII=") center/contain no-repeat;filter:invert(1) drop-shadow(0 5px 12px rgba(0,0,0,.28))}
 .sub{font-size:13px;color:var(--muted);margin-top:4px}
 .top-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .tabs{display:inline-flex;gap:4px;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:999px;padding:4px}
@@ -49,8 +52,14 @@ h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em}
 .ev-filter:focus{border-color:var(--border-hi)}
 .ev-total{font:11px var(--mono);color:var(--faint)}
 .pager{display:inline-flex;align-items:center;gap:8px;font:12px var(--mono);color:var(--muted)}
-/* 轨迹行 */
-.tr-head,.tr-row{display:grid;grid-template-columns:110px 150px 150px 1fr 70px;gap:10px;align-items:center;padding:9px 2px}
+/* 轨迹行: 时间 | 内容(状态徽章+消息) */
+.tr-head,.tr-row{display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px;align-items:start;padding:8px 2px}
+.tr-main{display:flex;flex-direction:column;gap:4px;min-width:0}
+.tr-info{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font:11px var(--mono)}
+.tr-user{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.tr-ai{color:#cdd8f2;font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.tr-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;border:1px solid var(--border);font:11px var(--mono);white-space:nowrap}
+.tr-time{font-family:var(--mono);color:var(--muted);font-size:11px;padding-top:2px}
 .tr-head{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;border-bottom:1px dashed var(--border)}
 .tr-row{border-bottom:1px dashed rgba(255,255,255,.05);font-size:12px;cursor:pointer}
 .tr-row:last-of-type{border-bottom:0}
@@ -60,35 +69,95 @@ h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em}
 .tr-net{font:11px var(--mono);color:#cdd8f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tr-prev{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tr-he{text-align:right;font:11px var(--mono);color:var(--faint);white-space:nowrap}
+.tr-badge.task{border-color:rgba(197,155,255,.5);color:#c59bff;background:rgba(197,155,255,.08)}
+.tr-badge.nontask{color:var(--faint)}
+.tr-badge.bw-pos{border-color:rgba(126,226,195,.5);color:#7ee2c3}
+.tr-badge.bw-neg{border-color:rgba(255,138,157,.55);color:#ff8a9d}
+.tr-badge.bw-zero{color:var(--faint)}
+.tr-badge.bw-fail{color:#ff8a9d}
+.tr-badge.bw-pend{border-color:rgba(255,209,102,.45);color:#ffd166}
 /* 展开详情 */
-.tr-detail{display:none;padding:14px 16px;background:rgba(0,0,0,.28);border:1px solid var(--border);border-radius:12px;margin:6px 0 12px;font-family:var(--mono);font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:#dbe4f8}
-.tr-detail.open{display:block}
-.tr-detail .dl{color:var(--faint);text-transform:uppercase;font-size:10px;letter-spacing:.09em;margin:12px 0 4px;font-weight:700}
-.tr-detail .dl:first-child{margin-top:0}
+.tr-detail{display:none;padding:14px 16px;background:rgba(0,0,0,.28);border:1px solid var(--border);border-radius:12px;margin:6px 0 12px;color:#dbe4f8}
+.tr-detail.open{display:grid;gap:10px}
+.detail-section{border-left:3px solid var(--border-hi);background:rgba(255,255,255,.035);padding:11px 13px;min-width:0}
+.detail-section.user{border-left-color:var(--blue)}
+.detail-section.answer{border-left-color:var(--yellow)}
+.detail-section.he{border-left-color:var(--pink)}
+.detail-section.nodes{border-left-color:var(--mint)}
+.detail-label{color:var(--muted);font:700 11px var(--sans);letter-spacing:.04em;margin-bottom:7px}
+.detail-body{font:12px/1.7 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;color:#e5ebf8;max-height:34rem;overflow:auto}
+.detail-section.backward{border-left-color:var(--violet)}
+.detail-section.raw{border-left-color:var(--faint)}
+.detail-body.missing{color:var(--amber);font-family:var(--sans)}
+.backward-summary{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:2px}
+.backward-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--border-hi);border-radius:6px;background:rgba(255,255,255,.045);font:11px var(--mono);color:var(--muted)}
+.backward-badge strong{color:var(--text);font-weight:700}
+.backward-badge.path{border-color:rgba(126,226,195,.4);color:var(--mint)}
+.backward-badge.existing{border-color:rgba(143,184,255,.4);color:var(--blue)}
+.backward-badge.related{border-color:rgba(255,191,115,.45);color:var(--amber)}
+.backward-badge.feedback{border-color:rgba(255,126,182,.4);color:var(--pink)}
+.backward-badge.legacy{border-color:rgba(255,138,157,.5);color:var(--red)}
+.node-record-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px}
+.node-record{min-width:0;padding:9px 10px;border:1px solid var(--border);border-left:3px solid var(--faint);background:rgba(0,0,0,.16);border-radius:7px}
+.node-record.path{border-left-color:var(--mint)}
+.node-record.existing{border-left-color:var(--blue)}
+.node-record.related{border-left-color:var(--amber)}
+.node-record-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:5px;font:11px var(--mono)}
+.node-record-id{color:var(--text);font-weight:700}
+.node-record-meta{color:var(--faint);white-space:nowrap}
+.node-record-text{font:11px/1.55 var(--mono);color:#d5def2;overflow-wrap:anywhere;max-height:7rem;overflow:auto;white-space:pre-wrap}
+.node-record-empty{color:var(--faint);font:11px var(--sans);padding:5px 0}
+.raw-toggle{cursor:pointer;color:var(--muted);font:11px var(--sans)}
+.raw-toggle summary{color:var(--faint);padding:2px 0}
+@media (max-width:560px){.node-record-grid{grid-template-columns:1fr}.backward-badge{font-size:10px}}
+.node-path{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.node-chip{display:inline-flex;align-items:center;padding:4px 8px;border:1px solid rgba(126,226,195,.35);background:rgba(126,226,195,.09);border-radius:6px;color:var(--mint);font:11px var(--mono)}
+.node-arrow{color:var(--faint);font:12px var(--mono)}
 .tr-detail code{color:var(--lime)}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 10px}
 .lg{display:inline-flex;align-items:center;gap:6px;font:11px var(--mono);color:var(--muted)}
 .lg i{width:10px;height:10px;border-radius:50%;display:inline-block}
 .empty{padding:22px 0;color:var(--faint);font-size:13px;text-align:center}
 a{color:var(--blue)}
+@media (max-width:900px){
+  body{padding:18px 14px 56px}
+  .panel{padding:15px 13px;border-radius:12px}
+  .tr-head{display:none}
+  .tr-row{grid-template-columns:88px minmax(0,1fr);gap:8px;padding:10px 2px}
+  .tr-ai{white-space:pre-wrap}
+  .ev-filter{width:min(100%,260px)}
+}
+@media (max-width:560px){
+  body{padding-inline:9px}
+  .topbar{align-items:flex-start}
+  h1{font-size:21px}
+  .sub{line-height:1.5}
+  .toolbar{gap:8px}
+  .tr-detail{padding:10px}
+  .detail-body{font-size:11px;max-height:26rem}
+  .node-chip{font-size:10px}
+}
 </style>
 </head>
 <body>
 <div class="topbar">
-  <div>
-    <h1>📜 Textron 轨迹原文</h1>
-    <div class="sub">user 问题 / AI 回复 原文 · LLM 反向传播输入输出 · 点击行展开完整内容</div>
+  <div class="page-brand">
+    <span class="textron-logo" role="img" aria-label="Textron"></span>
+    <div>
+      <h1>Textron 轨迹原文</h1>
+      <div class="sub">对话(user/AI原文) 与 Backward 输入输出 · 同一列表 · 每条对话标注是否反向传播 · 点击行展开完整内容</div>
+    </div>
   </div>
   <div class="top-right">
     <div class="tabs">
-      <button class="tab-btn active" id="tabTraj">对话轨迹</button>
-      <button class="tab-btn" id="tabBackward">Backward 输入输出</button>
+      <button class="tab-btn active" id="tabTraj">统一轨迹（对话 + Backward）</button>
     </div>
   </div>
 </div>
 
 <div class="panel" id="panelTraj">
   <div class="toolbar">
+    <select class="ev-filter" id="archSel" style="width:230px"><option value="">🗂 实时轨迹（最近 800 条）</option></select>
     <input class="ev-filter" id="trajFilter" placeholder="筛选 关键词…">
     <button class="ev-btn" id="trajFilterBtn">筛选</button>
     <span class="pager">
@@ -102,27 +171,12 @@ a{color:var(--blue)}
   <div class="legend">
     <span class="lg"><i style="background:var(--blue)"></i>user 消息</span>
     <span class="lg"><i style="background:var(--yellow)"></i>AI 回复(含 HE)</span>
-    <span class="lg"><i style="background:var(--violet)"></i>backward 输入输出</span>
-    <span class="lg"><i style="background:var(--mint)"></i>激活节点</span>
-    <span class="lg"><i style="background:var(--red)"></i>reward 负向</span>
+    <span class="lg"><i style="background:var(--violet)"></i>Backward 输入输出</span>
+    <span class="lg"><i style="background:var(--lime)"></i>⟲ 已反传</span>
+    <span class="lg"><i style="background:var(--amber)"></i>⏭ 匹配但跳过</span>
+    <span class="lg"><i style="background:var(--red)"></i>reward 负向 / 反传失败</span>
   </div>
   <div id="trajBox"></div>
-</div>
-
-<div class="panel" id="panelBackward" style="display:none;margin-top:20px">
-  <div class="toolbar">
-    <input class="ev-filter" id="bwFilter" placeholder="筛选 关键词…">
-    <button class="ev-btn" id="bwFilterBtn">筛选</button>
-    <span class="pager">
-      <button class="ev-btn" id="bwPrev">‹</button>
-      <span class="ev-total" id="bwTotal"></span>
-      <button class="ev-btn" id="bwNext">›</button>
-    </span>
-    <span style="flex:1"></span>
-    <span class="ev-total" id="bwNet"></span>
-    <button class="ev-btn" id="bwReload">↻ 刷新</button>
-  </div>
-  <div id="bwBox"></div>
 </div>
 
 <script>
@@ -130,6 +184,21 @@ a{color:var(--blue)}
 'use strict';
 var $=function(id){return document.getElementById(id)};
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function stripInvisible(s){return String(s==null?'':s).replace(/[\u200B-\u200D\uFEFF]/g,'')}
+function visibleText(s){return stripInvisible(s).trim()}
+function bodyHtml(s,emptyLabel){var clean=stripInvisible(s);return visibleText(clean)?esc(clean):'<span class="missing">'+esc(emptyLabel||'正文未捕获')+'</span>'}
+function splitAnswer(s){var clean=stripInvisible(s);var m=clean.match(/<HighEntropy>[\s\S]*?<\/HighEntropy>/i);return{answer:m?clean.replace(m[0],'').trim():clean.trim(),he:m?m[0].trim():''}}
+function nodesHtml(ids){var list=Array.isArray(ids)?ids.map(String).filter(visibleText):[];if(!list.length)return'<span class="missing">本轮没有激活节点</span>';return list.map(function(id,i){return(i?'<span class="node-arrow">→</span>':'')+'<span class="node-chip">'+esc(id)+'</span>'}).join('')}
+function between(text,startMark,endMark){var a=text.indexOf(startMark);if(a<0)return'';a+=startMark.length;var b=endMark?text.indexOf(endMark,a):text.length;return text.slice(a,b<0?text.length:b)}
+function promptNodeRecords(prompt,mark){var start=prompt.indexOf(mark);if(start<0){var family=mark.indexOf('EXISTING')>=0?'EXISTING nodes':'RELATED nodes';var reMark=new RegExp('(?:'+family+'[^\\n]*):','i');var hit=reMark.exec(prompt);if(!hit)return[];start=hit.index;mark=hit[0]}var endMark=mark.indexOf('RELATED')>=0?'Selected path nodes to update:':mark.indexOf('EXISTING')>=0?'RELATED nodes':'Selected path nodes to update:';var block=prompt.slice(start+mark.length,prompt.indexOf(endMark,start+mark.length)<0?prompt.length:prompt.indexOf(endMark,start+mark.length));var out=[];var re=/^\s+(L\d+::node_\d+)\s+\[sim=([0-9.]+)(?:\s+to\s+([^\]]+))?\]:\s*(.*)$/gm;var m;while((m=re.exec(block)))out.push({id:m[1],sim:m[2],relatedTo:m[3]||'',text:m[4]||''});return out}
+function promptPathRecords(prompt){var block=between(prompt,'Selected path nodes to update:','Current feedback:');var out=[];var re=/^\s*(L\d+::node_\d+):\s*(.*)$/gm;var m;while((m=re.exec(block)))out.push({id:m[1],text:m[2]||''});return out}
+function promptField(prompt,label,next){return between(prompt,label,next).trim()}
+function nodeRecordHtml(n,type){var meta=type==='path'?'forward path':(n.similarity!=null?'sim='+n.similarity+(n.relatedTo?' · to '+n.relatedTo:''):(n.sim?'sim='+n.sim+(n.relatedTo?' · to '+n.relatedTo:''):''));var text=n.content||n.text||'内容未捕获';return'<article class="node-record '+type+'"><div class="node-record-head"><span class="node-record-id">'+esc(n.id)+'</span><span class="node-record-meta">'+esc(meta)+'</span></div><div class="node-record-text">'+esc(text)+'</div></article>'}
+function backwardInputHtml(prompt,nodeInput){var text=String(prompt||'');var ni=nodeInput&&typeof nodeInput==='object'?nodeInput:null;var legacy=!ni;var pathNodes=ni&&Array.isArray(ni.path)?ni.path:promptPathRecords(text);var existing=ni&&Array.isArray(ni.existing)?ni.existing:promptNodeRecords(text,'EXISTING nodes (DO NOT duplicate; global top-1 across all layers):');var related=ni&&Array.isArray(ni.related)?ni.related:promptNodeRecords(text,'RELATED nodes (may need merge to deduplicate; global top-1 across all path nodes, same-layer only):');var task=promptField(text,'Previous user task:','Previous assistant HighEntropy training packet:');var he=promptField(text,'Previous assistant HighEntropy training packet:','EXISTING nodes (DO NOT duplicate');var feedback=promptField(text,'Current feedback:','Assistant\'s analysis (from HighEntropy):');var total=pathNodes.length+existing.length+related.length;var policy=ni&&ni.policy?String(ni.policy):'legacy prompt inference';var scan=ni&&ni.scannedExisting!=null?' · scanned='+ni.scannedExisting:'';var h='<div class="backward-summary"><span class="backward-badge path">前向路径 <strong>'+pathNodes.length+'</strong></span><span class="backward-badge existing">EXISTING <strong>'+existing.length+'</strong></span><span class="backward-badge related">RELATED <strong>'+related.length+'</strong></span><span class="backward-badge">节点记录合计 <strong>'+total+'</strong></span><span class="backward-badge feedback">当前反馈 <strong>'+(visibleText(feedback)?'有':'空')+'</strong></span><span class="backward-badge">HE <strong>'+(visibleText(he)?'有':'空')+'</strong></span>'+(legacy?'<span class="backward-badge legacy">旧日志 · 从Prompt推断</span>':'<span class="backward-badge">结构化 provenance</span>')+'</div><div class="node-record-empty">候选策略：'+esc(policy+scan)+'</div>';
+if(pathNodes.length)h+='<div class="detail-label">① 实际前向路径（主要更新对象）</div><div class="node-record-grid">'+pathNodes.map(function(n){return nodeRecordHtml(n,'path')}).join('')+'</div>';else h+='<div class="node-record-empty">① 实际前向路径：无（可能是0激活或只有虚拟冷启动节点）</div>';
+if(existing.length)h+='<div class="detail-label">② EXISTING · 全网候选（历史记录可能仍显示 top-3）</div><div class="node-record-grid">'+existing.map(function(n){return nodeRecordHtml(n,'existing')}).join('')+'</div>';else h+='<div class="node-record-empty">② EXISTING：当前记录未解析到候选节点</div>';
+if(related.length)h+='<div class="detail-label">③ RELATED · 同层相似候选（历史记录可能仍显示 top-3）</div><div class="node-record-grid">'+related.map(function(n){return nodeRecordHtml(n,'related')}).join('')+'</div>';else h+='<div class="node-record-empty">③ RELATED：当前记录未解析到候选节点</div>';
+h+='<div class="detail-label">④ 任务与反馈</div><div class="detail-body">'+bodyHtml(task,'Previous user task 未捕获')+'\n\n'+bodyHtml(feedback,'Current feedback 未捕获')+'</div><details class="raw-toggle"><summary>展开完整 userPrompt 原文</summary><div class="detail-body">'+bodyHtml(text,'userPrompt 未捕获')+'</div></details>';return h}
 function kindColor(kind){
   if(kind==='user')return'var(--blue)';
   if(kind==='answer')return'var(--yellow)';
@@ -137,119 +206,201 @@ function kindColor(kind){
   if(kind==='forward')return'var(--mint)';
   return'var(--muted)';
 }
-function fmtTime(ts){return String(ts||'').replace('T',' ').slice(5,19)||'--'}
+function fmtTime(ts){
+  var d=new Date(String(ts||''));
+  if(Number.isNaN(d.getTime()))return'--';
+  return d.toLocaleString('zh-CN',{
+    year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false
+  });
+}
 function pagerBind(prevId,nextId,state,load){
   $(prevId).addEventListener('click',function(){if(state.page>1){state.page--;load();}});
   $(nextId).addEventListener('click',function(){state.page++;load();});
 }
-// ── Tab 1: 对话轨迹 (_trajectories.jsonl) ──
-var trajState={page:1,size:20,filter:''};
+// ── 统一轨迹: _trajectories.jsonl 同时承载 kind:"turn"(对话) 与 kind:"backward"(反传输入输出) ──
+var trajState={page:1,size:20,filter:'',archive:''};
+// 消息展示: 头尾各取一段, 中间省略
+function truncateMid(str, head, tail){
+  var s2=visibleText(str).replace(/\s+/g,' ');
+  var h=head||200, t=(tail===undefined)?200:tail;
+  if(s2.length<=h+t+10)return s2;
+  return s2.slice(0,h)+' …['+(s2.length-h-t)+'字省略]… '+s2.slice(-t);
+}
+// 从 HighEntropy 包提取元信息(后端字段缺失时兜底)
+function heMeta(it){
+  var m={isTask:null,taskType:'',name:''};
+  if(it.he_is_task!==undefined)m.isTask=!!it.he_is_task;
+  if(it.he_task_type)m.taskType=it.he_task_type;
+  if(it._he){
+    var raw=String(it._he);
+    // 兼容 <Tag>x</Tag> 与 中文冒号格式(Textron 契约: Name：/TaskType：/isTask：)
+    if(m.isTask===null){var mt=raw.match(/<isTask>\s*(true|false)|isTask[:：]\s*(true|false)/i);m.isTask=mt?String(mt[1]||mt[2]).toLowerCase()==='true':null;}
+    if(!m.taskType){var tt=raw.match(/<TaskType>\s*([^<\n]+)|(?:TaskType|任务类别)[:：]\s*([^<\n，。]+)/i);if(tt)m.taskType=String(tt[1]||tt[2]||'').trim();}
+    var nm=raw.match(/<Name>\s*([^<\n]+)|^\s*Name[:：]\s*([^<\n]+)/im); if(nm)m.name=String(nm[1]||nm[2]||'').trim();
+  }
+  return m;
+}
+function badgeHtml(cls,text,title){
+  return '<span class="tr-badge '+cls+'"'+(title?' title="'+esc(title)+'"':'')+'>'+text+'</span>';
+}
+// 反传/配对状态徽章: 已反传(r)/失败/跳过/入栈待配对/未触发
+function bwBadgeHtml(bw,isTask,inStack){
+  if(!bw)return '';
+  if(bw.ran){
+    var ok=bw.status==='done';
+    var rw=(bw.reward==null||Number.isNaN(Number(bw.reward)))?'':(' r='+Number(bw.reward).toFixed(2));
+    var cls=ok?(Number(bw.reward)<0?'bw-neg':(Number(bw.reward)>0?'bw-pos':'bw-zero')):'bw-fail';
+    return badgeHtml(cls,(ok?'⟲ 已反传':'⟲ 失败')+rw,(ok?('reward='+bw.reward+' 已反传学习 · runId '+String(bw.runId||'')):('失败: '+(bw.error||bw.rationale||''))));
+  }
+  if(bw.skipped)return badgeHtml('bw-zero','⏭ 跳过',String(bw.reason||'')||'匹配但无领域证据, 未执行反传');
+  if(isTask && inStack)return badgeHtml('bw-pend','🧩 入栈待配对','该任务已入任务栈, 等待后续反馈轮配对');
+  if(isTask)return badgeHtml('bw-zero','— 未反传','isTask 任务, 尚无反馈配对');
+  return '';
+}
+// 对话行展开里的"反向传播结果"小节
+function bwResultHtml(bw){
+  if(!bw)return'';
+  var color=Number(bw.reward)<0?'var(--red)':Number(bw.reward)>0?'var(--lime)':'var(--muted)';
+  var h='<div class="backward-summary">'+
+    '<span class="backward-badge feedback">reward <strong style="color:'+color+'">'+(bw.reward==null?'—':Number(bw.reward).toFixed(2))+'</strong></span>'+
+    '<span class="backward-badge path">node_updates <strong>'+(bw.nodesUpdated||0)+'</strong></span>'+
+    '<span class="backward-badge existing">add_nodes <strong>'+(bw.nodesAdded||0)+'</strong></span>'+
+    '<span class="backward-badge related">merges <strong>'+(bw.nodesMerged||0)+'</strong></span>'+
+    '<span class="backward-badge">runId <strong>'+esc(bw.runId||'—')+'</strong></span>'+
+    (bw.mode?'<span class="backward-badge">mode <strong>'+esc(bw.mode)+'</strong></span>':'')+
+    (bw.consumed?'<span class="backward-badge">绑定任务已出栈 <strong>✓</strong></span>':'')+
+    (bw.processEntries?'<span class="backward-badge">过程条目 <strong>'+bw.processEntries+'</strong></span>':'')+
+    '</div>';
+  if(bw.rationale)h+='<div class="node-record-text" style="max-height:none">'+esc(String(bw.rationale))+'</div>';
+  if(bw.error)h+='<div class="node-record-empty" style="color:var(--red)">错误: '+esc(String(bw.error))+'</div>';
+  return h;
+}
+function trajRowHtml(it,i){
+  if(it.kind==='backward'){
+    var p=it.parsed||{};
+    var pfull=it.parsedFull||p;
+    var rw=Number(p.reward);
+    var isFail=it.status==='failed';
+    var rwCls=isFail?'bw-fail':(rw<0?'bw-neg':(rw>0?'bw-pos':'bw-zero'));
+    var errTxt=String((it.errors||[]).join(' | '));
+    var summary=(isFail?(errTxt||'failed'):String(p.rationale||'')).replace(/\s+/g,' ').slice(0,220);
+    var upds=(pfull.node_updates?Object.keys(pfull.node_updates).length:((p.nodeUpdateIds||[]).length));
+    var adds=((pfull.add_nodes||[]).length);
+    var errBadge=isFail?badgeHtml('bw-fail','⛔ 失败(LLM 全 attempt 失败)','model '+(it.model||'')+' · '+(it.durationMs||0)+'ms · 展开看错误清单'):'';
+    return '<div class="tr-row" data-i="'+i+'">'+
+      '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+
+      '<div class="tr-main">'+
+      '<div class="tr-info">'+badgeHtml('bw-pend','⟲ Backward 输入输出','反向传播 LLM 输入输出记录')+
+        (isFail?errBadge:badgeHtml(rwCls,'reward='+rw.toFixed(2)))+
+        (upds?badgeHtml('','~'+upds+' node_updates'):'')+(adds?badgeHtml('','+'+adds+' add_nodes'):'')+
+        (isFail?badgeHtml('','⏱ '+(it.durationMs||'')+'ms','失败耗时'):'')+'</div>'+
+      '<div class="tr-ai">'+(summary?esc(summary):'<span style="color:var(--faint)">无摘要</span>')+'</div>'+
+      '</div></div>'+
+      '<div class="tr-detail" id="bwd-'+i+'">'+
+      '<section class="detail-section backward"><div class="detail-label">📥 LLM 输入 · 完整原文</div><div class="detail-body">'+backwardInputHtml(it.userPrompt,it.nodeInput)+'</div></section>'+
+      '<section class="detail-section backward"><div class="detail-label">📤 LLM 输出 · parsed 原文 · reward '+esc(rw.toFixed(2))+'</div><div class="detail-body"><div class="backward-summary"><span class="backward-badge">node_updates <strong>'+(pfull.node_updates?Object.keys(pfull.node_updates).length:0)+'</strong></span><span class="backward-badge">add_nodes <strong>'+((pfull.add_nodes||[]).length)+'</strong></span><span class="backward-badge">node_actions <strong>'+((pfull.node_actions||[]).length)+'</strong></span></div>'+bodyHtml(JSON.stringify(pfull,null,1),'parsed 输出为空')+'</div></section>'+
+      (isFail?('<section class="detail-section backward"><div class="detail-label">💥 失败原因 · 逐 attempt 错误</div><div class="detail-body">'+bodyHtml((it.errors||[]).map(function(x,xi){return (xi+1)+'. '+x}).join('\n'),'无错误记录')+'</div></section>'):'')+
+      '<details class="detail-section raw"><summary class="raw-toggle">⚙ 展开完整 systemPrompt 原文</summary><div class="detail-body">'+bodyHtml(it.systemPrompt,'systemPrompt 未捕获')+'</div></details>'+
+      '</div>';
+  }
+  // kind:"turn"（历史无 kind 的行按 turn 渲染）
+  var parts=splitAnswer(it.answer||'');
+  var answer=parts.answer;
+  var he=parts.he;
+  var userPrompt=stripInvisible(it.userPrompt||'');
+  it._he=he;
+  var meta=heMeta(it);
+  var hasHe=!!he;
+  var badges='';
+  if(hasHe){
+    badges+=(meta.isTask===false)?badgeHtml('nontask','⚙ 非任务(有HE)',meta.taskType||'中间回复')
+      :badgeHtml('task','Ⓣ 任务',meta.taskType||'TaskType:'+(meta.taskType||'?'));
+    if(meta.taskType)badges+=badgeHtml('',''+esc(meta.taskType));
+    if(meta.name)badges+=badgeHtml('',''+esc(meta.name.slice(0,34)));
+  } else {
+    badges+=badgeHtml('','— 无 HE','该轮无 HighEntropy 训练包');
+  }
+  var bw=it.backward||null;
+  var inStack=!!it.in_stack;
+  // 任务生命周期阶段徽章: ①任务开始→②中间累积→③反馈到达(是否反传由 bw 徽章表达)
+  var phase=it.task_phase||'';
+  if(phase==='task_start')badges+=badgeHtml('task','① 任务开始·已入栈','本轮登记入栈(isTask, HighEntropy 非必需)'+(it.he_is_task!==false&&it.he_task_type?(' · '+it.he_task_type):''));
+  else if(phase==='intermediate_append')badges+=badgeHtml('','② 中间动作·已累积到任务',(it.appended_to_task||'?')+' · 现 '+((it.process_log_len||0))+'条/'+((it.process_chars||0))+'c'+(it.process_dropped?(' · 滚动丢'+it.process_dropped+'条'):''));
+  else if(phase==='feedback')badges+=badgeHtml('bw-pend','③ 反馈到达·配对反传','本轮回配对为某任务的反馈, 触发反向传播');
+  if(it.forward_diag&&it.forward_diag.failed){
+    badges+=badgeHtml('bw-fail','⚠ 前向L0打分失败×'+(it.forward_diag.errors||[]).length,'耗时'+(it.forward_diag.durationMs||0)+'ms · '+esc(String((it.forward_diag.errors||[]).join('\n')).slice(0,300)));
+  }
+  badges+=bwBadgeHtml(bw,meta.isTask===true,inStack);
+  return '<div class="tr-row" data-i="'+i+'">'+
+    '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+
+    '<div class="tr-main">'+
+    '<div class="tr-info">'+badges+'</div>'+
+    '<div class="tr-user">👤 '+esc(truncateMid(userPrompt,180,0)||'(空)')+'</div>'+
+    '<div class="tr-ai">🤖 '+esc(truncateMid(answer,200,200)||'(空)')+'</div>'+
+    '</div></div>'+
+    '<div class="tr-detail" id="trd-'+i+'">'+
+    '<section class="detail-section user"><div class="detail-label">👤 user 消息（原文）</div><div class="detail-body">'+bodyHtml(userPrompt,'用户消息为空')+'</div></section>'+
+    '<section class="detail-section answer"><div class="detail-label">🤖 AI 回复正文（原文）</div><div class="detail-body">'+bodyHtml(answer,'AI 回复未捕获')+'</div></section>'+
+    (it.thinking?'<section class="detail-section answer"><div class="detail-label">💭 AI 思考过程（thinking）</div><div class="detail-body">'+bodyHtml(it.thinking,'思考为空')+'</div></section>':'')+
+    (it.tools?'<section class="detail-section answer"><div class="detail-label">🔧 工具调用/结果链（tool_call·tool_result）</div><div class="detail-body">'+bodyHtml(it.tools,'工具链为空')+'</div></section>':'')+++
+    (hasHe?'<section class="detail-section he"><div class="detail-label">🧠 HighEntropy 训练包</div><div class="detail-body">'+bodyHtml(he,'HighEntropy 为空')+'</div></section>':'')+
+    '<section class="detail-section nodes"><div class="detail-label">🧭 激活节点 · '+(Array.isArray(it.activatedIds)?it.activatedIds.length:0)+' 个</div><div class="node-path">'+nodesHtml(it.activatedIds)+'</div></section>'+
+    (it.forward_diag&&it.forward_diag.failed?'<section class="detail-section backward"><div class="detail-label">⚠ 前向 L0 打分失败诊断 ('+(it.forward_diag.durationMs||0)+'ms)</div><div class="detail-body">'+bodyHtml((it.forward_diag.errors||[]).map(function(x,xi){return (xi+1)+'. '+x}).join('\n'),'无错误')+'</div></section>':'')+
+    '<section class="detail-section backward"><div class="detail-label">⟲ 反向传播 / 任务配对状态</div><div class="detail-body">'+
+    ((it.backward&&it.backward.ran)?bwResultHtml(it.backward):(
+      '<div class="backward-summary">'+bwBadgeHtml(bw,meta.isTask===true,inStack)+'</div>'+
+      (meta.isTask===true?(inStack?'<div class="node-record-empty">Ⓣ 任务已入栈, 等待后续反馈轮配对后反向传播</div>':'<div class="node-record-empty">Ⓣ 任务(isTask): 尚无反馈配对</div>')
+      :(hasHe?'<div class="node-record-empty">该轮为中间回复(isTask=false), 只更新任务上下文, 不单独反向传播</div>':'<div class="node-record-empty">本轮无 HighEntropy, 不参与学习</div>'))
+    ))+'</div></section>'+
+    '</div>';
+}
+function fillArchSel(months,current){
+  var sel=$('archSel');
+  var cur=sel.value;
+  sel.innerHTML='<option value="">🗂 实时轨迹（最近 800 条）</option>';
+  (months||[]).forEach(function(m){
+    var o=document.createElement('option');
+    o.value=m;
+    o.textContent='📦 归档 '+m;
+    if(m===current)o.selected=true;
+    sel.appendChild(o);
+  });
+  if(!current&&cur)sel.value=''; // 外部切到主文件时复位
+}
 function loadTraj(){
   var box=$('trajBox');
   box.innerHTML='<div class="empty">加载中…</div>';
-  fetch('/api/trajectories?page='+trajState.page+'&pageSize='+trajState.size+'&filter='+encodeURIComponent(trajState.filter)+'&t='+Date.now(),{cache:'no-store'})
+  var qa=(trajState.archive?'&archive='+encodeURIComponent(trajState.archive):'');
+  fetch('/api/trajectories?page='+trajState.page+'&pageSize='+trajState.size+'&filter='+encodeURIComponent(trajState.filter)+qa+'&t='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.json()})
   .then(function(d){
     var totalPages=Math.max(1,Math.ceil((d.total||0)/d.size));
-    var h='<div class="tr-head"><span>时间</span><span>类型</span><span>网络</span><span>摘要</span><span>HE</span></div>';
-    for(var i=0;i<(d.items||[]).length;i++){
-      var it=d.items[i];
-      var col=kindColor('answer');
-      var act='<span class="tr-kind" style="background:'+col+'26;color:'+col+'">'+(it.hasHighEntropy?'AI 回复 · HE':'AI 回复')+'</span>';
-      var prev=String(it.answer||'').replace(/\s+/g,' ').slice(0,120)||String(it.userPrompt||'').replace(/\s+/g,' ').slice(0,120);
-      h+='<div class="tr-row" data-i="'+i+'">'+
-        '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+act+
-        '<span class="tr-net">'+esc(it.taskFamily||'')+'</span>'+
-        '<span class="tr-prev">'+esc(prev)+'</span>'+
-        '<span class="tr-he">'+(it.hasHighEntropy?'🧠':'—')+'</span></div>'+
-        '<div class="tr-detail" id="trd-'+i+'">'+
-        '<div class="dl">👤 user 消息（原文）</div>'+esc(it.userPrompt||'(空)')+
-        '<div class="dl">🤖 AI 回复（原文）</div>'+esc(it.answer||'(空)')+
-        '<div class="dl">🧭 激活节点</div>'+(it.activatedIds||[]).join(' → ')+
-        '</div>';
-    }
-    if(!(d.items||[]).length)h+='<div class="empty">无轨迹数据（记录将从下次 agent 回复开始写入 _trajectories.jsonl）</div>';
+    fillArchSel(d.months||[], d.archive||'');
+    var h='<div class="tr-head"><span>时间</span><span>内容 · 状态(Ⓣ任务/🧩配对/⟲反传·reward) · 消息</span></div>';
+    for(var i=0;i<(d.items||[]).length;i++)h+=trajRowHtml(d.items[i],i);
+    if(!(d.items||[]).length)h+='<div class="empty">无轨迹数据（对话与 Backward 输入输出同列表写入 _trajectories.jsonl，从下次 agent 回复开始）</div>';
     box.innerHTML=h;
-    $('trajTotal').textContent='共 '+d.total+' 条 · 第 '+d.page+'/'+totalPages+' 页';
+    $('trajTotal').textContent=(trajState.archive?('归档 '+trajState.archive+' · '):'实时 · ')+'共 '+d.total+' 条 · 第 '+d.page+'/'+totalPages+' 页';
     $('trajPrev').disabled=d.page<=1;
     $('trajNext').disabled=d.page>=totalPages;
     var rows=box.querySelectorAll('.tr-row');
     for(var j=0;j<rows.length;j++){
       rows[j].addEventListener('click',function(){
-        var det=$('trd-'+this.getAttribute('data-i'));
+        var det=$('trd-'+this.getAttribute('data-i'))||$('bwd-'+this.getAttribute('data-i'));
         if(det)det.classList.toggle('open');
       });
     }
   })
   .catch(function(e){box.innerHTML='<div class="empty" style="color:var(--red)">加载失败: '+esc(e.message)+'</div>'});
 }
-// ── Tab 2: Backward 输入输出 (_sb_logs) ──
-var bwState={page:1,size:10,filter:''};
-function loadBw(){
-  var box=$('bwBox');
-  box.innerHTML='<div class="empty">加载中…</div>';
-  fetch('/api/backward-logs?page='+bwState.page+'&pageSize='+bwState.size+'&filter='+encodeURIComponent(bwState.filter)+'&t='+Date.now(),{cache:'no-store'})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    var totalPages=Math.max(1,Math.ceil((d.total||0)/d.size));
-    var h='<div class="tr-head"><span>时间</span><span>类型</span><span>网络</span><span>reward / 摘要</span><span>状态</span></div>';
-    for(var i=0;i<(d.items||[]).length;i++){
-      var it=d.items[i],p=it.parsed||{};
-      var col=kindColor('backward');
-      var act='<span class="tr-kind" style="background:'+col+'26;color:'+col+'">LLM backward</span>';
-      var rw=Number(p.reward);
-      var rwCol=rw<0?'var(--red)':rw>0?'var(--lime)':'var(--muted)';
-      var summary=String(p.rationale||'').replace(/\s+/g,' ').slice(0,140);
-      var upds=Object.keys(p.node_updates||{}).length, adds=(p.add_nodes||[]).length;
-      h+='<div class="tr-row" data-i="'+i+'">'+
-        '<span class="tr-time">'+esc(fmtTime(it.ts))+'</span>'+act+
-        '<span class="tr-net">'+esc(it.net||it.taskFamily||'')+'</span>'+
-        '<span class="tr-prev" style="color:'+rwCol+'">reward='+rw.toFixed(2)+' · '+esc(summary)+'</span>'+
-        '<span class="tr-he">'+(upds?'~'+upds+'n':'')+(adds?' +'+adds:'')+'</span></div>'+
-        '<div class="tr-detail" id="bwd-'+i+'">'+
-        '<div class="dl">📥 LLM 输入 · userPrompt（含 任务/反馈/现有节点）</div>'+esc(it.userPrompt||'(空)')+
-        '<div class="dl">📤 LLM 输出 · parsed</div>'+esc(JSON.stringify(p,null,1))+
-        '<div class="dl">⚙ systemPrompt</div>'+esc(it.systemPrompt||'(空)')+
-        '</div>';
-    }
-    if(!(d.items||[]).length)h+='<div class="empty">该网络暂无 backward 日志</div>';
-    box.innerHTML=h;
-    $('bwTotal').textContent='共 '+d.total+' 条 · 第 '+d.page+'/'+totalPages+' 页';
-    $('bwNet').textContent='网络: '+(d.nets||[]).join(', ')||'';
-    $('bwPrev').disabled=d.page<=1;
-    $('bwNext').disabled=d.page>=totalPages;
-    var rows=box.querySelectorAll('.tr-row');
-    for(var j=0;j<rows.length;j++){
-      rows[j].addEventListener('click',function(){
-        var det=$('bwd-'+this.getAttribute('data-i'));
-        if(det)det.classList.toggle('open');
-      });
-    }
-  })
-  .catch(function(e){box.innerHTML='<div class="empty" style="color:var(--red)">加载失败: '+esc(e.message)+'</div>'});
-}
-// ── 事件绑定 ──
-$('tabTraj').addEventListener('click',function(){
-  $('tabTraj').classList.add('active');$('tabBackward').classList.remove('active');
-  $('panelTraj').style.display='block';$('panelBackward').style.display='none';
-  loadTraj();
-});
-$('tabBackward').addEventListener('click',function(){
-  $('tabBackward').classList.add('active');$('tabTraj').classList.remove('active');
-  $('panelBackward').style.display='block';$('panelTraj').style.display='none';
-  loadBw();
-});
+// ── 事件绑定(单列表) ──
 $('trajFilter').addEventListener('keydown',function(e){if(e.key==='Enter'){trajState.filter=this.value.trim();trajState.page=1;loadTraj();}});
 $('trajFilterBtn').addEventListener('click',function(){trajState.filter=$('trajFilter').value.trim();trajState.page=1;loadTraj();});
 $('trajReload').addEventListener('click',loadTraj);
-$('bwFilter').addEventListener('keydown',function(e){if(e.key==='Enter'){bwState.filter=this.value.trim();bwState.page=1;loadBw();}});
-$('bwFilterBtn').addEventListener('click',function(){bwState.filter=$('bwFilter').value.trim();bwState.page=1;loadBw();});
-$('bwReload').addEventListener('click',loadBw);
+$('archSel').addEventListener('change',function(){ trajState.archive=this.value||''; trajState.page=1; loadTraj(); });
 pagerBind('trajPrev','trajNext',trajState,loadTraj);
-pagerBind('bwPrev','bwNext',bwState,loadBw);
 loadTraj();
-setInterval(function(){if(!document.hidden&&$('panelTraj').style.display!=='none')loadTraj()},10000);
-setInterval(function(){if(!document.hidden&&$('panelBackward').style.display!=='none')loadBw()},15000);
 })();
 </script>
 </body>

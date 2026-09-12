@@ -8,7 +8,7 @@ import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
 import { distillNodeName } from "../name_distill.ts";
 import { DEFAULT_WEIGHT, TEXTRON_ALLOW_NODE_GROWTH, NGRAM_DISTILL_PROMOTE } from "./network";
 import { rescaleRejectedCrystal } from "./rescale";
-import { materialize, parsePairKey } from "./topology";
+import { materialize } from "./topology";
 
 // ── recordArtifactEvent stub (actual implementation in index.ts) ──
 let _recordArtifactEvent: Function = () => {};
@@ -192,42 +192,6 @@ export function addPolicyNode(
   return { added: true, merged: false, replaced: false, nodeId, layer };
 }
 
-/**
- * 2026-09-04 修复: 层内移除空节点(compact)后, ledger 键含 node_X 序号必须同步重索引,
- * 否则物化视图引用已移位/已删除的节点身份 → 账外残留(node_88 空壳、L1 孤儿 ngram 同源)。
- * 在单次移除 index n 后调用: 该层序号 > n 的全部端点 -1; 端点 == n 的键随节点删除丢弃。
- */
-export function reindexLedgerAfterRemoval(
-  net: { hyperparams: { layers: number[] }; path: string; weights: any },
-  layer: number,
-  removedIdx: number,
-): number {
-  const led = net.weights?.ledger;
-  if (!led || typeof led !== "object") return 0;
-  const out: Record<string, { delta: number; n: number }> = {};
-  let killed = 0;
-  for (const [k, v] of Object.entries<any>(led)) {
-    const pk = parsePairKey(k);
-    if (!pk) { out[k] = v; continue; }
-    const fromIdx = parseInt(pk.from.replace("node_", ""), 10);
-    const toIdx = parseInt(pk.to.replace("node_", ""), 10);
-    let from2 = pk.from, to2 = pk.to;
-    let kill = false;
-    if (pk.l === layer) {
-      if (fromIdx === removedIdx) kill = true;
-      else if (fromIdx > removedIdx) from2 = `node_${fromIdx - 1}`;
-    }
-    if (pk.m === layer) {
-      if (toIdx === removedIdx) kill = true;
-      else if (toIdx > removedIdx) to2 = `node_${toIdx - 1}`;
-    }
-    if (kill) { killed++; continue; }
-    out[`${pk.l}_to_${pk.m}:${from2}:${to2}`] = v;
-  }
-  net.weights.ledger = out;
-  return killed;
-}
-
 export function compactMergeEmptiedNodes(
   net: { hyperparams: { layers: number[] }; path: string; weights: any },
   onLog: (msg: string) => void,
@@ -238,12 +202,6 @@ export function compactMergeEmptiedNodes(
     for (let n = net.hyperparams.layers[l] - 1; n >= 0; n--) {
       const np = path.join(layerDir, `node_${n}.html`);
       if (!readNodeContent(np)) {
-        // 2026-09-04: html 移动时同步移动 ngram 影子文件, 防孤儿 ngram 残留
-        const moveSidecar = (fromBase: string, toBase: string) => {
-          const ngFrom = fromBase.replace(/\.html$/, ".ngram.json");
-          const ngTo = toBase.replace(/\.html$/, ".ngram.json");
-          if (fs.existsSync(ngFrom)) { try { fs.renameSync(ngFrom, ngTo); } catch { fs.unlinkSync(ngFrom); } }
-        };
         // Empty node: shift all higher indices down
         for (let m = n; m < net.hyperparams.layers[l] - 1; m++) {
           const src = path.join(layerDir, `node_${m + 1}.html`);
@@ -255,7 +213,6 @@ export function compactMergeEmptiedNodes(
               .filter((e: any) => e.from === `node_${m + 1}`)
               .map((e: any) => ({ toId: e.to, weight: e.weight }));
             writeNodeHtml(dst, l, `node_${m}`, srcContent, outEdges, srcName);
-            moveSidecar(src, dst);
             fs.unlinkSync(src);
           }
         }
@@ -269,8 +226,6 @@ export function compactMergeEmptiedNodes(
             if (String(e.to).startsWith("node_") && toNum > n) e.to = `node_${toNum - 1}`;
           }
         }
-        // 2026-09-04: ledger 键同步重索引(否则账本引用已移位节点)
-        try { reindexLedgerAfterRemoval(net, l, n); } catch { /* 防御 */ }
         net.hyperparams.layers[l]--;
         compacted++;
       }

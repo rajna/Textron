@@ -43,7 +43,6 @@ import { DEFAULT_COMPILED_CONTEXT_MAX_CHARS, NODE_CONTENT_MAX_CHARS } from "./co
 import { ensureDir, readJson, writeJson, ts, dlog, clamp, completeContent,
          parseLayerNodeId, seedRandom, formatNodesForLLM, previewText } from "./lib/utils";
 import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInstruction } from "./lib/entropy";
-import { lastUserMessageText, rebuildToolsFromMessages, rebuildThinkingFromMessages } from "./lib/round_snapshot";
 import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml,
          validateKnowledgeCrystal, intraLayerOrthogonalityCheck,
          isNgramFragmentContent, contextSimilarity, prepareContextLine } from "./lib/node_io";
@@ -64,7 +63,6 @@ import { RESCALE_DOWN_REASONS, RESCALE_UP_REASONS, RESCALE_PENDING_LIMIT,
          type RescalePendingItem } from "./lib/rescale";
 import { setRecordArtifactEvent, chooseExpansionLayer, updateExistingNodeByPolicy,
          addPolicyNode, compactMergeEmptiedNodes, compactEmptyNodes, addDynamicNode, commitNodeHtmlEdges } from "./lib/node_policy";
-import { liftMergeNodes } from "./lib/lift_merge";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -217,10 +215,6 @@ export default function (pi: ExtensionAPI) {
   let currentProviderAuditLogged = false;
   let currentAssistantBuffer = "";
   let currentAssistantHighEntropy = "";
-  // 2026-09-04: 回合执行记录缓冲(tool_call/tool_result 摘要)——agent_end 统一拼接进任务 processLog,
-  // 使 backward/pairing LLM 能见到决策/结果/复盘等工具通道信息(修复 tool_result 只 recordMonitorEvent 不消费的配对盲区)。
-  let currentTurnTools: string[] = [];
-  let currentTurnThinking = "";
   let currentHighEntropyLogged = false;
   let currentRouteUncertain = false;
   let currentMoeMaxScore = 0;
@@ -420,38 +414,6 @@ export default function (pi: ExtensionAPI) {
   }
   function preview(text: unknown, max = 160): string {
     return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
-  }
-  // 2026-09-04: tool_result content 是 (TextContent|ImageContent)[] 结构化数组(元素 {type:"text",text:...}),
-  // String() 直接转得 "[object Object]" → 工具结果全失真。递归白名单取叶子: text/content/output_text/value,
-  // 数组逐项递归 join、纯对象 JSON.stringify 兜底(与 highentropy.ts assistantTextPart 同构)。
-  function extractToolResultText(content: unknown, depth = 0): string {
-    if (depth > 6 || content == null) return "";
-    if (typeof content === "string") return content;
-    if (typeof content === "number" || typeof content === "boolean") return String(content);
-    if (Array.isArray(content)) {
-      const parts: string[] = [];
-      for (const item of content) {
-        const s = extractToolResultText(item, depth + 1).trim();
-        if (s) parts.push(s);
-      }
-      return parts.join("\n");
-    }
-    if (typeof content === "object") {
-      // 1) 白名单叶子键优先(TextContent/Responses 结构)
-      for (const k of ["text", "content", "output_text", "outputText", "value"]) {
-        const v = (content as Record<string, unknown>)[k];
-        if (v == null) continue;
-        const s = extractToolResultText(v, depth + 1).trim();
-        if (s) return s;
-      }
-      // 2) 标记型内容(如图片)无文本→空, 不 JSON.stringify 整个 part 防噪音
-      const type = String((content as Record<string, unknown>).type || "");
-      if (type === "image" || type === "input_image") return "[image]";
-      if (type === "text") return "";
-      // 3) 兜底: 非 content 结构对象才序列化(如 details 展开)
-      try { return JSON.stringify(content); } catch { return String(content); }
-    }
-    return String(content);
   }
   function topScores(scores: Record<string, number>, limit = 5) {
     return Object.entries(scores)
@@ -790,21 +752,6 @@ export default function (pi: ExtensionAPI) {
           res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
         }
       });
-      return;
-    }
-
-    // Shared transparent brand asset for the monitor pages.
-    if (urlPath === "/textron-logo.png") {
-      try {
-        const realDir = fs.realpathSync(__dirname);
-        const logoPath = path.join(realDir, "textron-logo.png");
-        const logo = fs.readFileSync(logoPath);
-        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
-        res.end(logo);
-      } catch {
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Textron logo not found");
-      }
       return;
     }
 
@@ -1493,8 +1440,7 @@ export default function (pi: ExtensionAPI) {
         if (score < 0.05) continue; // bigram tokenizer: related pairs ~0.12-0.20, noise p50~0.037
         if (pathNodeKeySet.has(key)) continue; // skip nodes already on selected path
         const rp = parseLayerNodeId(key);
-        // 2026-09-04: merge 抽象提升 → RELATED 候选放开到相邻抽象层 |Δlayer|≤1 (L1+L2 可归并)
-        if (!rp || Math.abs(rp.layer - pn.parsed.layer) > 1) continue;
+        if (!rp || rp.layer !== pn.parsed.layer) continue; // same layer only for merge/delete
         const np = path.join(net.path, `layer_${rp.layer}`, `${rp.nodeId}.html`);
         const rc = readNodeContent(np);
         if (!rc) continue;
@@ -1590,9 +1536,9 @@ RULES:
 6b. L1 DOMAIN CHECK (soft, NOT mandatory): Consider whether the activated L1 nodes are semantically DISTANT from this task's domain (e.g. weapon/music/engineering content while the task is stock trading). If so, the causal layer may be MISSING a domain node — you MAY add 1 L1 domain node (causal mechanism: 若A则B因为C) when the mechanism is genuinely novel and reusable. This is a per-case judgment, not a rule: analyze concretely. A layer being at capacity is NOT by itself a reason to force-add (merging similar content is often the better choice); likewise an off-domain L1 is NOT always wrong — judge by actual semantic distance and reuse value.
 7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
 8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. LAYER BALANCE & NEW LAYER GROWTH: add_nodes 优先放入 距40上限余量最大 的层(见 user prompt 的 Layer usage 统计; free=0≠满, 系统对任意层 auto-grow 自动扩容 layers[layer]++, 新增永远可发生); 每层尽量 ≤40 个节点(used≥40 视为满)。若所有现有层均满载(各层 used≥40)且确有新知识要沉淀, 可将 add_nodes.layer 设为 新层索引 N(=当前层数, 例如现有 3 层则 layer:3), 系统会自动追加一层 N 来放置该节点。node_updates 只能面向现有层, 不能用 N.` },
-      { role: "user", content: `Layer usage: ${layerUsageText}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
+      { role: "user", content: `Layer usage: ${layerUsageText}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate; global top-1 across all path nodes, same-layer only):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
 
-MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MAY be in the SAME or ADJACENT abstract layer (|Δlayer|≤1; skip jumps like L0↔L2). MERGE LIFTS ABSTRACTION: system places result at the MORE ABSTRACT layer — L2+L2→L1, L1+L2→L1, L1+L1→L0, any L0 merge stays L0 (edges auto-rebuild from merged content via materialize). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
+MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MUST be in the SAME layer (cross-layer merges are rejected). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
     ];
 
     // Log LLM input AFTER messages is fully constructed (was accidentally referenced before declaration — causing "Cannot access 'messages' before initialization")
@@ -1660,11 +1606,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             entry.source = String(a?.source || "").trim();
             entry.target = String(a?.target || "").trim();
             if (!entry.source || !entry.target) continue;
-            // Validate both nodes exist in network; 2026-09-04: 允许相邻抽象层跨层 merge (L1+L2→L1), 拒绝跳层(层差>1)
+            // Validate both nodes exist in network
             const sp = parseLayerNodeId(entry.source); const tp = parseLayerNodeId(entry.target);
-            if (!sp || !tp || Math.abs(sp.layer - tp.layer) > 1) {
-              recordMonitorEvent({ type: "trace", action: "merge_action_dropped", source: entry.source, target: entry.target, reason: (!sp || !tp) ? "unparseable_id" : "layer_jump" });
-              continue; // merge within same or adjacent layer only
+            if (!sp || !tp || sp.layer !== tp.layer) {
+              // 2026-08-03: 跨层/不可解析 merge 不再静默吞——第49轮实证 LLM 提了2个merge被此处丢弃
+              recordMonitorEvent({ type: "trace", action: "merge_action_dropped", source: entry.source, target: entry.target, reason: (!sp || !tp) ? "unparseable_id" : "cross_layer" });
+              continue; // merge only within same layer
             }
           }
           out.node_actions.push(entry);
@@ -2387,30 +2334,44 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       if (action.action === "merge" && action.source && action.target && mergeDeleteGate) {
         const sp = parseLayerNodeId(action.source);
         const tp = parseLayerNodeId(action.target);
-        if (!sp || !tp) continue;
+        if (!sp || !tp || sp.layer !== tp.layer) continue;
+        const srcPath = path.join(net.path, `layer_${sp.layer}`, `${sp.nodeId}.html`);
+        const tgtPath = path.join(net.path, `layer_${tp.layer}`, `${tp.nodeId}.html`);
+        const srcContent = readNodeContent(srcPath);
+        const tgtContent = readNodeContent(tgtPath);
+        if (!srcContent || !tgtContent) continue;
         // GATE: refuse merge if source content is already empty (prevents double-compaction)
-        const srcContent = readNodeContent(path.join(net.path, `layer_${sp.layer}`, `${sp.nodeId}.html`));
-        if (srcContent?.trim().length === 0) {
+        if (srcContent.trim().length === 0) {
           onLog(`Textron autoBackward: skipped merge ${action.source}→${action.target} — source already empty`);
           continue;
         }
-        // 2026-09-04 抽象提升 merge: 放开同层限制, 支持 L2+L2→L1 / L1+L2→L1 / L1+L1→L0 / 含L0→L0。
-        // 宿主定层+物理搬移+ledger资产重锚+物化重建 prior 边全部由 liftMergeNodes 承担。
-        const lift = liftMergeNodes(net, { layer: sp.layer, nodeId: sp.nodeId }, { layer: tp.layer, nodeId: tp.nodeId }, onLog);
-        if (!lift.merged) {
-          onLog(`Textron autoBackward: merge ${action.source}→${action.target} skipped (${lift.reason || "unknown"})`);
-          continue;
+        let merged = mergeContent(tgtContent, srcContent);
+        let overflowNodeId = "";
+        if (merged.length > NODE_CONTENT_MAX_CHARS) {
+          const overflow = merged.slice(NODE_CONTENT_MAX_CHARS);
+          merged = merged.slice(0, NODE_CONTENT_MAX_CHARS);
+          const overflowResult = addDynamicNode(net, tp.layer, overflow, onLog, compressNodeName(overflow));
+          if (overflowResult.added) {
+            overflowNodeId = `node_${String(overflowResult.nodeId)}`;
+            nodesAdded++;
+            nodeMutations.push({ type: "add", id: `L${tp.layer}::${overflowNodeId}` });
+            onLog(`Textron autoBackward: merge overflow ${overflow.length}c → new node L${tp.layer}::${overflowNodeId}`);
+          }
         }
-        for (const em of lift.emptied) emptiedByMerge.push(em);
+        const outEdges = (net.weights.layer_connections[`${tp.layer}_to_${tp.layer + 1}`] || []).filter(e => e.from === tp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(tgtPath, tp.layer, tp.nodeId, merged, outEdges, compressNodeName(merged));
+        // Empty source only transiently; compactMergeEmptiedNodes removes/reindexes only these specific nodes.
+        const srcOutEdges = (net.weights.layer_connections[`${sp.layer}_to_${sp.layer + 1}`] || []).filter(e => e.from === sp.nodeId).map(e => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(srcPath, sp.layer, sp.nodeId, "", srcOutEdges);
+        // Reset ngram state for emptied source
+        try {
+          const ngramPath = srcPath.replace(/\.html$/, ".ngram.json");
+          if (fs.existsSync(ngramPath)) writeNgramState(srcPath, createNodeState());
+        } catch {}
+        emptiedByMerge.push({ layer: sp.layer, nodeId: sp.nodeId });
         nodesMerged++;
-        nodeMutations.push({ type: "merge", id: `L${lift.hostLayer}::${lift.hostId}`, source: action.source, target: action.target, host: `L${lift.hostLayer}::${lift.hostId}` });
-        if (lift.overflowNodeId) {
-          nodesAdded++;
-          nodeMutations.push({ type: "add", id: `L${lift.hostLayer}::${lift.overflowNodeId}` });
-        }
-        // 宿主内容已变 → 物化(lift 内)已重建 layer_connections, 刷宿主 html link(账→货一致)
-        try { commitNodeHtmlEdges(net, lift.hostLayer, lift.hostId); } catch { /* 忽略 */ }
-        onLog(`Textron autoBackward: lift-merged ${action.source} into ${action.target} → host L${lift.hostLayer}::${lift.hostId} (grafted=${lift.grafted} ledger, dropped=${lift.dropped})`);
+        nodeMutations.push({ type: "merge", id: action.target, source: action.source, target: action.target });
+        onLog(`Textron autoBackward: merged ${action.source} into ${action.target} — "${preview(srcContent, 40)}" → "${preview(merged, 60)}" (source queued for compaction)${overflowNodeId ? ` + overflow→${overflowNodeId}` : ""}`);
       } else if (action.action === "delete" && action.node) {
         // BLOCKED: standalone delete is prohibited. Nodes must only be removed via merge (A→B, empty A).
         onLog(`Textron autoBackward: blocked standalone delete of ${action.node} — deletes only allowed via merge (source emptied after merge into target)${action.rationale ? ` (LLM rationale: ${action.rationale})` : ""}`);
@@ -2423,12 +2384,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const nodesCompacted = emptiedByMerge.length > 0
       ? compactMergeEmptiedNodes(net, onLog)
       : 0;
-    // 2026-09-04: compact 重排了被吸收层的 nodeId → 物化一次刷新拓扑视图
-    // (liftMergeNodes 已在 merge 时物化过; 此处仅为 compact 后的层索引变化收口)
-    if (nodesCompacted > 0) {
-      materialize(net);
-      writeJson(path.join(net.path, "weights.json"), net.weights);
-    }
 
     if (nodeResult.updated > 0 || nodesAdded > 0 || nodesMerged > 0 || nodesDeleted > 0 || nodesCompacted > 0) {
       net.hyperparams.updatedAt = new Date().toISOString();
@@ -2745,8 +2700,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     currentProviderAuditLogged = false;
     currentAssistantBuffer = "";
     currentAssistantHighEntropy = "";
-    currentTurnTools = [];
-    currentTurnThinking = "";
     currentHighEntropyLogged = false;
     currentRouteUncertain = false;
     currentMoeMaxScore = 0;
@@ -2758,12 +2711,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     recordMonitorEvent({ type: "trace", action: "pending_list_built", count: allPendingTasks.length, taskTypes: allPendingTasks.map(t => t.taskType), hasActive: !!activeTask, stackLen: taskStack.length });
     if (allPendingTasks.length > 0) {
       // Build a lightweight pairing prompt: show each task's TaskType + truncated content
-      // 2026-09-04: 任务列表追加 processLog 尾部摘要(最近执行上下文)——配对 judge 能看到任务做过什么
-      // (交易决策/tool 结果/复盘), 否则只有 TaskType 无过程可判 → no_pending_match。
-      const taskListForLLM = allPendingTasks.map((t, i) => {
-        const recent = (t.processLog || []).slice(-3).join(" ⏎ ").replace(/\s+/g, " ").slice(-280);
-        return `[${i}] TaskType="${t.taskType}" taskFamily="${t.taskFamily}" ts=${t.ts.slice(0,16)} HighEntropy=${t.highEntropy.slice(0, 120)}${recent ? ` | recent=${recent}` : ""}`;
-      }).join("\n");
+      const taskListForLLM = allPendingTasks.map((t, i) =>
+        `[${i}] TaskType="${t.taskType}" taskFamily="${t.taskFamily}" ts=${t.ts.slice(0,16)} HighEntropy=${t.highEntropy.slice(0, 120)}`
+      ).join("\n");
 
       // Use a fast LLM call to judge which task (if any) this message is feedback for
       let bestMatchIdx = -1;
@@ -3296,16 +3246,10 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
   pi.on("tool_call", async (event: any) => {
     try {
       const inputPreview = JSON.stringify(event?.input || {}).replace(/\s+/g, " ").slice(0, 300);
-      const toolName = String(event?.toolName || "?");
-      // 2026-09-04: 工具调用入回合缓冲(与 tool_result 同为任务执行上下文, 不扫描过滤, 供 agent_end 拼接 processLog)
-      try {
-        currentTurnTools.push(`▶${toolName} in:${inputPreview.slice(0, 180)}`);
-        if (currentTurnTools.length > 24) currentTurnTools.shift();
-      } catch { /* 缓冲失败不影响主流程 */ }
       recordMonitorEvent({
         type: "trace", action: "tool_call",
         taskFamily: currentTaskFamily || "",
-        tool: toolName,
+        tool: String(event?.toolName || "?"),
         inputPreview,
       });
     } catch { /* 忽略 */ }
@@ -3314,27 +3258,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
   // 轨迹可视化: 工具执行结果(Observation)——DeepSeek harness 链的"观察"
   pi.on("tool_result", async (event: any) => {
     try {
-      // 2026-09-04: content 为 (TextContent|ImageContent)[] 结构化数组 → 递归提取文本, 修 String() 得 "[object Object]" 失真
-      const rawContent = extractToolResultText(event?.content);
-      const content = rawContent.replace(/\s+/g, " ").trim();
-      const toolName = String(event?.toolName || "?");
-      const flat = content;
-      // 2026-09-04: 工具结果入回合缓冲——不扫描关键词、一律保留(≤700c/条), 修复 tool_result 只 recordMonitorEvent
-      // 不进 processLog → 交易决策/结果/复盘对 backward/pairing 不可见的配对盲区。
-      try {
-        const prev = currentTurnTools.length ? currentTurnTools[currentTurnTools.length - 1] : "";
-        if (prev.startsWith(`▶${toolName}`)) {
-          currentTurnTools[currentTurnTools.length - 1] = `${prev} → out:${flat.slice(0, 640)}`;
-        } else {
-          currentTurnTools.push(`◀${toolName} out:${flat.slice(0, 640)}`);
-        }
-        if (currentTurnTools.length > 24) currentTurnTools.shift();
-      } catch { /* 忽略 */ }
+      const content = String(event?.content ?? "");
       recordMonitorEvent({
         type: "trace", action: "tool_result",
         taskFamily: currentTaskFamily || "",
-        tool: toolName,
-        resultPreview: preview(flat.slice(0, 300), 220),
+        tool: String(event?.toolName || "?"),
+        resultPreview: preview(content.replace(/\s+/g, " ").slice(0, 300), 220),
         resultChars: content.length,
         isError: !!event?.isError,
       });
@@ -3353,15 +3282,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // ── Extract HighEntropy crystal to get taskType and isTask ──
     const runMessages = Array.isArray(event?.messages) ? event.messages : [];
     const eventHighEntropy = extractLatestHighEntropyFromMessages(runMessages);
-    // ── 2026-09-05 单数据源: agent_end.messages 含本轮全量 user/assistant/toolCall/toolResult,
-    //    不再依赖跨 hook 增量缓冲(message_update/tool_call 等仅回退)。
-    //    正确回合模型: 每条用户消息=一次完整 run(before_agent_start→agent_end), 中间多 turn/tool 都在这。
-    //    提取逻辑见 lib/round_snapshot.ts(模块化, 不入 index.ts 主体)。
-    const roundUserText = lastUserMessageText(runMessages);
-    const roundTools = rebuildToolsFromMessages(runMessages);
-    // 主源优先: messages 提取为空时才用增量 hook 缓冲(兼容旧流式路径)
-    const turnTools = roundTools.length ? roundTools : currentTurnTools;
-    const roundUserPrompt = roundUserText || currentRawUserPrompt;
     let finalAssistantText = "";
     // Some Responses adapters append a zero-width placeholder assistant message;
     // select the last visible assistant message instead of stopping at that placeholder.
@@ -3389,13 +3309,13 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     try {
       const visibleText = (value: unknown) => String(value || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
       const trajectoryAnswer = visibleText(finalAssistantText) ? finalAssistantText : currentAssistantBuffer;
-      if (visibleText(trajectoryAnswer) || roundUserPrompt) {
+      if (visibleText(trajectoryAnswer) || currentRawUserPrompt) {
         appendTrajectoryLine({
           kind: "turn",
           turnId,
           ts: new Date().toISOString(),
           taskFamily: currentTaskFamily || "",
-          userPrompt: String(roundUserPrompt || "").slice(0, 4000),
+          userPrompt: String(currentRawUserPrompt || "").slice(0, 4000),
           answer: String(trajectoryAnswer || "").slice(0, 8000),
           hasHighEntropy: /<HighEntropy>/i.test(String(trajectoryAnswer || "")),
           activatedIds: (currentActivatedIds || []).slice(0, 30),
@@ -3405,17 +3325,25 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
     } catch { /* 轨迹记录失败不影响主流程 */ }
     // 轨迹可视化: 提取思考链(thinking/reasoning)——DeepSeek harness 的"思考"步
-    // 2026-09-05: 单数据源——thinking 直接从 runMessages 提取(见 lib/round_snapshot.ts), 不需增量拼装
     try {
-      const thoughts = rebuildThinkingFromMessages(runMessages, 40000);
-      if (thoughts) {
-        const thoughtList = thoughts.split(" ⏎ ");
-        currentTurnThinking = thoughts.slice(-1400);
+      const thoughts: string[] = [];
+      for (const m of runMessages) {
+        if (m?.role !== "assistant") continue;
+        const c = m.content;
+        if (typeof c === "string") { if (c.trim()) thoughts.push(c); }
+        else if (Array.isArray(c)) {
+          for (const p of c) {
+            const t = String(p?.thinking ?? p?.reasoning_content ?? "").trim();
+            if (t) thoughts.push(t);
+          }
+        }
+      }
+      if (thoughts.length) {
         recordMonitorEvent({
           type: "trace", action: "agent_thought",
           taskFamily: currentTaskFamily || "",
-          thoughtCount: thoughtList.length,
-          thoughtsPreview: preview(thoughtList.map((t) => t.replace(/\s+/g, " ")).join(" ⏎ ").slice(0, 400), 360),
+          thoughtCount: thoughts.length,
+          thoughtsPreview: preview(thoughts.map((t) => t.replace(/\s+/g, " ")).join(" ⏎ ").slice(0, 400), 360),
         });
       }
     } catch { /* 忽略 */ }
@@ -3462,18 +3390,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     //      backward 将以 processLog 作为任务执行上下文, 完成后即出栈(见下方 shouldConsume)。
     const isTaskStart = isTask === true;
     const feedbackTurn = !!_backwardPendingMatch;   // 本 turn 已被 pairing judge 判为某任务反馈
-    // 2026-09-04: 回合执行上下文(思考+工具链)与 AI 回答同权进任务 processLog——taskStart 与中间轮都 append,
-    // 使 backward/pairing LLM 可见 tool_result 通道的决策/结果/复盘(修复 no_pending_match/reward 丢失的配对盲区)。
-    const execTag = new Date().toISOString().slice(11, 19);
-    const turnExecContext = (() => {
-      const parts: string[] = [];
-      if (currentTurnThinking) parts.push(`💭${currentTurnThinking.slice(0, 640)}`);
-      if (turnTools.length) parts.push(`🔧${turnTools.join(" ⏎ ").slice(-1800)}`);
-      if (!parts.length) return "";
-      const s = `[${execTag}][exec] ${parts.join(" ⏎ ")}`;
-      // exec 条目遵循单条上限(与 HE 之外的蒸馏/tail 一致, 防挤占 4800c 总预算把 HE 滚出窗口)
-      return s.length > MAX_PROCESS_ENTRY_CHARS + 500 ? s.slice(0, MAX_PROCESS_ENTRY_CHARS + 497) + "…" : s;
-    })();
     if (isTaskStart) {
       const newTask: TaskEntry = {
         taskType: taskType || currentTaskFamily || "unknown",
@@ -3486,7 +3402,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         routeUncertain: currentRouteUncertain,
         moeMaxScore: currentMoeMaxScore,
         ts: new Date().toISOString(),
-        processLog: turnExecContext ? [turnExecContext] : [],
+        processLog: [],
       };
       // Push old activeTask to stack if exists, then set new active
       if (activeTask) {
@@ -3507,13 +3423,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const heText = String(highEntropy || "").trim();
       const inFull = String(currentRawUserPrompt || "").trim();
       const body = stripThinkingText(finalAssistantText || "");
-      const hasSignal = !!(heText || inFull || body || turnExecContext);
+      const hasSignal = !!(heText || inFull || body);
       if (hasSignal) {
-        // 2026-09-04: 回合执行上下文(思考+工具链)作为独立条目 append, 与 HE/蒸馏/tail 同权——
-        // 即使本回合无正文/无 HE, 只要发生过工具调用(如交易 step 后仅 tool_result)也不丢过程。
-        if (turnExecContext) {
-          targetTask.processLog.push(turnExecContext);
-        }
         let entryText: string;
         let pendingDistill = false;
         if (heText) {
@@ -3583,9 +3494,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         he_task_type: taskType || "",
         in_stack: isTaskStart,   // 入栈不再要求 HighEntropy(isTask 即登记)
         task_phase: isTaskStart ? "task_start" : (feedbackTurn ? "feedback" : (activeTask ? "intermediate_append" : "none")),
-        // 2026-09-04: 轨迹行回填回合执行上下文(思考+工具链)——tool_result/AI 思考与回答同权可见
-        thinking: (currentTurnThinking || "").slice(0, 2000),
-        tools: turnTools.join(" ⏎ ").slice(0, 2400),
       });
     } catch { /* 忽略 */ }
 

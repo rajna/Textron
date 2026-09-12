@@ -229,12 +229,28 @@ export function extractHighEntropy(text: string): string {
   return `Name: ${crystal.name}${taskLine}\nTechnique: ${crystal.technique}${fnBlock}`;
 }
 
+function assistantTextPart(part: any, depth = 0): string {
+  if (depth > 6 || part == null) return "";
+  if (typeof part === "string") return part;
+  if (Array.isArray(part)) return part.map((p) => assistantTextPart(p, depth + 1)).filter(Boolean).join("\n");
+  if (typeof part !== "object") return "";
+  // Providers use both content parts and Responses-style output_text objects.
+  for (const key of ["text", "content", "value", "output_text", "outputText", "parts"]) {
+    if (part[key] == null) continue;
+    const text = assistantTextPart(part[key], depth + 1);
+    if (text) return text;
+  }
+  return "";
+}
+
 export function assistantMessageText(message: any): string {
   if (message?.role !== "assistant") return "";
-  const parts = message.content;
-  if (typeof parts === "string") return parts;
-  if (Array.isArray(parts)) return parts.map((p: any) => p?.text || p?.content || p?.value || "").join("\n");
-  return parts ? JSON.stringify(parts) : "";
+  const text = assistantTextPart(message.content)
+    || assistantTextPart(message.text)
+    || assistantTextPart(message.output_text)
+    || assistantTextPart(message.parts);
+  // Zero-width placeholders are emitted by some adapters when no assistant text exists.
+  return text.replace(/[\u200B-\u200D\uFEFF]/g, "").trim() ? text : "";
 }
 
 /** Read the final crystal from agent_end.event.messages, newest assistant first. */

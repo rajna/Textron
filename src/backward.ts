@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { writeJson } from "./lib/utils";
 import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "./lib/node_io";
 import { clamp, parseLayerNodeId } from "./lib/utils";
+import { trainPair, materialize } from "./lib/topology";
 import type { loadNetwork } from "./lib/network";
 type LoadedNetwork = NonNullable<ReturnType<typeof loadNetwork>>;
 interface WeightsFile { layer_connections: Record<string, { from: string; to: string; weight: number }[]>; }
@@ -77,23 +78,19 @@ export function autoBackward(
   let changes = 0;
   const changedEdges: string[] = [];
   if (activeEdgeSet.size > 0) {
-    for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
-      for (const edge of edges) {
-        const eid = `${key}:${edge.from}:${edge.to}`;
-        if (!activeEdgeSet.has(eid)) continue;
-        const old = edge.weight;
-        const edgeR = edgeRewards?.get(eid) ?? reward;
-        if (edgeR > 0) edge.weight = clamp(old + lr * edgeR * (1 - old), -1, 1);
-        else if (edgeR < 0) edge.weight = clamp(old + lr * edgeR * (1 + old), -1, 1);
-        if (Math.abs(edge.weight - old) > 0.0005) {
-          changes++;
-          changedEdges.push(`${eid}:${old.toFixed(4)}->${edge.weight.toFixed(4)}`);
-        }
+    // 三层架构: 训练只写经验层 ledger 的 delta, 物化视图随后整体重建(每 pair 唯一, 无重复边)
+    for (const eid of activeEdgeSet) {
+      const edgeR = edgeRewards?.get(eid) ?? reward;
+      const r = trainPair(net, eid, edgeR, lr);
+      if (r) {
+        changes++;
+        changedEdges.push(`${eid}:${r.old.toFixed(4)}->${r.next.toFixed(4)}(n=${r.n})`);
       }
     }
     if (changes > 0) {
+      materialize(net);
       writeJson(path.join(net.path, "weights.json"), net.weights);
-      onLog(`Textron backward: ${changes} selected edge(s) updated (reward=${reward.toFixed(3)}) for "${path.basename(net.path)}"`);
+      onLog(`Textron backward: ${changes} selected edge(s) trained in ledger (reward=${reward.toFixed(3)}) for "${path.basename(net.path)}"`);
     }
 
     // Negative reward: lightly penalize ALL edges connected to activated nodes (noise suppression).
@@ -103,23 +100,21 @@ export function autoBackward(
         const parsed = parseLayerNodeId(id);
         if (parsed) activatedNodeKeys.add(parsed.nodeId);
       }
-      const penaltyRate = lr * Math.abs(reward) * 0.3;
       let extraChanges = 0;
-      for (const [key, edges] of Object.entries(net.weights.layer_connections)) {
+      for (const [sec, edges] of Object.entries(net.weights.layer_connections)) {
         for (const edge of edges) {
-          if (activatedNodeKeys.has(edge.from) || activatedNodeKeys.has(edge.to)) {
-            const eid = `${key}:${edge.from}:${edge.to}`;
-            if (activeEdgeSet.has(eid)) continue;
-            const old = edge.weight;
-            edge.weight = clamp(old - penaltyRate * (1 + old), -1, 1);
-            if (Math.abs(edge.weight - old) > 0.0005) {
-              extraChanges++;
-              changedEdges.push(`${eid}:${old.toFixed(4)}->${edge.weight.toFixed(4)} [noise_penalty]`);
-            }
+          if (!(activatedNodeKeys.has(edge.from) || activatedNodeKeys.has(edge.to))) continue;
+          const eid = `${sec}:${edge.from}:${edge.to}`;
+          if (activeEdgeSet.has(eid)) continue;
+          const r = trainPair(net, eid, -Math.abs(reward) * 0.3, lr);
+          if (r) {
+            extraChanges++;
+            changedEdges.push(`${eid}:${r.old.toFixed(4)}->${r.next.toFixed(4)} [noise_penalty]`);
           }
         }
       }
       if (extraChanges > 0) {
+        materialize(net);
         writeJson(path.join(net.path, "weights.json"), net.weights);
         onLog(`Textron backward: ${extraChanges} extra connected-edge(s) penalized (noise suppression) for "${path.basename(net.path)}"`);
       }

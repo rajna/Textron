@@ -2,10 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ensureDir, readJson, writeJson } from "./utils";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
+import { migrateLedger, materialize } from "./topology";
 
+// 2026-09-03: 允许用 TEXTRON_HOME 改根目录（默认 ~/.textron 不变）。
+// 目的是把“验证”与“生产网络”分开：端到端验证可整份复制网络到临时目录跑，
+// 不会往真网络写测试节点（否则验证本身成为污染源）。
 export const TEXTRON_HOME = path.join(
-  process.env.HOME || process.env.USERPROFILE || "~",
-  ".textron",
+  process.env.TEXTRON_HOME || path.join(process.env.HOME || process.env.USERPROFILE || "~", ".textron"),
 );
 
 export const DEFAULT_HYPERPARAMS = {
@@ -17,7 +20,10 @@ export const DEFAULT_HYPERPARAMS = {
 };
 
 export const DEFAULT_WEIGHT = 0.5;
-export const NGRAM_DISTILL_PROMOTE = true;
+// 2026-09: n-gram 蒸馏产物为 top-5 n-gram 的 "; " 机械拼接（如 "gpt; reasons.append; 'model"），
+// 无句法/因果连贯，覆盖精心书写的知识节点后产生不可读内容。改为 shadow-only：
+// 仍后台计数/记录蒸馏候选(monitor shadow 事件)，但不再覆盖节点 content。
+export const NGRAM_DISTILL_PROMOTE = false;
 export const TEXTRON_ALLOW_NODE_GROWTH = true;
 
 export function getTaskFamilyPath(taskFamily: string): string {
@@ -47,6 +53,8 @@ interface Hyperparams {
 
 interface WeightsFile {
   layer_connections: Record<string, { from: string; to: string; weight: number }[]>;
+  /** 经验层(三层架构): 只存 backward 真正训过的 pair → {delta,n}; 拓扑先验不存储, 物化时由 ngram 派生 */
+  ledger?: Record<string, { delta: number; n: number }>;
 }
 
 export function initNetwork(
@@ -63,16 +71,8 @@ export function initNetwork(
   const hp: Hyperparams = { layers, threshold, learningRate, createdAt: now, updatedAt: now };
   writeJson(path.join(tfPath, "hyperparams.json"), hp);
 
-  const weights: WeightsFile = { layer_connections: {} };
-  for (let l = 0; l < layers.length - 1; l++) {
-    const key = `${l}_to_${l + 1}`;
-    weights.layer_connections[key] = [];
-    for (let from = 0; from < layers[l]; from++) {
-      for (let to = 0; to < layers[l + 1]; to++) {
-        weights.layer_connections[key].push({ from: `node_${from}`, to: `node_${to}`, weight: DEFAULT_WEIGHT });
-      }
-    }
-  }
+  // 三层架构: 不再预写全连接假先验 —— 拓扑由 ngram 内容派生, 物化视图首次使用时生成
+  const weights: WeightsFile = { layer_connections: {}, ledger: {} };
   writeJson(path.join(tfPath, "weights.json"), weights);
 
   for (let l = 0; l < layers.length; l++) {
@@ -104,12 +104,19 @@ export function loadNetwork(taskFamily: string) {
   if (!fs.existsSync(hpPath)) return null;
   const hp = readJson<Hyperparams>(hpPath, DEFAULT_HYPERPARAMS);
   const weightsPath = path.join(tfPath, "weights.json");
-  const weights = readJson<WeightsFile>(weightsPath, { layer_connections: {} });
+  const weights = readJson<WeightsFile>(weightsPath, { layer_connections: {}, ledger: undefined });
 
-  return {
+  const net = {
     path: tfPath,
     hyperparams: hp,
     weights,
     taskFamily,
   };
+  // 旧格式(无 ledger) → 一次性迁移: 重复边 collapse, 训练过的边反解 delta 保真, 然后物化落盘
+  if (!weights.ledger) {
+    migrateLedger(net);
+    materialize(net);
+    writeJson(weightsPath, weights);
+  }
+  return net;
 }

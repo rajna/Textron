@@ -43,9 +43,7 @@ body{
   background:linear-gradient(180deg,#8694b7,#6d7ca3);
   display:flex;flex-direction:column;align-items:center;padding:22px 0;gap:34px;
 }
-.rail-logo{width:44px;height:44px;display:grid;place-items:center;overflow:hidden}
-.rail-logo img{display:block;width:44px;height:44px;object-fit:contain;filter:drop-shadow(0 4px 8px rgba(20,28,50,.28))}
-.textron-logo{display:block;width:100%;height:100%;background:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAA+CAMAAACsn+1dAAAAPFBMVEVMS0uNjIzu7u53dnZubW2BgIBAPz9RUFAZGBheXV0hICAxMDBtbGx4d3ebm5teXV1GRUUkIyNoZ2ednJxyBonpAAAAFHRSTlOyLAFDtJHS6v6R+/LicHPR6ted+n8H0h0AAAP5SURBVEjHpZeJcts6DEVJgeCGiIxe//9f3wWo1VYmctvxdEKZONguoMQ556fTP3J0PvrA0+XrSNfb7FKOZ0Kp6Xz0VS7HVM9AH/OXI7kQvOT5ZwBf76Ys5KYXAl9MrgCSeqKT2k9ueiEgBP4JEM4XKaq9Al4Isz2/A+AevfgfgCsBmYV7gMvpzX4AlHAUn05GZwAqQG/2K+ASA0IodwCX47v9BjDCxp/rXoUTgETau/3keh8/0ndO28Nlb8QJEPYKHAlTVCXKQKAtG2HezQ6A3yuwB0u95uTI1SxFb9GyEVAFfgXwFoD612s+SBYmZxmtj2Qj8BbjDtglvtnDqvZVSJ6V5Y8vj3h3wFxHl9b4fUDc5A8dIBt9rln4UbF+BaxJwa+6QL3quga2Ns4oJlsvzBN6RmfAeh72vsjRsQ0weVcV2iQbug8xbQCXLdeu/cf/NRzy2tWNQdb4kWSwg0WyAvyY46D2OoWneT0BVj3PUsuuuxUwhMFq39IR/lCiREmd6ZAom5K7BbIC7AAya4prO7inuEh3SaTmnCUqA4TF4zpSmW10BsAnhGO54YJ1i0VgVAUAT8QcEs6qRy2zh2jKKoUBsAEP+k1UtnYhSwrMjY5pLKlqcvDjxjh27fwAFPWNRnrLH1lIpLc2Tn5etLxNM+3QkYl/AKI9ClqdNkG2sd13YbQZtfbqrglsDaAnC0BTg30/b/ozYDTadmLMwav4DNDwsnF4qBvBUpx+BCCGqGvZc00QDA8AZ6f7cK3Cxf8rYLIoYy7ag6K9UADK2VB9HbCS09X+FYAb4ovdZrzHBiDW2WUGk6+vpluALiN1j/knpG6ARVqshKyAjtMvgImtYgUJs+ZcrSUNwghWifYrQN1TXQgvchgqoNWos7kG8StAR199QjhgKIBzh7AgZ+qZp98BhOxhGtSsKCDkgA/i8CL0AKA5wD2rmQJw6AYMdP1t4yeA7k9IZ84JDANUAP7r+rRPTwCs8SbKMo/Mo5Uz1XZXgjsAYWfk1GTBTjGANrQNxjMAjGpVALqJAf6WIIsCpPpHAL/oXQBYDKCKWH9+CJBsRupYARZKqY7rMj0CoA3zUnkBQDVsgIgpKNk9BGD0XOWojBWg1v0TQMFKWFYANiw0YYDwEGDiL9gCi1lXgXXQDz8EhBtA1w99AmCUUkb835y/lPgYgBS+MEAA1FGAYIDlMYA2AHaIAUZRlvoYUAEI/QD07FDB+AEg/VGfJ0BxuqCeA77+aBaogQ7WDpB/BMjHgCJbCvVDgPrcI5hVgwPQngIqOn+KIP49IP9bBDN+wT618XMAG4D/FtAVoO/Y2gO6UD8AeFfIzS0ROwr4k2Km2GZHxd3s1Ol/aSNHH6644fYAAAAASUVORK5CYII=") center/contain no-repeat;filter:drop-shadow(0 4px 8px rgba(20,28,50,.28))}
+.rail-logo{width:34px;height:34px;display:grid;place-items:center}
 .rail-icons{display:flex;flex-direction:column;gap:14px;flex:1}
 .ricon{
   width:46px;height:46px;border-radius:50%;border:0;cursor:pointer;
@@ -58,12 +56,10 @@ body{
 .rail-bottom{display:flex;flex-direction:column;align-items:center;gap:12px}
 .avatar{
   width:46px;height:46px;border-radius:50%;
-  background:rgba(255,255,255,.12);
+  background:linear-gradient(135deg,#d7f463,#8fb8ff);
   display:grid;place-items:center;color:#1c2334;font-weight:800;font-size:17px;
-  border:2px solid rgba(255,255,255,.65);overflow:hidden;
+  border:2px solid rgba(255,255,255,.65);
 }
-.avatar img{width:100%;height:100%;object-fit:contain}
-.avatar-sm .textron-logo{filter:invert(1) drop-shadow(0 3px 6px rgba(0,0,0,.25))}
 
 /* ── main column ── */
 .main{flex:1;min-width:0;padding:0 44px 64px}
@@ -74,10 +70,9 @@ body{
 .net-chip{display:flex;align-items:center;gap:12px}
 .avatar-sm{
   width:40px;height:40px;border-radius:50%;
+  background:linear-gradient(135deg,#d7f463,#8fb8ff);
   display:grid;place-items:center;color:#1c2334;font-weight:800;font-size:15px;
-  overflow:hidden;background:rgba(255,255,255,.12);
 }
-.avatar-sm img{width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 3px 6px rgba(0,0,0,.25))}
 .net-name{font-weight:700;font-size:15px}
 .net-sub{font-size:12px;color:var(--muted);margin-top:1px}
 .top-right{display:flex;align-items:center;gap:16px}
@@ -91,11 +86,7 @@ body{
 
 /* ── hero ── */
 .hero{display:flex;align-items:flex-end;justify-content:space-between;gap:32px;flex-wrap:wrap;margin-bottom:22px}
-.hero-titles{display:flex;flex-direction:column;gap:10px}
 h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02em;color:#fff;text-shadow:0 4px 30px rgba(20,30,60,.6)}
-.hero-sub{display:flex;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px;color:var(--muted);font-weight:500;letter-spacing:.02em}
-.hero-link{display:inline-flex;align-items:center;gap:6px;color:var(--lime);text-decoration:none;font-weight:600}
-.hero-link:hover{text-decoration:underline}
 .kpis{display:flex;gap:44px;flex-wrap:wrap}
 .kpi .k{font-size:13px;color:var(--muted);font-weight:500;margin-bottom:6px}
 .kpi .v{font-size:20px;font-weight:600;color:#cdd8f2;font-family:var(--mono)}
@@ -123,9 +114,12 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
 .graph{
   position:relative;border:1px solid var(--border);border-radius:14px;overflow:auto;
   max-height:74vh;
+  /* reference look: soft periwinkle light from upper-left, cool vignette —
+     lifted base so the white silk filaments read as high-key highlights */
   background:
-    radial-gradient(720px 420px at 50% 38%,rgba(140,170,255,.07),transparent 70%),
-    rgba(0,0,0,.30);
+    radial-gradient(900px 540px at 26% 20%,rgba(172,196,255,.17),transparent 68%),
+    radial-gradient(760px 520px at 80% 82%,rgba(112,142,212,.09),transparent 72%),
+    linear-gradient(155deg,#2d3755,#1b2338 60%,#161c2d);
   padding:14px;
 }
 .graph canvas{display:block;cursor:crosshair}
@@ -266,7 +260,11 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
 
 <nav class="rail" aria-label="Monitor sections">
   <div class="rail-logo">
-    <span class="textron-logo" role="img" aria-label="Textron"></span>
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true" width="30" height="30">
+      <defs><linearGradient id="rlg" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#d7f463"/></linearGradient></defs>
+      <path d="M6 8 L16 4 L26 8 L26 18 L16 26 L6 18 Z" fill="url(#rlg)"/>
+      <path d="M11 11 L16 9 L21 11 L21 17 L16 21 L11 17 Z" fill="#6d7ca3" opacity=".55"/>
+    </svg>
   </div>
   <div class="rail-icons">
     <button class="ricon active" data-target="sec-graph" title="Graph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><circle cx="17.5" cy="17.5" r="3.5"/></svg></button>
@@ -275,13 +273,13 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
     <button class="ricon" data-target="sec-diag" title="Diagnostics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg></button>
     <button class="ricon" data-target="sec-events" title="轨迹"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="4" cy="18" r="1.6"/></svg></button>
   </div>
-  <div class="rail-bottom"><div class="avatar"><span class="textron-logo" role="img" aria-label="Textron"></span></div></div>
+  <div class="rail-bottom"><div class="avatar">T</div></div>
 </nav>
 
 <div class="main">
   <header class="topbar">
     <div class="net-chip">
-      <div class="avatar-sm"><span class="textron-logo" role="img" aria-label="Textron"></span></div>
+      <div class="avatar-sm">T</div>
       <div>
         <div class="net-name" id="hdr-net">Textron</div>
         <div class="net-sub">trainable textual neural network</div>
@@ -385,6 +383,43 @@ var glowBlue=makeGlow(['rgba(143,184,255,.5)','rgba(110,150,255,.16)']);
 var glowPink=makeGlow(['rgba(255,126,182,.5)','rgba(255,110,160,.16)']);
 var glowMagenta=makeGlow(['rgba(255,140,230,.75)','rgba(200,70,180,.22)']);
 var backwardLinger=0; // seconds since last backward event, for fade-out trail
+
+/* anamorphic streak sprite — a single flattened light ray. Drawn twice at right
+   angles it reproduces the reference's starburst cell bodies (long thin arms +
+   tight white core) without any shadowBlur cost. */
+function makeStreak(inner,outer){
+  var c=document.createElement('canvas');c.width=c.height=256;
+  var g=c.getContext('2d');
+  g.translate(128,128);g.scale(1,0.045);
+  var rg=g.createRadialGradient(0,0,0,0,0,128);
+  rg.addColorStop(0,inner);rg.addColorStop(0.42,outer);rg.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=rg;g.beginPath();g.arc(0,0,128,0,6.283);g.fill();
+  return c;
+}
+var streakWhite=makeStreak('rgba(255,255,255,.95)','rgba(196,216,255,.30)');
+var streakLime=makeStreak('rgba(244,255,206,.95)','rgba(215,244,99,.30)');
+var streakBlue=makeStreak('rgba(228,240,255,.85)','rgba(143,184,255,.26)');
+/* starburst = bloom arms; r = arm half-length unit */
+function drawStar(ctx,x,y,r,alpha,streak){
+  ctx.globalAlpha=alpha;
+  ctx.drawImage(streak,x-r*2.7,y-r*0.34,r*5.4,r*0.68);
+  ctx.drawImage(streak,x-r*0.34,y-r*2.7,r*0.68,r*5.4);
+  ctx.globalAlpha=1;
+}
+/* rounded-rect path — chartreuse label tags */
+function rrect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+/* perpendicular unit vector of an edge chord — strands fan along this axis */
+function edgeNormal(e){
+  var dx=e.x2-e.x1,dy=e.y2-e.y1,len=Math.sqrt(dx*dx+dy*dy)||1;
+  return {nx:-dy/len,ny:dx/len};
+}
 
 /* ═══════════════ helpers ═══════════════ */
 function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
@@ -523,7 +558,7 @@ function updateGraphView(name,net,state){
   for(var k in weights){
     var m=k.match(/^(\d+)_to_(\d+)$/);if(!m)continue;
     var l=parseInt(m[1],10),mm=parseInt(m[2],10);
-    if(l===mm){ // lateral 同层扩散边(三层架构物化): 单独收集, 防与跨层桶 key 碰撞而静默丢边
+    if(l===mm){ // lateral 同层扩散边(三层架构物化): 单独收集, 防跨层 key 碰撞
       for(var j2=0;j2<weights[k].length;j2++){var le0=weights[k][j2];latRaw.push({l:l,from:le0.from,to:le0.to,w:le0.weight})}
       continue;
     }
@@ -567,7 +602,7 @@ function updateGraphView(name,net,state){
   amb.sort(function(a,b){return Math.abs(b.w)-Math.abs(a.w)});
   amb=amb.slice(0,14);
 
-  // lateral 同层边: 与跳层主边同柌单线描绘(带 lat 标记→虚线细一号), 不画就等于数据丢可视化
+  // lateral 同层边: 同列侧弯弧线(Memora 式扩散召回的可视化)
   for(var li=0;li<latRaw.length;li++){
     var lr=latRaw[li];
     if(lr.from===lr.to)continue;
@@ -608,7 +643,7 @@ function updateGraphView(name,net,state){
   gv.path.textContent=selectedIds.length?selectedIds.join(' → '):'no selected path';
   var backInfo=backwardEdges?'↩ '+(backward.edgesUpdated||0)+' edges':'';
   var ledN=(net.weights&&net.weights.ledger)?Object.keys(net.weights.ledger).length:0;
-  gv.foot.textContent='selectedEdges: '+selectedEdges.length+' · glowing: '+goldReal+' · mutations: '+moved.length+' · lateral: '+latRaw.length+' · ledger trained: '+ledN+(backInfo?' · '+backInfo:'');
+  gv.foot.textContent='selectedEdges: '+selectedEdges.length+' · glowing: '+goldReal+' · mutations: '+moved.length+' · lateral: '+latRaw.length+' · ledger trained: '+ledN+' · silk+starfield'+(backInfo?' · '+backInfo:'');
 }
 
 /* static synapse layer — rebuilt per poll, blitted per frame (perf) */
@@ -621,22 +656,32 @@ function renderStatic(gv){
   g.setTransform(gv.dpr,0,0,gv.dpr,0,0);
   g.clearRect(0,0,gv.W,gv.H);
   g.lineCap='round';g.textAlign='center';
+  /* silk bundles: each synapse is a fan of hair-thin strands that pinch back into
+     the two cell bodies — the reference's organic membrane look. Strand count and
+     spread scale with |weight|; endpoints offset only ~12% so fibers converge.
+     lateral(e.lat)=同层扩散边, 画细一半不抢跨层主边. */
   for(var i=0;i<d.edges.length;i++){
     var e=d.edges[i],aw=Math.abs(e.w);
-    /* 可读性底线(2026-09-03): 每条边=一条单线(不拆发丝); 弱边保留但不抢注。旧公式
-       alpha=0.06+aw*0.34 在 aw≤0.1 时仅 0.094/0.8px —— 黑底下几乎不可见，“看不清连线”就是这么来的;
-       现在拉大对比度并按跳层/同层分档, 权重标签阈值 0.35→0.20。 */
-    if(aw<0.02)continue;                                  // dead synapse: 不画噪声
-    var alpha=(e.lat?0.10:0.14)+aw*(e.lat?0.28:0.50);
-    g.strokeStyle=e.w>=0?'rgba(159,180,221,'+alpha.toFixed(3)+')':'rgba(255,150,190,'+alpha.toFixed(3)+')';
-    g.lineWidth=(e.lat?0.6:0.9)+aw*(e.lat?1.6:2.8);
-    if(e.lat){g.setLineDash([5,4])}else{g.setLineDash([])}   // 虚线=同层扩散, 实线=跳层主边
-    g.beginPath();g.moveTo(e.x1,e.y1);g.quadraticCurveTo(e.cx,e.cy,e.x2,e.y2);g.stroke();
-    g.setLineDash([]);
-    if(aw>=0.20){
+    if(aw<0.02)continue;                                  // dead synapse: no silk
+    var nrm=edgeNormal(e),nx=nrm.nx,ny=nrm.ny;
+    var latF=e.lat?0.5:1;
+    var nS=aw>=0.55?6:aw>=0.35?5:aw>=0.18?4:aw>=0.06?2:1;
+    var spread=7+aw*26,pos=e.w>=0;
+    for(var s=0;s<nS;s++){
+      var f=nS>1?(s/(nS-1))*2-1:0;                        // -1 .. 1 across the bundle
+      var fade=1-Math.abs(f)*0.62;                        // outer strands thinner/dimmer
+      var o=f*spread,a=(pos?0.055+aw*0.30:0.05+aw*0.26)*fade*latF;
+      g.strokeStyle=pos?'rgba(176,196,236,'+a.toFixed(3)+')':'rgba(255,150,190,'+(a*0.85).toFixed(3)+')';
+      g.lineWidth=(0.28+aw*1.5*fade)*latF;
+      g.beginPath();
+      g.moveTo(e.x1+nx*o*0.12,e.y1+ny*o*0.12);
+      g.quadraticCurveTo(e.cx+nx*o,e.cy+ny*o,e.x2+nx*o*0.12,e.y2+ny*o*0.12);
+      g.stroke();
+    }
+    if(aw>=0.42&&!e.lat){
       var mp=qbezPt(e,0.5);
-      g.fillStyle=e.w>=0?'rgba(150,166,206,.85)':'rgba(255,170,200,.8)';g.font='8px Menlo,monospace';
-      g.fillText(e.w.toFixed(2),mp.x,mp.y-4);
+      g.fillStyle='rgba(138,152,192,.7)';g.font='8px Menlo,monospace';
+      g.fillText(e.w.toFixed(2),mp.x,mp.y-6);
     }
   }
 }
@@ -654,14 +699,20 @@ function drawGraph(gv,t){
   ctx.globalCompositeOperation='lighter';
   var breathe=0.7+0.3*Math.sin(t*2.1);
 
-  // selected organic path — layered strokes instead of shadowBlur (GPU-cheap glow)
+  // selected organic path — silk bundle, lit chartreuse, 3 fibers braided
   ctx.lineCap='round';
   for(i=0;i<d.selEdges.length;i++){
     e=d.selEdges[i];
-    ctx.beginPath();ctx.moveTo(e.x1,e.y1);ctx.quadraticCurveTo(e.cx,e.cy,e.x2,e.y2);
-    ctx.strokeStyle='rgba(215,244,99,'+(0.10*breathe).toFixed(3)+')';ctx.lineWidth=11;ctx.stroke();
-    ctx.strokeStyle='rgba(215,244,99,'+(0.22*breathe).toFixed(3)+')';ctx.lineWidth=6.5;ctx.stroke();
-    ctx.strokeStyle='rgba(230,250,140,'+(0.85*breathe).toFixed(3)+')';ctx.lineWidth=3.5;ctx.stroke();
+    var sn=edgeNormal(e),snx=sn.nx,sny=sn.ny;
+    for(var st=-1;st<=1;st++){
+      var so=st*5.5,wd=st?0.45:1;
+      ctx.beginPath();
+      ctx.moveTo(e.x1+snx*so*0.12,e.y1+sny*so*0.12);
+      ctx.quadraticCurveTo(e.cx+snx*so,e.cy+sny*so,e.x2+snx*so*0.12,e.y2+sny*so*0.12);
+      ctx.strokeStyle='rgba(215,244,99,'+(0.10*breathe*wd).toFixed(3)+')';ctx.lineWidth=11;ctx.stroke();
+      ctx.strokeStyle='rgba(215,244,99,'+(0.22*breathe*wd).toFixed(3)+')';ctx.lineWidth=6.5;ctx.stroke();
+      ctx.strokeStyle='rgba(240,255,205,'+(0.85*breathe*wd).toFixed(3)+')';ctx.lineWidth=st?1.8:3.5;ctx.stroke();
+    }
   }
 
   // phantom dashed route
@@ -761,16 +812,18 @@ function drawGraph(gv,t){
       var wave=0.55+0.45*Math.sin(t*2.6-nd.layer*0.9);
       var s=52+22*wave;
       ctx.drawImage(glowLime,px-s/2,py-s/2,s,s);
+      drawStar(ctx,px,py,Rv*1.5+4,wave*0.95,streakLime);   // starburst firing
     }else if(nd.mutation){
       var mt=nd.mutation.type;
       var glow=mt==='add'?glowLime:mt==='merge'?glowBlue:mt==='delete'?glowPink:glowWhite;
       ctx.globalAlpha=mt==='add'?0.95:mt==='merge'?0.88:mt==='delete'?0.82:0.72;
       ctx.drawImage(glow,px-24,py-24,48,48);
+      drawStar(ctx,px,py,Rv*1.15,0.7,streakBlue);
       ctx.globalAlpha=1;
     }else if(nd.filled){
-      ctx.globalAlpha=nd.score!=null?Math.min(1,0.3+nd.score*0.8):0.45;
-      ctx.drawImage(glowWhite,px-22,py-22,44,44);
-      ctx.globalAlpha=1;
+      var fa=nd.score!=null?Math.min(1,0.3+nd.score*0.8):0.45;
+      ctx.globalAlpha=fa;ctx.drawImage(glowWhite,px-22,py-22,44,44);ctx.globalAlpha=1;
+      drawStar(ctx,px,py,Rv*1.2,fa*0.8,streakWhite);        // high-key filament body
     }
   }
   ctx.restore();
@@ -780,44 +833,61 @@ function drawGraph(gv,t){
     nd=d.nodes[i];
     var px=nd._px!=null?nd._px:nd.cx,py=nd._py!=null?nd._py:nd.cy;
     if(nd.sel){
-      ctx.beginPath();
-      for(var a=0;a<9;a++){
-        var ang=a/9*6.283,rr=Rv+2+Math.sin(t*3.2+nd.phase+a*2.4)*1.6;
-        var vx=px+Math.cos(ang)*rr,vy=py+Math.sin(ang)*rr;
-        if(a)ctx.lineTo(vx,vy);else ctx.moveTo(vx,vy);
-      }
-      ctx.closePath();
+      /* reference bead: solid chartreuse core + specular + breathing halo ring,
+         replacing the wobbling polygon blob */
+      ctx.beginPath();ctx.arc(px,py,Rv*0.62,0,6.283);
       ctx.fillStyle='#d7f463';ctx.fill();
-      ctx.strokeStyle='#eaffb0';ctx.lineWidth=2.5;ctx.stroke();
+      ctx.strokeStyle='rgba(242,255,200,.9)';ctx.lineWidth=1.4;ctx.stroke();
+      ctx.beginPath();ctx.arc(px-Rv*0.17,py-Rv*0.19,Rv*0.19,0,6.283);
+      ctx.fillStyle='rgba(255,255,255,.95)';ctx.fill();
+      ctx.beginPath();ctx.arc(px,py,Rv*0.98+Math.sin(t*3.2+nd.phase)*1.4,0,6.283);
+      ctx.strokeStyle='rgba(215,244,99,.32)';ctx.lineWidth=1;ctx.stroke();
     }else if(nd.mutation){
       var mt=nd.mutation.type;
-      ctx.beginPath();ctx.arc(px,py,Rv+1,0,6.283);
+      ctx.beginPath();ctx.arc(px,py,Rv*0.68,0,6.283);
       ctx.fillStyle=mt==='add'?'rgba(126,226,195,.94)':mt==='merge'?'rgba(197,155,255,.92)':mt==='delete'?'rgba(255,138,157,.92)':'rgba(143,184,255,.92)';
       ctx.fill();
       ctx.strokeStyle=mt==='add'?'rgba(183,255,229,.72)':mt==='merge'?'rgba(227,200,255,.72)':mt==='delete'?'rgba(255,185,196,.72)':'rgba(205,220,250,.72)';
-      ctx.lineWidth=1.7;ctx.stroke();
+      ctx.lineWidth=1.5;ctx.stroke();
+    }else if(nd.filled){
+      /* lit cell body: tiny near-white core — the bloom and silk carry the volume */
+      ctx.beginPath();ctx.arc(px,py,Rv*0.44,0,6.283);
+      ctx.fillStyle='rgba(247,251,255,.96)';ctx.fill();
     }else{
-      ctx.beginPath();ctx.arc(px,py,Rv,0,6.283);
-      if(nd.filled){ctx.fillStyle='rgba(205,220,250,.92)';ctx.fill();ctx.strokeStyle='rgba(235,242,255,.5)';ctx.lineWidth=1.4;ctx.stroke()}
-      else{ctx.fillStyle='rgba(74,88,128,.5)';ctx.fill();ctx.strokeStyle='rgba(120,135,175,.4)';ctx.lineWidth=1.2;ctx.stroke()}
+      /* dormant node: single faint micro-dot, keeps the lattice legible but silent */
+      ctx.beginPath();ctx.arc(px,py,1.7,0,6.283);
+      ctx.fillStyle='rgba(150,166,206,.30)';ctx.fill();
     }
   }
 
-  // ── labels ──
-  ctx.textAlign='center';
+  /* ── labels: the reference keeps the field almost silent — one chartreuse tag on
+     the firing node with a hairline leader, muted name beneath; everything else is
+     carried by the bloom, so the silk network stays the subject. ── */
   for(i=0;i<d.nodes.length;i++){
     nd=d.nodes[i];
     var px=nd._px!=null?nd._px:nd.cx,py=nd._py!=null?nd._py:nd.cy;
-    ctx.font='650 10px Menlo,monospace';ctx.fillStyle='#93a0c4';
-    ctx.fillText(nd.id,px,py+Rv+14);
-    if(nd.score!=null){
-      ctx.font='750 10px Menlo,monospace';
-      ctx.fillStyle=nd.sel?'#d7f463':'#8fb8ff';
-      ctx.fillText(Number(nd.score).toFixed(2),px,py-Rv-7);
+    if(nd.sel){
+      var txt=nd.id+(nd.score!=null?'  '+Number(nd.score).toFixed(2):'');
+      ctx.font='700 10px Menlo,monospace';
+      var tw=ctx.measureText(txt).width+13,th=17,tx=px+Rv*1.6,ty=py-th/2,flip=false;
+      if(tx+tw>gv.W-8){tx=px-Rv*1.6-tw;flip=true}
+      ctx.strokeStyle='rgba(215,244,99,.5)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(px+(flip?-Rv*0.7:Rv*0.7),py);
+      ctx.lineTo(flip?tx+tw:tx,ty+th/2);ctx.stroke();
+      ctx.fillStyle='#d7f463';rrect(ctx,tx,ty,tw,th,3);ctx.fill();
+      ctx.fillStyle='#141a2b';ctx.textAlign='left';ctx.fillText(txt,tx+6.5,ty+12);
+      ctx.font='9px Inter,sans-serif';ctx.fillStyle='rgba(226,234,252,.8)';
+      ctx.fillText(short(nd.name||nd.context||'(empty)',30),tx,ty+th+12);
+    }else if(nd.mutation){
+      ctx.font='9px Menlo,monospace';ctx.textAlign='left';
+      var mty=nd.mutation.type;
+      ctx.fillStyle=mty==='add'?'#7ee2c3':mty==='merge'?'#c59bff':mty==='delete'?'#ff8a9d':'#8fb8ff';
+      ctx.fillText(mty+' · '+nd.id,px+Rv*0.9,py-Rv*0.85);
+    }else if(nd.filled&&nd.score!=null){
+      ctx.font='650 9px Menlo,monospace';ctx.textAlign='center';
+      ctx.fillStyle='rgba(150,166,206,.5)';
+      ctx.fillText(nd.id,px,py+Rv+12);
     }
-    ctx.font='9px Inter,sans-serif';
-    ctx.fillStyle=nd.sel?'#d7f463':nd.mutation?(nd.mutation.type==='add'?'#7ee2c3':nd.mutation.type==='merge'?'#c59bff':nd.mutation.type==='delete'?'#ff8a9d':'#8fb8ff'):'#5f6b90';
-    ctx.fillText(short((nd.mutation?nd.mutation.type+' · ':'')+(nd.name||nd.context||'(empty)'),34),px,py+Rv+27);
   }
 }
 
@@ -825,7 +895,7 @@ function drawGraph(gv,t){
 function renderHero(s,names,activeName,activeIds,b){
   var r=b&&b.reward!=null?Number(b.reward):null;
   var q=b&&b.qualityScore!=null?Number(b.qualityScore):null;
-  var h='<div class="hero-titles"><h1>Textron<br>Live Monitor</h1><div class="hero-sub"><a class="hero-link" href="/trajectory" target="_blank" rel="noopener">trajectory 工程</a></div></div><div class="kpis">';
+  var h='<h1>Textron<br>Live Monitor</h1><div class="kpis">';
   h+='<div class="kpi"><div class="k">Active network</div><div class="v">'+esc(short(activeName,20))+'</div></div>';
   h+='<div class="kpi"><div class="k">Selected path</div><div class="v"><em>'+activeIds.length+'</em> nodes</div></div>';
   h+='<div class="kpi"><div class="k">Last reward</div><div class="v">'+(r==null?'n/a':'<em>'+(r>0?'+':'')+r.toFixed(3)+'</em>')+'</div></div>';

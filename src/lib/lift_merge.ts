@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeJson, completeContent, previewText } from "./utils";
 import { readNodeContent, writeNodeHtml, compressNodeName } from "./node_io";
+import { layerCapFor } from "./network";
 import { mergeContent } from "./merge";
 import { materialize, parsePairKey } from "./topology";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
@@ -55,11 +56,19 @@ function wipeNgram(np: string): void {
   } catch { /* 忽略 */ }
 }
 
-/** 在某层分配一个可用槽位(nodeId)。优先复用空壳(避免计数增长), 否则 append。 */
-function allocSlot(net: { hyperparams: { layers: number[] }; path: string }, layer: number): string {
+/** 在某层分配一个可用槽位(nodeId)。优先复用空壳(避免计数增长); 扩容前过 layerCaps 硬闸 —
+ *  存活数>=cap 返回 null(调用方必须降级: 宿主落位失败/溢出截断)。任何路径(含 merge 派生、
+ *  溢出伴随)不得使存活节点超容, layers[] 不再被静默 ++ 扩容。(2026-09-14 N2/B7 修复) */
+function allocSlot(net: { hyperparams: { layers: number[]; layerCaps?: number[] }; path: string }, layer: number): string | null {
   for (let n = 0; n < net.hyperparams.layers[layer]; n++) {
     if (!readNodeContent(nodePath(net.path, layer, `node_${n}`))) return `node_${n}`;
   }
+  const cap = layerCapFor(net.hyperparams as { layers: number[]; layerCaps?: number[] }, layer);
+  let aliveCount = 0;
+  for (let n = 0; n < net.hyperparams.layers[layer]; n++) {
+    if (readNodeContent(nodePath(net.path, layer, `node_${n}`))) aliveCount++;
+  }
+  if (aliveCount >= cap) return null;
   fs.mkdirSync(path.join(net.path, `layer_${layer}`), { recursive: true });
   const newIdx = net.hyperparams.layers[layer];
   net.hyperparams.layers[layer]++;
@@ -107,21 +116,21 @@ export function liftMergeNodes(
   if (keepTgt) { hostId = target.nodeId; emptied.push({ layer: source.layer, nodeId: source.nodeId }); }
   else if (keepSrc) { hostId = source.nodeId; emptied.push({ layer: target.layer, nodeId: target.nodeId }); }
   else {
-    hostId = allocSlot(net, hostLayer);
+    const slot = allocSlot(net, hostLayer);
+    if (!slot) {
+      // 容量硬闸: 结果层无空壳且存活已满 → merge 拒绝落盘, 原因交上层压缩轮回喂 LLM
+      return { merged: false, hostLayer: -1, hostId: "", emptied: [], grafted: 0, dropped: 0, overflowNodeId: null, reason: `host_alloc_over_cap(L${hostLayer})` };
+    }
+    hostId = slot;
     emptied.push({ layer: source.layer, nodeId: source.nodeId });
     if (!(source.layer === target.layer && source.nodeId === target.nodeId)) emptied.push({ layer: target.layer, nodeId: target.nodeId });
   }
   // 若同时复用两参与者(理论不发生, 防御), 取 target 复用并吸收另一者 → 已在 keepTgt 分支覆盖
 
-  // 溢出 >1000c: 落伴随节点(同结果层), 内容不丢
+  // 溢出 >1000c: 落伴随节点(同结果层)。硬闸(2026-09-14): 槽位分配延后到源节点清空之后 —
+  // merge 自身腾出的空壳优先复用; 仍无空壳且层满 → 溢出截断, 宁截断不超容。
   let overflowNodeId: string | null = null;
-  if (mergedRaw.length > NODE_CONTENT_MAX_CHARS) {
-    const over = completeContent(mergedRaw.slice(NODE_CONTENT_MAX_CHARS), NODE_CONTENT_MAX_CHARS);
-    if (over.trim()) {
-      overflowNodeId = allocSlot(net, hostLayer);
-      writeNodeHtml(nodePath(net.path, hostLayer, overflowNodeId), hostLayer, overflowNodeId, over, [], compressNodeName(over).slice(0, 64));
-    }
-  }
+  const overflowRaw = mergedRaw.length > NODE_CONTENT_MAX_CHARS ? completeContent(mergedRaw.slice(NODE_CONTENT_MAX_CHARS), NODE_CONTENT_MAX_CHARS) : "";
 
   // ── 写宿主内容(边稍后由 materialize + commitNodeHtmlEdges 统一重建) ──
   const hostPath = nodePath(net.path, hostLayerActual, hostId);
@@ -180,6 +189,17 @@ export function liftMergeNodes(
     const np = nodePath(net.path, em.layer, em.nodeId);
     wipeNgram(np);
     if (fs.existsSync(np)) writeNodeHtml(np, em.layer, em.nodeId, "", [], "");
+  }
+
+  // ── 溢出伴随节点(槽位分配在源清空后: 优先复用 merge 腾出的空壳; 硬闸下宁截断不超容) ──
+  if (overflowRaw.trim()) {
+    const slot = allocSlot(net, hostLayerActual);
+    if (slot) {
+      overflowNodeId = slot;
+      writeNodeHtml(nodePath(net.path, hostLayerActual, overflowNodeId), hostLayerActual, overflowNodeId, overflowRaw, [], compressNodeName(overflowRaw).slice(0, 64));
+    } else {
+      log(`Textron lift-merge: overflow dropped (L${hostLayerActual} at cap, hard gate)`);
+    }
   }
 
   // ── 物化: 从(已更新的)内容重建全部边 = merge 对边的唯一动作 ──

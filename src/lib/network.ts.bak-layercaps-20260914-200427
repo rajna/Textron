@@ -17,12 +17,7 @@ export const DEFAULT_HYPERPARAMS = {
   learningRate: 0.08,
   createdAt: "",
   updatedAt: "",
-  /** 网络目标：该网络只应沉淀哪个领域的经验（如 stock_alpha="沉淀交易经验"）。反向传播时读取，作为清洗裁判。 */
-  goal: "",
 };
-
-/** 网络目标最大长度（防止把整段 prompt 当目标写进去）。 */
-export const NETWORK_GOAL_MAX_CHARS = 300;
 
 export const DEFAULT_WEIGHT = 0.5;
 // 2026-09: n-gram 蒸馏产物为 top-5 n-gram 的 "; " 机械拼接（如 "gpt; reasons.append; 'model"），
@@ -30,21 +25,6 @@ export const DEFAULT_WEIGHT = 0.5;
 // 仍后台计数/记录蒸馏候选(monitor shadow 事件)，但不再覆盖节点 content。
 export const NGRAM_DISTILL_PROMOTE = false;
 export const TEXTRON_ALLOW_NODE_GROWTH = true;
-
-/** 默认每层节点上限（= 旧 MAX_PER_LAYER_SOFT 软上限语义；无 layerCaps 配置的网络沿用）。 */
-export const DEFAULT_LAYER_CAP = 40;
-
-/**
- * 每层容量上限解析：有 layerCaps 配置按配置（缺层用最后一个值兜底），无配置用默认 40。
- * 这是唯一权威入口 —— add/grow/prompt 全部走这里。
- */
-export function layerCapFor(hp: { layers: number[]; layerCaps?: number[] }, layer: number): number {
-  const caps = Array.isArray(hp.layerCaps) && hp.layerCaps.length ? hp.layerCaps : null;
-  if (!caps) return DEFAULT_LAYER_CAP;
-  const v = caps[layer];
-  if (Number.isFinite(v) && v >= 0) return v;
-  return caps[caps.length - 1] ?? DEFAULT_LAYER_CAP;
-}
 
 export function getTaskFamilyPath(taskFamily: string): string {
   const safe = taskFamily.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_").slice(0, 64);
@@ -65,18 +45,10 @@ export function listNetworks(): string[] {
 
 interface Hyperparams {
   layers: number[];
-  /** 每层节点容量上限（用户显式配置，不可被 auto-grow 突破）。缺省时回落 DEFAULT_LAYER_CAP(40, 旧行为)。 */
-  layerCaps?: number[];
   threshold: number;
   learningRate: number;
   createdAt: string;
   updatedAt: string;
-  /**
-   * 网络目标（用户输入，如 "沉淀交易经验"）：该网络只接纳符合此目标的领域知识。
-   * 反向传播读取它来判定节点是否离域，并把离域节点用 node_updates 覆盖重写为域内知识。
-   * 空/未设置 = 不做目标约束（旧行为）。
-   */
-  goal?: string;
 }
 
 interface WeightsFile {
@@ -96,7 +68,7 @@ export function initNetwork(
   ensureDir(tfPath);
 
   const now = new Date().toISOString();
-  const hp: Hyperparams = { layers, layerCaps: [...layers], threshold, learningRate, createdAt: now, updatedAt: now };
+  const hp: Hyperparams = { layers, threshold, learningRate, createdAt: now, updatedAt: now };
   writeJson(path.join(tfPath, "hyperparams.json"), hp);
 
   // 三层架构: 不再预写全连接假先验 —— 拓扑由 ngram 内容派生, 物化视图首次使用时生成
@@ -124,34 +96,6 @@ export function initNetwork(
 
   onLog(`Textron: initialized network "${taskFamily}" with layers [${layers.join(",")}]`);
   return hp;
-}
-
-/** 读取网络目标（唯一权威入口：反传/监控/工具都走这里，避免各处自行 readJson）。 */
-export function readNetworkGoal(taskFamily: string): string {
-  const hpPath = path.join(getTaskFamilyPath(taskFamily), "hyperparams.json");
-  if (!fs.existsSync(hpPath)) return "";
-  try {
-    const hp = readJson<Hyperparams>(hpPath, DEFAULT_HYPERPARAMS);
-    return String(hp.goal || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * 写入网络目标；传空字符串=清除约束。返回落盘后的值（已 trim + 截断到 NETWORK_GOAL_MAX_CHARS）。
- * 只改 goal 字段，其余 hyperparams 原样保留（避免覆盖并发写入的 layers/layerCaps）。
- */
-export function writeNetworkGoal(taskFamily: string, goal: string): string {
-  const tfPath = getTaskFamilyPath(taskFamily);
-  const hpPath = path.join(tfPath, "hyperparams.json");
-  if (!fs.existsSync(hpPath)) throw new Error(`network "${taskFamily}" not found`);
-  const hp = readJson<Hyperparams>(hpPath, DEFAULT_HYPERPARAMS);
-  const next = String(goal || "").replace(/\s+/g, " ").trim().slice(0, NETWORK_GOAL_MAX_CHARS);
-  if (next) { hp.goal = next; } else { delete hp.goal; }
-  hp.updatedAt = new Date().toISOString();
-  writeJson(hpPath, hp);
-  return next;
 }
 
 export function loadNetwork(taskFamily: string) {

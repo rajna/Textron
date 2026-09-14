@@ -116,6 +116,36 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
 .sp-title{font-size:17px;font-weight:700;margin-bottom:14px;letter-spacing:-.01em}
 .panel-meta{font-size:12px;color:var(--faint);text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin-bottom:12px}
 .panel-meta b{color:var(--muted)}
+/* ── 网络管理面板 ── */
+#netmgr-wrap{margin:0 26px 18px;border-radius:18px}
+#netmgr-wrap summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.06em;user-select:none}
+#netmgr-wrap[open] summary{margin-bottom:14px}
+.nm-grid{display:grid;grid-template-columns:1fr 1.2fr;gap:16px}
+.nm-col{min-width:0;display:flex;flex-direction:column;gap:12px}
+.nm-card{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:14px;padding:14px 16px}
+.nm-title{font-size:12px;color:#d9e6ff;font-weight:700;margin-bottom:2px}
+.nm-sub{font-size:11px;color:var(--faint);line-height:1.5;margin-bottom:10px}
+.nm-net{display:flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid var(--border);border-radius:10px;margin-bottom:6px;cursor:pointer;font-size:12.5px;color:var(--muted)}
+.nm-net:hover{border-color:rgba(143,184,255,.45)}
+.nm-net.on{border-color:rgba(126,226,195,.7);color:#d9e6ff;background:rgba(126,226,195,.06)}
+.nm-net b{color:#eaf1ff;font-weight:600}
+.nm-net .nm-layers{font-size:11px;color:var(--faint);margin-left:auto;white-space:nowrap;text-align:right}
+.nm-net .nm-empty{display:block;font-size:10.5px;color:#ffb86b}
+.nm-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.nm-field label{font-size:11px;color:var(--muted);font-weight:600}
+.nm-field label .q{cursor:help;color:var(--faint);font-weight:400}
+.nm-field input{background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;color:#eaf1ff;padding:6px 10px;font-size:12.5px;width:100%;box-sizing:border-box}
+.nm-field input:focus{outline:none;border-color:rgba(143,184,255,.6)}
+.nm-field input.nm-k{width:64px;text-align:center}
+.nm-row{display:flex;align-items:flex-end;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+.nm-hint{font-size:10.5px;color:var(--faint);line-height:1.6;margin:2px 0 0}
+.nm-btn{background:rgba(143,184,255,.14);border:1px solid rgba(143,184,255,.4);border-radius:9px;color:#d9e6ff;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-end}
+.nm-btn:hover{background:rgba(143,184,255,.24)}
+.nm-btn.primary{background:rgba(126,226,195,.18);border-color:rgba(126,226,195,.55);color:#bdf0dd}
+.nm-btn.primary:hover{background:rgba(126,226,195,.3)}
+.nm-btn.ghost{background:transparent;border-color:var(--border);color:var(--faint)}
+.nm-msg{font-size:11.5px;margin-top:6px;color:#7ee2c3;min-height:16px;white-space:pre-wrap}
+.nm-msg.err{color:#ff7eb6}
 .mono-line{font-family:var(--mono);font-size:12px;color:var(--muted);margin:0 0 14px;word-break:break-all;line-height:1.7}
 .mono-line em{font-style:normal;color:var(--lime)}
 
@@ -294,6 +324,11 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
   </header>
 
   <div class="hero" id="hero"></div>
+
+  <details class="panel" id="netmgr-wrap">
+    <summary>⚙️ 网络管理 — 新建网络 / 切换激活 / 每层激活数 / 网络目标</summary>
+    <div id="netmgr"></div>
+  </details>
 
   <div class="layout">
     <div class="col-main">
@@ -1237,6 +1272,123 @@ for(var ri=0;ri<ricons.length;ri++){
 }
 
 // master animation loop: WebGL background + all graph canvases (adaptive 15–30 FPS)
+
+/* ═══════════════ 网络管理面板: 新建 / 切换(pin) / 每层激活数 ═══════════════ */
+var nmMsg='';
+function nmSay(m,err){nmMsg=m;var el=document.querySelector('.nm-msg');if(el){el.textContent=m;el.className='nm-msg'+(err?' err':'')}}
+async function nmPost(url,body){
+  try{
+    var r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+    var d=await r.json();
+    if(!d.ok){
+      var em=d.error||('HTTP '+r.status);
+      if(em.indexOf('already exists')>=0)em='该名称已被占用 — 换一个名字（网络不能重名）';
+      else if(em.indexOf('need 2-8 layers')>=0)em='层数需 2–8 层、每层 1–64 个节点（例：4,6,8）';
+      nmSay('✗ '+esc(em),true);return null;
+    }
+    return d;
+  }catch(e){nmSay('✗ '+esc(e.message),true);return null}
+}
+function renderNetMgr(d){
+  var cfg=d.config||{},nets=d.networks||[];
+  var pinned=cfg.pinnedTaskFamily||null;
+  var h='<div class="nm-grid">';
+  // 左列: 网络列表(点击切换 pin / AUTO 回自动路由)
+  h+='<div class="nm-col">';
+  h+='<div class="nm-card"><div class="nm-title">① 使用哪个网络</div><div class="nm-sub">点任意一行即切换；对话时只会用到「当前」标出的那张。切换不会删除旧网络。</div>';
+  h+='<div class="nm-net'+(pinned?'':' on')+'" data-pin=""><span>'+(pinned?'○':'●')+' 自动路由</span>'+(pinned?'':'<span class="nm-layers">当前</span>')+'</div>';
+  for(var i=0;i<nets.length;i++){
+    var n=nets[i],uc=(n.nodeCounts||[]).map(function(c){return c.used+'/'+(c.cap!=null?c.cap:c.capacity)}).join(' · ');
+    var totalUsed=0;for(var nc=0;nc<(n.nodeCounts||[]).length;nc++)totalUsed+=n.nodeCounts[nc].used;
+    h+='<div class="nm-net'+(pinned===n.name?' on':'')+'" data-pin="'+esc(n.name)+'"><span>'+(pinned===n.name?'●':'○')+' <b>'+esc(n.name)+'</b></span><span class="nm-layers">['+(n.layers||[]).join(',')+'] '+uc+(pinned===n.name&&totalUsed===0?'<span class="nm-empty">空网络：还没有节点，随对话训练积累</span>':'')+'</span></div>';
+  }
+  h+='</div>';
+  // 右列: 新建 + 激活数
+  h+='<div class="nm-col">';
+  h+='<div class="nm-card"><div class="nm-title">② 新建网络</div><div class="nm-sub">建一张全新的空白知识网络（独立于已有网络，不会合并进去）。</div>';
+  h+='<div class="nm-row">'
+    +'<div class="nm-field"><label>名称 <span class="q" title="新网络的唯一名字，字母/数字/中文/下划线">ⓘ</span></label><input id="nm-name" placeholder="如 music_prod"></div>'
+    +'<div class="nm-field"><label>每层节点数 <span class="q" title="逗号分隔，共 2–8 层，每层 1–64 个节点。建议前窄后宽，如 4,6,8">ⓘ</span></label><input id="nm-layers" placeholder="4,6,8" style="width:100px"></div>'
+    +'<div class="nm-field"><label>激活阈值 <span class="q" title="0–1，越小越容易激活节点；留空用默认 0.2">ⓘ</span></label><input id="nm-thr" class="nm-k" placeholder="默认"></div>'
+    +'<div class="nm-field"><label>学习率 <span class="q" title="0–0.2，训练步长；留空用默认 0.015">ⓘ</span></label><input id="nm-lr" class="nm-k" placeholder="默认"></div>'
+    +'<button class="nm-btn primary" id="nm-create">新建</button></div>';
+  h+='<div class="nm-hint">层数 2–8 · 每层节点 1–64 · 新网络从零开始，靠每轮对话的 HighEntropy 蒸馏填充节点</div>';
+  var pinnedNet=null;
+  for(var j=0;j<nets.length;j++)if(nets[j].name===pinned)pinnedNet=nets[j];
+  var layerN=pinnedNet&&pinnedNet.layers?pinnedNet.layers.length:3;
+  h+='</div>';
+  h+='<div class="nm-card"><div class="nm-title">③ 每层激活多少节点（topK）</div><div class="nm-sub">每轮对话从每层挑多少节点参与传播 → 直接决定注入多少上下文。填得少=上下文精简，填得多=更全面但更嘈杂。'+(pinnedNet?'当前网络：<b>'+esc(pinnedNet.name)+'</b>（'+layerN+' 层）':'当前：自动路由（此设置全局生效）')+'</div>';
+  h+='<div class="nm-row"><div class="nm-field"><label>全局默认 <span class="q" title="所有层统一用这个值">ⓘ</span></label><input id="nm-topk" class="nm-k" value="'+esc(cfg.topK!=null?cfg.topK:(cfg.topKEffective!=null?cfg.topKEffective:3))+'"></div><button class="nm-btn" id="nm-save-topk">保存全局</button><button class="nm-btn ghost" id="nm-clear-layer" title="删除按层覆盖，回到统一的全局值">恢复全局</button></div>';
+  h+='<div class="nm-row" id="nm-perlayer">';
+  for(var l=0;l<layerN;l++){
+    var v=cfg.topKByLayer&&cfg.topKByLayer[String(l)]!=null?cfg.topKByLayer[String(l)]:'';
+    h+='<div class="nm-field"><label>L'+l+'</label><input class="nm-k nm-lk" data-l="'+l+'" placeholder="—" value="'+v+'"></div>';
+  }
+  h+='<button class="nm-btn" id="nm-save-layer" title="只覆盖填了数字的层，留空的层继续用全局值">按层保存</button></div>';
+  h+='</div>';
+  // ④ 网络目标（反传时读取，作为离域清洗裁判）
+  h+='<div class="nm-card"><div class="nm-title">④ 网络目标 <span class="q" title="告诉这张网络「只该沉淀什么」。反向传播时读取：与目标无关的已有节点（工程/API/配置/审计等异域知识）会被判为离域污染，强制用 node_updates 覆盖重写为目标域知识">ⓘ</span></div>';
+  h+='<div class="nm-sub">声明该网络只该沉淀什么经验'+(pinnedNet?('（当前网络：<b>'+esc(pinnedNet.name)+'</b>）'):'（当前：自动路由——先在 ① 选中一张网络才能设定目标）')+'。反传时作为准入裁判：离域节点会被重写清洗，且禁止 merge 进目标域节点（防关键词垃圾抽屉）。</div>';
+  h+='<div class="nm-row"><div class="nm-field" style="flex:1"><label>目标 <span class="q" title="例：沉淀交易经验。留空/清除 = 不做目标约束（旧行为）。最长 300 字符">ⓘ</span></label><input id="nm-goal" placeholder="如 沉淀交易经验" value="'+esc(pinnedNet?(pinnedNet.goal||''):'')+'"></div>'
+    +'<button class="nm-btn primary" id="nm-save-goal">保存目标</button><button class="nm-btn ghost" id="nm-clear-goal" title="清除后网络回到无目标约束">清除</button></div>';
+  h+='<div class="nm-hint">建议写成一句话领域声明（如「沉淀交易经验：买点/仓位/止损的可复用判断」）· 设置后下一次反向传播即生效（无需重启）</div>';
+  h+='</div>';
+  h+='</div></div>';
+  h+='<div class="nm-msg">'+esc(nmMsg)+'</div>';
+  var el=$('netmgr');if(!el)return;el.innerHTML=h;
+  // bind
+  var nets0=el.querySelectorAll('.nm-net');
+  for(var k=0;k<nets0.length;k++)nets0[k].onclick=function(){
+    nmPost('/api/networks/pin',{taskFamily:this.getAttribute('data-pin')||null}).then(function(r){if(r)nmSay(r.config.pinnedTaskFamily?('✓ 已锁定: '+r.config.pinnedTaskFamily):'✓ 已切换为自动路由')||netmgrRefresh()});
+  };
+  var bc=$('nm-create');if(bc)bc.onclick=async function(){
+    var name=$('nm-name').value.trim(),layers=$('nm-layers').value.trim();
+    if(!name){nmSay('✗ 请先填写网络名称（如 music_prod）',true);return}
+    var arr=layers?layers.split(',').map(function(s){return parseInt(s.trim(),10)}).filter(function(n){return Number.isFinite(n)&&n>0&&n<=64}):[];
+    if(arr.length<2||arr.length>8){nmSay('✗ 每层节点数格式：逗号分隔的数字，共 2–8 层、每层 1–64（例：4,6,8）',true);return}
+    var thr=parseFloat($('nm-thr').value),lr=parseFloat($('nm-lr').value);
+    var body={taskFamily:name,layers:arr};
+    if(Number.isFinite(thr)&&thr>0&&thr<1)body.threshold=thr;
+    if(Number.isFinite(lr)&&lr>0&&lr<1)body.learningRate=lr;
+    var r=await nmPost('/api/networks/init',body);
+    if(r){nmSay('✓ 已创建网络 '+r.taskFamily+' ['+r.layers.join(',')+']，并自动切换为当前网络');
+      await nmPost('/api/networks/pin',{taskFamily:r.taskFamily});netmgrRefresh()}
+  };
+  var st=$('nm-save-topk');if(st)st.onclick=async function(){
+    var r=await nmPost('/api/networks/topk',{topK:parseInt($('nm-topk').value,10)});
+    if(r){nmSay('✓ 全局激活数 = '+r.config.topK);netmgrRefresh()}
+  };
+  var cl=$('nm-clear-layer');if(cl)cl.onclick=async function(){
+    var r=await nmPost('/api/networks/topk',{topKByLayer:null});
+    if(r){nmSay('✓ 已清除按层覆盖, 用全局值');netmgrRefresh()}
+  };
+  var sl=$('nm-save-layer');if(sl)sl.onclick=async function(){
+    var m={},inputs=document.querySelectorAll('.nm-lk'),any=false;
+    for(var q=0;q<inputs.length;q++){var v=parseInt(inputs[q].value,10);if(Number.isFinite(v)&&v>=1&&v<=8){m[inputs[q].getAttribute('data-l')]=v;any=true}}
+    if(!any){nmSay('按层输入留空或无效 — 填 1-8 后再保存',true);return}
+    var r=await nmPost('/api/networks/topk',{topKByLayer:m});
+    if(r){nmSay('✓ 按层激活数 = '+JSON.stringify(r.config.topKByLayer));netmgrRefresh()}
+  };
+  var sg=$('nm-save-goal');if(sg)sg.onclick=async function(){
+    if(!pinnedNet){nmSay('✗ 请先在 ① 选中一张网络 — 自动路由下无法确定目标归属',true);return}
+    var r=await nmPost('/api/networks/goal',{taskFamily:pinnedNet.name,goal:$('nm-goal').value});
+    if(r){nmSay(r.goal?('✓ '+r.taskFamily+' 目标已保存（下次反传生效）：'+r.goal):('✓ '+r.taskFamily+' 已清除目标，回到无约束'));netmgrRefresh()}
+  };
+  var cg=$('nm-clear-goal');if(cg)cg.onclick=async function(){
+    if(!pinnedNet){nmSay('✗ 请先在 ① 选中一张网络',true);return}
+    var r=await nmPost('/api/networks/goal',{taskFamily:pinnedNet.name,goal:''});
+    if(r){nmSay('✓ 已清除 '+r.taskFamily+' 的目标约束');netmgrRefresh()}
+  };
+}
+async function netmgrRefresh(){
+  try{
+    var r=await fetch('/api/networks?t='+Date.now(),{cache:'no-store'});
+    var d=await r.json();
+    if(d.ok)renderNetMgr(d);
+  }catch(e){/* monitor 未重启或接口缺失时静默 */}
+}
+netmgrRefresh();setInterval(function(){if(!document.hidden&&document.activeElement&&document.activeElement.tagName!=='INPUT')netmgrRefresh()},10000);
+
 initBG();
 var lastDraw=0,fpsTarget=30,costAcc=0,costN=0,frameNo=0;
 function loop(ts){

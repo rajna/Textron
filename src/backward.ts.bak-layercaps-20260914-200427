@@ -5,7 +5,6 @@ import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName } from "
 import { clamp, parseLayerNodeId } from "./lib/utils";
 import { trainPair, materialize } from "./lib/topology";
 import type { loadNetwork } from "./lib/network";
-import { layerCapFor } from "./lib/network";
 type LoadedNetwork = NonNullable<ReturnType<typeof loadNetwork>>;
 interface WeightsFile { layer_connections: Record<string, { from: string; to: string; weight: number }[]>; }
 import { createNodeState } from "./ngram_distill";
@@ -163,14 +162,6 @@ export function autoBackward(
     if (overlaps.length > 0) {
       nodesMerged++;
       onLog(`Textron backward: skipped add_node L${targetLayer} (similar to ${overlaps[0].id}, overlap=${overlaps[0].overlap.toFixed(2)})`);
-      continue;
-    }
-    // 容量硬约束：网络配置 layerCaps（无配置默认40）。used>=cap 拒绝新增，迫使 LLM 走 merge/node_updates。
-    const capN = layerCapFor(net.hyperparams, targetLayer);
-    if (existingNodes.length >= capN) {
-      nodesUpdatedSkipped++;
-      nodeSkipReasons.push(`L${targetLayer}:over_cap(${existingNodes.length}/${capN})`);
-      onLog(`Textron backward: skipped add_node L${targetLayer} (over cap ${existingNodes.length}/${capN}) — merge or update existing nodes first`);
       continue;
     }
     // Find empty slot or append

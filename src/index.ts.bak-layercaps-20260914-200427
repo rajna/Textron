@@ -53,8 +53,7 @@ import { tfidfTokens, buildTfidfIndex, cosineSim, tfidfSimilarity,
          nameTokens, jaccard, tokenSimilarity, findSimilarNode, findSimilarKnowledgeNode } from "./lib/similarity";
 import { TEXTRON_HOME, DEFAULT_HYPERPARAMS, DEFAULT_WEIGHT, NGRAM_DISTILL_PROMOTE,
          TEXTRON_ALLOW_NODE_GROWTH, getTaskFamilyPath, networkExists, listNetworks,
-         initNetwork, loadNetwork, layerCapFor, DEFAULT_LAYER_CAP,
-         readNetworkGoal, writeNetworkGoal, NETWORK_GOAL_MAX_CHARS } from "./lib/network";
+         initNetwork, loadNetwork } from "./lib/network";
 import { compileContext, selectedEdgeIdToWeightKey } from "./lib/compile";
 import { computePageRank } from "./lib/pagerank";
 import { lateralDiffuse, materialize, trainPair } from "./lib/topology";
@@ -71,8 +70,6 @@ import { liftMergeNodes } from "./lib/lift_merge";
 
 interface Hyperparams {
   layers: number[];
-  /** 每层节点容量上限（用户显式配置）。缺省回落 DEFAULT_LAYER_CAP(40)。 */
-  layerCaps?: number[];
   threshold: number;
   learningRate: number;
   createdAt: string;
@@ -802,12 +799,12 @@ export default function (pi: ExtensionAPI) {
             for (let n = 0; n < cap; n++) {
               if (readNodeContent(path.join(net!.path, `layer_${l}`, `node_${n}.html`)).trim()) used++;
             }
-            return { layer: l, slots: cap, cap: layerCapFor(net!.hyperparams, l), used };
+            return { layer: l, capacity: cap, used };
           });
-          return { name, layers: net?.hyperparams.layers || [], layerCaps: net?.hyperparams.layerCaps || null, threshold: net?.hyperparams.threshold, learningRate: net?.hyperparams.learningRate, goal: String(net?.hyperparams.goal || ""), nodeCounts, pinned: cfg.pinnedTaskFamily === name };
+          return { name, layers: net?.hyperparams.layers || [], threshold: net?.hyperparams.threshold, learningRate: net?.hyperparams.learningRate, nodeCounts, pinned: cfg.pinnedTaskFamily === name };
         });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, networks, config: { pinnedTaskFamily: cfg.pinnedTaskFamily, pinnedGoal: cfg.pinnedTaskFamily ? readNetworkGoal(cfg.pinnedTaskFamily) : "", topK: cfg.topK, topKByLayer: cfg.topKByLayer, topKEffective: forwardTopK() } }));
+        res.end(JSON.stringify({ ok: true, networks, config: { pinnedTaskFamily: cfg.pinnedTaskFamily, topK: cfg.topK, topKByLayer: cfg.topKByLayer, topKEffective: forwardTopK() } }));
       } catch (e) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
@@ -832,67 +829,10 @@ export default function (pi: ExtensionAPI) {
           const threshold = Number.isFinite(Number(p.threshold)) && Number(p.threshold) > 0 && Number(p.threshold) < 1 ? Number(p.threshold) : DEFAULT_HYPERPARAMS.threshold;
           const learningRate = Number.isFinite(Number(p.learningRate)) && Number(p.learningRate) > 0 && Number(p.learningRate) < 1 ? Number(p.learningRate) : DEFAULT_HYPERPARAMS.learningRate;
           const hp = initNetwork(tfName, layers, threshold, learningRate, log);
-          // 可选：新建时直接宣目标（UI ④ 网络目标）；空则不写字段
-          const initGoal = writeNetworkGoal(tfName, p.goal == null ? "" : String(p.goal));
-          log(`Textron monitor: created network "${tfName}" layers=[${layers.join(",")}] threshold=${hp.threshold}${initGoal ? ` goal="${preview(initGoal, 80)}"` : ""}`);
+          log(`Textron monitor: created network "${tfName}" layers=[${layers.join(",")}] threshold=${hp.threshold}`);
           broadcast({ type: "update", taskFamily: tfName, action: "init" });
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, taskFamily: tfName, layers, threshold: hp.threshold, learningRate: hp.learningRate, goal: initGoal }));
-        } catch (e) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
-        }
-      });
-      return;
-    }
-
-    // POST /api/networks/caps: 设置每层容量上限 — body {taskFamily, layerCaps:[2,2,2]}; layerCaps:null 回落默认(40/层)
-    if (urlPath === "/api/networks/caps" && req.method === "POST") {
-      let body = "";
-      req.on("data", (c: Buffer) => { body += c.toString("utf-8"); if (body.length > 100000) req.destroy(); });
-      req.on("end", () => {
-        try {
-          const p = JSON.parse(body || "{}");
-          const tfName = String(p.taskFamily || "").trim();
-          if (!networkExists(tfName)) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: `network "${tfName}" not found` })); return; }
-          const net = loadNetwork(tfName);
-          if (!net) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "load failed" })); return; }
-          let layerCaps: number[] | null = null;
-          if (p.layerCaps !== null && p.layerCaps !== undefined) {
-            layerCaps = (Array.isArray(p.layerCaps) ? p.layerCaps : String(p.layerCaps).split(","))
-              .map((s: any) => parseInt(String(s).trim(), 10)).filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 64);
-            if (layerCaps.length !== net.hyperparams.layers.length) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: `layerCaps length (${layerCaps.length}) must equal layer count (${net.hyperparams.layers.length})` })); return; }
-          }
-          if (layerCaps) { net.hyperparams.layerCaps = layerCaps; } else { delete net.hyperparams.layerCaps; }
-          net.hyperparams.updatedAt = new Date().toISOString();
-          writeJson(path.join(net.path, "hyperparams.json"), net.hyperparams);
-          log(`Textron monitor: layerCaps of "${tfName}" set to ${layerCaps ? JSON.stringify(layerCaps) : "default(40/层)"}`);
-          broadcast({ type: "update", taskFamily: tfName, action: "caps" });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, taskFamily: tfName, layerCaps: layerCaps || null, effective: net.hyperparams.layers.map((_: number, l: number) => layerCapFor(net.hyperparams, l)) }));
-        } catch (e) {
-          res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
-        }
-      });
-      return;
-    }
-
-    // POST /api/networks/goal: 网络目标 — body {taskFamily, goal}
-    // 目标在反向传播时被读取，作为「是否属于本网络领域」的裁判：离域节点会被 node_updates 覆盖重写。
-    // 空字符串/null = 清除目标约束（回到旧行为）。
-    if (urlPath === "/api/networks/goal" && req.method === "POST") {
-      let body = "";
-      req.on("data", (c: Buffer) => { body += c.toString("utf-8"); if (body.length > 100000) req.destroy(); });
-      req.on("end", () => {
-        try {
-          const p = JSON.parse(body || "{}");
-          const tfName = String(p.taskFamily || "").trim();
-          if (!networkExists(tfName)) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: `network "${tfName}" not found` })); return; }
-          const goal = writeNetworkGoal(tfName, p.goal == null ? "" : String(p.goal));
-          log(`Textron monitor: goal of "${tfName}" ${goal ? `set to "${preview(goal, 80)}"` : "cleared"} (max ${NETWORK_GOAL_MAX_CHARS}c)`);
-          broadcast({ type: "update", taskFamily: tfName, action: "goal", goal });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, taskFamily: tfName, goal, maxChars: NETWORK_GOAL_MAX_CHARS }));
+          res.end(JSON.stringify({ ok: true, taskFamily: tfName, layers, threshold: hp.threshold, learningRate: hp.learningRate }));
         } catch (e) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: (e as Error).message || String(e) }));
@@ -1674,7 +1614,6 @@ export default function (pi: ExtensionAPI) {
     activatedIds: string[],
     ctx: any,
     turnId?: string,
-    compressionMandate?: string,
   ): Promise<{ reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] }> {
     const model = (ctx as any).model || _textronModel;
     if (!model?.id || !model?.baseUrl) return { reward: 0, rationale: "no model" };
@@ -1769,22 +1708,19 @@ export default function (pi: ExtensionAPI) {
         });
       }
     }
-    // ── 每层节点统计+容量配置注入(2026-09-14): used=有内容节点数; cap=layerCaps(无配置默认40=旧MAX_PER_LAYER_SOFT语义);
-    // 超容层(add被拒/必须先merge收缩)明确标出 —— LLM 依据网络配置决定 add/merge/update，而非无限增长。
-    const layerStats = net.hyperparams.layers.map((slots, l) => {
+    // ── 每层节点统计(层平衡规则输入): used=有内容节点数, capacity=实时计数(非配额), free=空html槽(merge清源未compact的洞) ──
+    // 2026-09-04: free 语义修复——旧文案 "6/6 used (free 0)" 的 free=capacity-used 恒为0,
+    // 误导 LLM 认为层已满而绕行 L1(used最少=余量最大), 40软上限被忽略。改用"used / 距40上限余量"。
+    const layerStats = net.hyperparams.layers.map((cap, l) => {
       const used = allExistingNodes.filter(n => n.layer === l).length;
-      const cap = layerCapFor(net.hyperparams, l);
-      return { layer: l, slots, cap, used, over: used - cap };
+      return { layer: l, capacity: cap, used, free: cap - used };
     });
-    const capsText = Array.isArray(net.hyperparams.layerCaps) && net.hyperparams.layerCaps.length
-      ? `layerCaps=${JSON.stringify(net.hyperparams.layerCaps)}`
-      : `layerCaps=未配置(默认每层上限=${DEFAULT_LAYER_CAP})`;
+    const MAX_PER_LAYER_SOFT = 40;
     const layerUsageText = layerStats.map(s => {
-      const status = s.over > 0
-        ? `OVER CAP +${s.over} (本层 add_nodes 会被系统拒绝, 必须先 merge/node_updates 收缩)`
-        : `room=${s.cap - s.used}`;
-      return `L${s.layer}: used=${s.used}/cap=${s.cap} ${status}`;
-    }).join(" · ") + ` · ${capsText} · layers(槽位)=${JSON.stringify(net.hyperparams.layers)}`;
+      const room = Math.max(0, MAX_PER_LAYER_SOFT - s.used);
+      return `L${s.layer}: ${s.used} used / 距${MAX_PER_LAYER_SOFT}上限余量${room} (auto-grow: 新增自动扩容 layers[layer]++)`;
+    }).join(" · ") +
+      ` · maxPerLayer=${MAX_PER_LAYER_SOFT} · newLayerIdx=${net.hyperparams.layers.length}`;
     const existingSimilarityFloor = 0.05;
     const shownExisting = allExistingNodes
       .filter((n) => n.sim >= existingSimilarityFloor)
@@ -1798,47 +1734,22 @@ export default function (pi: ExtensionAPI) {
       ? relatedNodes.map(rn => `  ${rn.relatedNodeId} [sim=${rn.similarity} to ${rn.pathNodeId}]: ${rn.name}\n    content: ${String(rn.content || "").replace(/\s+/g, " ").trim()}`).join("\n")
       : "(none)";
 
-    // ── 网络目标（GOAL）作为反传裁判 ──
-    // 读取用户为该网络设定的目标（如 stock_alpha="沉淀交易经验"）。
-    // 作用有二：① 给 LLM 一个“哪些知识属于本网络”的准入标准；
-    // ② 把“与目标语义最不相关”的现有节点显式推到 prompt 里（否则 LLM 看不见就改不掉），
-    //    并用 node_updates 覆盖重写 = 唯一的除域清洗通道（系统禁止 delete）。
-    const OFF_GOAL_SHOW = 4;
-    let goalCleanseFallback = "";
-    const goalInfo = goalCleanseTargets(net, OFF_GOAL_SHOW);
-    const netGoal = goalInfo.goal;
-    const offGoalNodes = goalInfo.targets;
-    if (netGoal) {
-      recordMonitorEvent({
-        type: "trace",
-        action: "semantic_backward_goal_guard",
-        taskFamily: path.basename(net.path),
-        goal: netGoal,
-        nodesScanned: goalInfo.scanned,
-        offGoalCandidates: offGoalNodes.map(n => ({ id: n.key, goalSim: n.goalSim })),
-      });
-    }
-    const goalRule = netGoal ? `0. 🎯 NETWORK GOAL (HIGHEST PRIORITY — overrides rules 1-9 whenever they conflict). This network exists ONLY to accumulate knowledge for: "${netGoal}". Every node MUST serve this goal. Any node whose content belongs to a DIFFERENT domain (engineering / tooling / API / config / CLI / meta-workflow / session-log / audit report) is OFF-GOAL CONTAMINATION and MUST be cleansed:\n   (a) CLEANSING CHANNEL = node_updates: OVERWRITE the off-goal node's name AND content with goal-domain knowledge distilled from the packet below. This is the ONLY sanctioned way to remove off-goal knowledge (delete is forbidden by rule 1).\n   (a2) MANDATORY: if the MUST-CLEANSE candidate list below is NON-EMPTY, your node_updates MUST overwrite at least ONE of those listed nodes (with name AND content). Returning an empty node_updates while off-goal nodes exist is a FAILED response and will be treated as such (the system will fall back to a deterministic cleanse).\n   (b) NEVER merge off-goal content INTO a goal-domain node (nor into another off-goal node) — that produces keyword-soup nodes and corrupts Name-substring routing. merge is allowed ONLY when BOTH nodes serve the goal.\n   (c) Priority when capacity is tight: cleanse off-goal node (node_updates) > merge two goal-domain nodes > add_nodes.\n   (d) If this packet cannot supply enough goal-domain knowledge to fill an off-goal node, leave it as-is but list it in node_actions as {"action":"keep","rationale":"off_goal_deferred"}.\n   (e) Goal-domain knowledge has absolute admission priority: a goal node may overwrite an off-goal node even if similarity <15% (they are different domains, so low similarity is EXPECTED and is NOT a reason to skip the cleanse).\n   (f) Rule 6's "domain" judgement is ALWAYS the NETWORK GOAL below — if L0/L1 holds only off-goal (e.g. engineering) content, that counts as "no domain anchor" and must be cleansed/established per rules 0+6.\n` : "";
-    const goalUserBlock = netGoal
-      ? `\n\n🎯 NETWORK GOAL (admission & cleansing gate): ${netGoal}\nMUST-CLEANSE CANDIDATES — existing nodes ranked by LOWEST semantic relevance to the goal (lowest first; L0 prioritized; ${allExistingNodes.length} nodes scanned, showing ${offGoalNodes.length}). Per rule 0: if off-goal → node_updates overwrite with goal-domain knowledge; if already goal-domain but redundant → merge into its most relevant goal node; if it genuinely serves the goal → keep with rationale.\n${offGoalNodes.length ? offGoalNodes.map(n => `  ${n.key} [goal_sim=${n.goalSim}] ${n.name}\n    content: ${String(n.content || "").replace(/\s+/g, " ").trim().slice(0, 320)}`).join("\n") : "(network has no existing nodes yet — build goal-domain nodes via add_nodes)"}`
-      : "";
-
     const messages = [
       { role: "system", content: `You are Textron semantic backward. Output ONLY raw JSON, no markdown. Format: ${schemaHint}.
 
 RULES:
-${goalRule}1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
+1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
 2. REWARD -1..1: Quantify the UPSTREAM FEEDBACK ITSELF — the user's explicit criticism/correction/approval, or objective assertion outcomes. The HighEntropy packet below is a POST-hoc summary (temporally AFTER the feedback): it is training material for node content ONLY and must NOT drive your reward judgment. Judge reward from the feedback's own polarity/strength and the previous task's completion status — NOT from how well the summary is written. Negative feedback (criticism/"错了"/"做错了"/unfulfilled promise) → reward≤0. Positive only when the feedback confirms a verifiable completed result. Off-topic → reward=-1, empty updates.
 3. FAILURE→"avoid X→prefer Y". SUCCESS→encode WHY.
 4. Content≤1000c. name MUST be a compressed symbolic anchor (like the integral sign ∫ or the term "Transformer"). Think: what ≤48c symbol captures the ESSENCE and can serve as a building block for future combinations? Use domain-specific concise nouns (e.g. "满月极性反转" not "2025-01-24 DOWN UP json_mode"). NEVER use file paths, variable names, or full sentences as names. No templates/session summaries.
 5. Choose layer by content abstraction: L0=compact reusable principle, L1=causal mechanism, L2=concrete rule.
-6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors — BUT ONLY if L0 has spare capacity (Layer usage room>0); if L0 is at/over cap, you MUST merge the new domain knowledge into the most semantically-relevant existing L0 node via node_updates instead. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
+6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
 6b. L1 DOMAIN CHECK (soft, NOT mandatory): Consider whether the activated L1 nodes are semantically DISTANT from this task's domain (e.g. weapon/music/engineering content while the task is stock trading). If so, the causal layer may be MISSING a domain node — you MAY add 1 L1 domain node (causal mechanism: 若A则B因为C) when the mechanism is genuinely novel and reusable. This is a per-case judgment, not a rule: analyze concretely. A layer being at capacity is NOT by itself a reason to force-add (merging similar content is often the better choice); likewise an off-domain L1 is NOT always wrong — judge by actual semantic distance and reuse value.
 7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
-8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. CAPACITY-BOUNDED GROWTH (硬约束): 网络容量有限，不能无限增长。每层上限见 user prompt 的 Layer usage (cap=网络配置 layerCaps，无配置默认每层 40)。规则: (a) used>=cap 的层 add_nodes 会被系统拒绝(over_cap)——对满/超容层禁止 add_nodes，必须用 node_updates 更新已有节点或用 node_actions merge 去重腾出空间; (b) OVER CAP +N 的层是收缩优先级最高的层: 主动找出该层最冗余/最低质的节点对提出 merge(source→target)，merge 后源节点清空即可回收容量; (c) 仅在目标层 room>0 时才允许 add_nodes，且必须与所有现有节点正交(≥15% 重叠=update 不=add); (d) 不存在"新建层"逃生口: layer>=层数 的 add_nodes 一律拒绝。容量满了不代表停止学习——用 merge 压缩冗余、用 node_updates 提升已有节点信息密度，让同等容量承载更高熵知识。` },
-      { role: "user", content: `Layer usage: ${layerUsageText}${goalUserBlock}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
+8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. LAYER BALANCE & NEW LAYER GROWTH: add_nodes 优先放入 距40上限余量最大 的层(见 user prompt 的 Layer usage 统计; free=0≠满, 系统对任意层 auto-grow 自动扩容 layers[layer]++, 新增永远可发生); 每层尽量 ≤40 个节点(used≥40 视为满)。若所有现有层均满载(各层 used≥40)且确有新知识要沉淀, 可将 add_nodes.layer 设为 新层索引 N(=当前层数, 例如现有 3 层则 layer:3), 系统会自动追加一层 N 来放置该节点。node_updates 只能面向现有层, 不能用 N.` },
+      { role: "user", content: `Layer usage: ${layerUsageText}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nSelected path nodes to update:\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content≤1000c, name=3-6 keywords≤48c.
 
-MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MAY be in the SAME or ADJACENT abstract layer (|Δlayer|≤1; skip jumps like L0↔L2). MERGE LIFTS ABSTRACTION: system places result at the MORE ABSTRACT layer — L2+L2→L1, L1+L2→L1, L1+L1→L0, any L0 merge stays L0 (edges auto-rebuild from merged content via materialize). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}${compressionMandate ? `\n\n${compressionMandate}` : ""}` },
+MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MAY be in the SAME or ADJACENT abstract layer (|Δlayer|≤1; skip jumps like L0↔L2). MERGE LIFTS ABSTRACTION: system places result at the MORE ABSTRACT layer — L2+L2→L1, L1+L2→L1, L1+L1→L0, any L0 merge stays L0 (edges auto-rebuild from merged content via materialize). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}` },
     ];
 
     // Log LLM input AFTER messages is fully constructed (was accidentally referenced before declaration — causing "Cannot access 'messages' before initialization")
@@ -1846,13 +1757,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       type: "trace",
       action: "semantic_backward_llm_input",
       taskFamily: path.basename(net.path),
-      goal: netGoal || null,
-      goalRuleChars: goalRule.length,
-      goalCleanseFallback,
-      offGoalShown: offGoalNodes.map(n => n.key),
       systemPromptChars: messages[0].content.length,
       userPromptChars: messages[1].content.length,
-      compressionMandateChars: compressionMandate?.length || 0,
       modelId: model?.id,
       baseUrl: chatEndpoint,
     });
@@ -1891,8 +1797,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           const layer = Number(n?.layer);
           const content = completeContent(String(n?.content || n?.context || n?.name || "").trim(), NODE_CONTENT_MAX_CHARS);
           const name = completeContent(String(n?.name || compressNodeName(content)).trim(), 64);
-          // 容量约束(2026-09-14): layer 必须是现有层；新建层逃生口已移除（rule 9 硬约束）
-          if (Number.isInteger(layer) && layer >= 0 && layer < net.hyperparams.layers.length && content && name && !isNgramFragmentContent(content) && !isNgramFragmentContent(name)) out.add_nodes.push({ layer, name, content });
+          // 层平衡规则9: layer==length 表示请求系统新建一层
+          if (Number.isInteger(layer) && layer >= 0 && layer <= net.hyperparams.layers.length && content && name && !isNgramFragmentContent(content) && !isNgramFragmentContent(name)) out.add_nodes.push({ layer, name, content });
         }
       }
       if (Array.isArray(obj?.node_actions)) {
@@ -1919,33 +1825,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             }
           }
           out.node_actions.push(entry);
-        }
-      }
-      // ── 网络目标兜底清洗（确定性强保证）──
-      // LLM 对「离域节点清洗」的执行不稳定：同一 prompt 可能返回空 node_updates（实测发生）。
-      // 若本轮属于目标域、存在离域候选、而 LLM 未覆盖任何候选 ⇒ 程序侧用本轮 Technique
-      // 覆盖最离域的候选节点（replace 语义由 applySemanticNodeUpdates 的 forceOverwrite 保证）。
-      // 理由：goal 是用户显式声明的域不变式，不能依赖采样运气。
-      if (netGoal && offGoalNodes.length) {
-        const covered = offGoalNodes.some((n) => !!out.node_updates && !!out.node_updates![n.key]);
-        const cleanseText = String(previousCrystal.technique || "").trim();
-        if (!covered && cleanseText) {
-          const victim = offGoalNodes[0].key;
-          out.node_updates = out.node_updates || {};
-          out.node_updates[victim] = {
-            name: (previousCrystal.name || compressNodeName(cleanseText)).slice(0, 64),
-            content: cleanseText.slice(0, NODE_CONTENT_MAX_CHARS),
-          };
-          goalCleanseFallback = victim;
-          recordMonitorEvent({
-            type: "trace",
-            action: "semantic_backward_goal_cleanse_fallback",
-            taskFamily: path.basename(net.path),
-            goal: netGoal,
-            victim,
-            contentChars: cleanseText.length,
-            reason: "llm_returned_empty_node_updates",
-          });
         }
       }
       return out;
@@ -2358,35 +2237,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     };
   }
 
-  /**
-   * 网络目标（goal）驱动的「离域清洗候选」计算 —— 单一事实来源，两处复用：
-   * ① semanticBackwardLLM：把候选推进 prompt，让 LLM 看见并决定重写什么（看不见就改不掉）；
-   * ② applySemanticNodeUpdates：把候选标为 forceOverwrite，让落盘走 replace 而非 merge 拼接。
-   * 排序：goal 相关性升序（L0 优先）—— L0 是路由锚点，离域 L0 比离域 L2 伤害大得多。
-   */
-  function goalCleanseTargets(net: NonNullable<ReturnType<typeof loadNetwork>>, limit = 4) {
-    const goal = readNetworkGoal(path.basename(net.path));
-    const targets: { key: string; layer: number; name: string; content: string; goalSim: number }[] = [];
-    let scanned = 0;
-    if (!goal) return { goal, targets, scanned };
-    let simMap = new Map<string, number>();
-    try { simMap = tfidfSimilarity(net, goal, ""); } catch { simMap = new Map(); }
-    for (let l = 0; l < net.hyperparams.layers.length; l++) {
-      for (let n = 0; n < net.hyperparams.layers[l]; n++) {
-        const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
-        const c = readNodeContent(np);
-        if (!String(c || "").trim()) continue;
-        scanned++;
-        const key = `L${l}::node_${n}`;
-        targets.push({ key, layer: l, name: readNodeName(np) || compressNodeName(c), content: c, goalSim: Number((simMap.get(key) || 0).toFixed(4)) });
-      }
-    }
-    targets.sort((a, b) => (a.goalSim - (a.layer === 0 ? 0.02 : 0)) - (b.goalSim - (b.layer === 0 ? 0.02 : 0)));
-    return { goal, targets: targets.slice(0, limit), scanned };
-  }
-
-  function applySemanticNodeUpdates(net: NonNullable<ReturnType<typeof loadNetwork>>, updates: Record<string, string | { name?: string; content?: string; context?: string }> | undefined, onLog: (msg: string) => void, opts?: { forceOverwrite?: Set<string> }) {
-    const forceOverwrite = opts?.forceOverwrite || new Set<string>();
+  function applySemanticNodeUpdates(net: NonNullable<ReturnType<typeof loadNetwork>>, updates: Record<string, string | { name?: string; content?: string; context?: string }> | undefined, onLog: (msg: string) => void) {
     const result: {
       updated: number;
       skipped: number;
@@ -2428,8 +2279,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         continue;
       }
 
-      const isCleanse = forceOverwrite.has(id) || forceOverwrite.has(`L${parsed.layer}::${parsed.nodeId}`);
-      const similar = oldIsArtifact || isCleanse   // 清洗写入绕过相似合并：否则会被并进另一个（离域）节点，清洗失效
+      const similar = oldIsArtifact
         ? null
         : findSimilarKnowledgeNode(net, compressNodeName(validation.content), validation.content, 0.40, parsed.layer, parsed.nodeId);
       if (similar) {
@@ -2461,13 +2311,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         .filter((e) => e.from === parsed.nodeId)
         .map((e) => ({ toId: e.to, weight: e.weight }));
       const newContent = validation.content.slice(0, NODE_CONTENT_MAX_CHARS);
-      // isCleanse（网络目标驱动的离域清洗）：**真覆盖**，不与旧内容/旧名拼接。
-      // 拼接会把两个域焊成关键词垃圾抽屉（实测："layerCaps存活数硬闸… | 成功经验（sz.301299…）"），
-      // 且旧名残留会让 Name 子串路由继续把工程回合路由到交易节点。
-      let mergedContent = isCleanse
-        ? newContent
-        : (oldIsArtifact ? completeContent(newContent, NODE_CONTENT_MAX_CHARS) : mergeContent(oldContent, newContent));
-      if (!isCleanse && mergedContent.length > NODE_CONTENT_MAX_CHARS) {
+      let mergedContent = oldIsArtifact ? completeContent(newContent, NODE_CONTENT_MAX_CHARS) : mergeContent(oldContent, newContent);
+      if (mergedContent.length > NODE_CONTENT_MAX_CHARS) {
         const overflow = mergedContent.slice(NODE_CONTENT_MAX_CHARS);
         mergedContent = mergedContent.slice(0, NODE_CONTENT_MAX_CHARS);
         const overflowResult = addDynamicNode(net, parsed.layer, overflow, onLog, compressNodeName(overflow));
@@ -2479,17 +2324,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
       if (oldContent && mergedContent !== newContent) {
         onLog(`Textron semantic backward: merged node ${id} (old=${oldContent.length}c new=${newContent.length}c → ${mergedContent.length}c)`);
-      } else if (isCleanse && oldContent) {
-        onLog(`Textron semantic backward: CLEANSED node ${id} (goal-directed overwrite: ${oldContent.length}c → ${mergedContent.length}c, old name dropped)`);
       }
       // Merge name: distill old name keywords + new name keywords, not full replace
-      // （清洗模式例外：旧名是离域名残留，必须丢弃）
       const llmProposedName = typeof update === "string" ? compressNodeName(update) : (update.name || "");
-      const mergedNameRaw = isCleanse
-        ? (llmProposedName || compressNodeName(mergedContent))
-        : (llmProposedName && oldName
-          ? distillNodeName(`${oldName} ${llmProposedName}`, 64)
-          : (llmProposedName || compressNodeName(mergedContent)));
+      const mergedNameRaw = llmProposedName && oldName
+        ? distillNodeName(`${oldName} ${llmProposedName}`, 64)
+        : (llmProposedName || compressNodeName(mergedContent));
       const mergedName = mergedNameRaw.slice(0, 64);
       writeNodeHtml(nodePath, parsed.layer, parsed.nodeId, mergedContent, outEdges, mergedName);
       result.changedNodes.push({
@@ -2656,25 +2496,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     }
 
     // ── Node content updates ──
-    // 网络目标驱动的离域清洗：候选节点的写入必须走 replace（覆盖），而非 merge（拼接）。
-    // 否则「把工程知识更新掉」会被引警退化为「工程+交易 拼接」，越洗越脏。
-    const cleanseInfo = goalCleanseTargets(net, 8);
-    const cleanseTargets = new Set(cleanseInfo.targets.map((t) => t.key));
-    const nodeResult = applySemanticNodeUpdates(net, nodeUpdates, onLog, { forceOverwrite: cleanseTargets });
+    const nodeResult = applySemanticNodeUpdates(net, nodeUpdates, onLog);
     const nodeMutations = [...nodeResult.nodeMutations];
-    if (cleanseInfo.goal) {
-      recordMonitorEvent({
-        type: "trace",
-        action: "semantic_backward_goal_cleanse",
-        taskFamily: path.basename(net.path),
-        goal: cleanseInfo.goal,
-        cleanseTargets: [...cleanseTargets],
-        cleansedNodes: nodeResult.nodeMutations
-          .filter((m) => m.type === "update" && cleanseTargets.has(m.id))
-          .map((m) => m.id),
-        nodeUpdatesKeys: Object.keys(nodeUpdates || {}),
-      });
-    }
 
     // ── Node additions ──
     let nodesAdded = 0, nodesMerged = 0, nodesAddSkipped = 0;
@@ -2892,68 +2715,6 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       } else {
         recordMonitorEvent({ type: "trace", action: "highentropy_fallback_skip", taskFamily, reason: "invalid_or_empty_highentropy", activatedIds, hasHighEntropy: !!previousAssistantHighEntropy });
       }
-    }
-
-    // ── 2026-09-14 容量强制压缩轮: skip 不许静默 ─────────────────────────
-    // 需求: 每层 cap 是硬不变量(任何路径含 merge 派生不得超容); 且满层/超容拒绝新增时
-    // 不得静默 skip —— 把超容事实回喂 semanticBackwardLLM, 强制其产出压缩策略
-    // (node_updates 折叠进已有节点 / merge 去重收缩), used 递减才收敛。上限 2 轮, 无进展即停。
-    const netRef = net;
-    const layerAliveCount = (l: number) => {
-      let c = 0;
-      for (let n = 0; n < netRef.hyperparams.layers[l]; n++) {
-        if (readNodeContent(path.join(netRef.path, `layer_${l}`, `node_${n}.html`))) c++;
-      }
-      return c;
-    };
-    const overCapLayers = () => netRef.hyperparams.layers.map((_, l) => ({ layer: l, used: layerAliveCount(l), cap: layerCapFor(netRef.hyperparams, l) })).filter(s => s.used > s.cap);
-    const buildCompressionMandate = (ocs: { layer: number; used: number; cap: number }[]) => {
-      const layersText = ocs.length ? ocs.map(s => {
-        const inv: string[] = [];
-        for (let n = 0; n < netRef.hyperparams.layers[s.layer]; n++) {
-          const np = path.join(netRef.path, `layer_${s.layer}`, `node_${n}.html`);
-          const c = readNodeContent(np);
-          if (!c) continue;
-          inv.push(`    L${s.layer}::node_${n} [${readNodeName(np) || compressNodeName(c)}]: ${String(c).replace(/\s+/g, " ").trim().slice(0, 120)}`);
-        }
-        return `  L${s.layer}: used=${s.used}/cap=${s.cap} OVER CAP +${s.used - s.cap}\n${inv.join("\n")}`;
-      }).join("\n") : "  (all layers at cap, none over)";
-      return `COMPRESSION MANDATE (硬约束·压缩专用轮): 上一轮输出被系统容量硬闸部分拒绝 — skip 不允许静默丢弃知识。规则:
-1. FORBIDDEN: 对满层/超容层 add_nodes 一律无效(系统硬闸会拒绝, 勿再尝试)。
-2. REQUIRED: 把上一轮被拒的新知识通过 node_updates 折叠进语义最相关的已有节点(保持该节点 name), 或对下方清单中冗余节点对输出 node_actions merge(source→target) 腾出容量后再折叠。
-3. 超容层(used>cap)必须 merge 收缩到 used<=cap。输出全部 keep = 压缩失败(将被记录为 compression_unresolved)。
-层容量实况(含节点清单):\n${layersText}`;
-    };
-    const capSkipped = bwResult.nodeSkipReasons.some(r => r.includes("over_cap") || r.includes("layer_full"));
-    let ocLayers = overCapLayers();
-    let compRounds = 0;
-    let needRound = ocLayers.length > 0 || capSkipped;
-    while (needRound && compRounds < 2) {
-      const beforeSig = ocLayers.map(s => `${s.layer}:${s.used}/${s.cap}`).join(",") || "at-cap-skip";
-      const trigger = ocLayers.length > 0 ? `over_cap[${beforeSig}]` : "add_skipped_at_cap";
-      const mandate = buildCompressionMandate(ocLayers);
-      recordMonitorEvent({ type: "trace", action: "semantic_backward_compression_round", taskFamily, round: compRounds + 1, trigger, beforeSig });
-      let cRes: Awaited<ReturnType<typeof semanticBackwardLLM>>;
-      try { cRes = await semanticBackwardLLM(net, previousTask, previousAssistantHighEntropy, currentUserMessage, activatedIds, ctx, turnId, mandate); } catch (e) { recordMonitorEvent({ type: "trace", action: "semantic_backward_compression_llm_failed", taskFamily, error: preview(String((e as Error).message), 200) }); break; }
-      // 压缩轮与主轮同一 reward 门控(mergeDeleteGate 在 autoBackward 内由 effectiveReward 决定);
-      // apply 后核对 used 是否递减, 无进展即停(留证据给审计, 不死循环)。
-      const cBw = autoBackward(net, activatedIds, effectiveReward, log, selectedEdgeIds, undefined, cRes.node_updates, cRes.add_nodes, cRes.node_actions);
-      bwResult.nodesUpdated += cBw.nodesUpdated;
-      bwResult.nodesAdded += cBw.nodesAdded;
-      bwResult.nodesMerged += cBw.nodesMerged;
-      bwResult.nodesSkipped += cBw.nodesSkipped;
-      bwResult.nodeSkipReasons.push(...cBw.nodeSkipReasons.slice(0, 4));
-      bwResult.nodeMutations.push(...cBw.nodeMutations);
-      compRounds++;
-      const prevOcSig = beforeSig;
-      ocLayers = overCapLayers();
-      const afterSig = ocLayers.map(s => `${s.layer}:${s.used}/${s.cap}`).join(",") || "resolved";
-      const progress = !prevOcSig.includes(":") || afterSig !== prevOcSig; // at-cap-skip 触发时无超容基线, 一轮即止
-      recordMonitorEvent({ type: "trace", action: "semantic_backward_compression_done", taskFamily, round: compRounds, beforeSig: prevOcSig, afterSig, merged: cBw.nodesMerged, updated: cBw.nodesUpdated, resolved: ocLayers.length === 0, progress });
-      needRound = ocLayers.length > 0 && progress;
-    }
-    if (ocLayers.length > 0) {
-      recordMonitorEvent({ type: "error", action: "semantic_backward_compression_unresolved", taskFamily, remaining: ocLayers, rounds: compRounds });
     }
 
     // ── n-gram distillation ──

@@ -6,7 +6,7 @@ import { mergeNodeContent, mergeContent } from "./merge";
 import { findSimilarKnowledgeNode, jaccard, nameTokens, tokenSimilarity } from "./similarity";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
 import { distillNodeName } from "../name_distill.ts";
-import { DEFAULT_WEIGHT, TEXTRON_ALLOW_NODE_GROWTH, NGRAM_DISTILL_PROMOTE, layerCapFor } from "./network";
+import { DEFAULT_WEIGHT, TEXTRON_ALLOW_NODE_GROWTH, NGRAM_DISTILL_PROMOTE } from "./network";
 import { rescaleRejectedCrystal } from "./rescale";
 import { materialize, parsePairKey } from "./topology";
 
@@ -66,43 +66,25 @@ export function updateExistingNodeByPolicy(
   name: string,
   newContent: string,
   onLog: (msg: string) => void,
-  /**
-   * mode="merge"（默认，旧行为）：old|new 拼接合并——适合同域知识增量累积。
-   * mode="replace"：**真覆盖**（name/content 都替换）。用于「网络目标」驱动的离域清洗：
-   *   网络目标是交易经验，而节点装的是工程知识时，merge 会把两个域拼接成关键词垃圾抽屉，
-   *   永远清洗不掉；此时必须 replace。跨域写入无权拼接（不同域无增量语义）。
-   */
-  opts?: { mode?: "merge" | "replace" },
-): { updated: boolean; nodeId: string; layer: number; oldContent: string; newContent: string; mode: "merge" | "replace" } {
-  const mode: "merge" | "replace" = opts?.mode === "replace" ? "replace" : "merge";
+): { updated: boolean; nodeId: string; layer: number; oldContent: string; newContent: string } {
   const np = path.join(net.path, `layer_${layer}`, `${nodeId}.html`);
   const oldContent = readNodeContent(np);
   const oldName = readNodeName(np);
 
-  // replace 模式下空内容 = 清空请求，属非法写入（系统禁止 delete），拒绝而非误清节点
-  const incoming = String(newContent || "").trim();
-  if (mode === "replace" && !incoming) {
-    onLog(`Textron: cleanse write rejected for L${layer}::${nodeId} — empty content`);
-    return { updated: false, nodeId, layer, oldContent, newContent: oldContent, mode };
-  }
-
-  const merged = mode === "replace" ? incoming : mergeNodeContent(oldContent, incoming);
+  const merged = mergeNodeContent(oldContent, newContent);
   const validation = validateKnowledgeCrystal(merged, layer);
   if (!validation.ok) {
     // Try rescale
     const rescale = rescaleRejectedCrystal(net, merged, validation.reason, layer, onLog, addPolicyNode, _recordArtifactEvent);
     if (rescale?.rescued) {
-      onLog(`Textron: node ${mode === "replace" ? "cleanse" : "update"} rejected (${validation.reason}), rescale→L${rescale.layer}::${rescale.nodeId}`);
-      return { updated: false, nodeId, layer, oldContent, newContent: merged, mode };
+      onLog(`Textron: node update rejected (${validation.reason}), rescale→L${rescale.layer}::${rescale.nodeId}`);
+      return { updated: false, nodeId, layer, oldContent, newContent: merged };
     }
-    onLog(`Textron: node ${mode === "replace" ? "cleanse" : "update"} rejected — ${validation.reason}`);
-    return { updated: false, nodeId, layer, oldContent, newContent: merged, mode };
+    onLog(`Textron: node update rejected — ${validation.reason}`);
+    return { updated: false, nodeId, layer, oldContent, newContent: merged };
   }
 
-  // merge 保留旧名以维持概念继承；replace 时旧名是离域名的残留，必须丢弃（否则 Name 子串路由继续错配）
-  const distilledName = mode === "replace"
-    ? distillNodeName(String(name || "").slice(0, 200))
-    : distillNodeName((oldName + " " + name).slice(0, 200));
+  const distilledName = distillNodeName((oldName + " " + name).slice(0, 200));
   const existing = net.weights?.layer_connections?.[`${layer}_to_${layer + 1}`] || [];
   const outEdges = existing
     .filter((e: any) => e.from === nodeId)
@@ -113,8 +95,8 @@ export function updateExistingNodeByPolicy(
   ensureNodeEdges(net, layer, nodeId, onLog);
   writeJson(path.join(net.path, "weights.json"), net.weights);
   commitNodeHtmlEdges(net, layer, nodeId);
-  onLog(`Textron: ${mode === "replace" ? "cleansed" : "updated"} L${layer}::${nodeId} "${previewText(oldName, 40)}" → "${previewText(distilledName, 40)}"`);
-  return { updated: true, nodeId, layer, oldContent, newContent: validation.content, mode };
+  onLog(`Textron: updated L${layer}::${nodeId} "${previewText(oldName, 40)}" → "${previewText(distilledName, 40)}"`);
+  return { updated: true, nodeId, layer, oldContent, newContent: validation.content };
 }
 
 export function addPolicyNode(
@@ -125,7 +107,7 @@ export function addPolicyNode(
   name?: string,
   requestedLayer?: number,
   opts?: { mergeSimilar?: boolean; similarityThreshold?: number },
-): { added: boolean; merged: boolean; replaced: boolean; nodeId: string; layer: number; skipped?: boolean; reason?: string } {
+): { added: boolean; merged: boolean; replaced: boolean; nodeId: string; layer: number } {
   const layer = chooseExpansionLayer(net, requestedLayer ?? targetLayer);
   // 层平衡规则9: 所有现有层满载且确需新增 → 请求 layer==length 新建一层(容量从0起, 下方 append 生成 node_0)
   if (layer === net.hyperparams.layers.length) {
@@ -164,17 +146,6 @@ export function addPolicyNode(
 
   if (!TEXTRON_ALLOW_NODE_GROWTH) {
     return { added: false, merged: false, replaced: false, nodeId: "", layer };
-  }
-
-  // 容量硬约束：used>=cap 的层禁止净新增（填空槽/扩容都算）。迫使上层走 merge/node_updates。
-  let usedCount = 0;
-  for (let n = 0; n < net.hyperparams.layers[layer]; n++) {
-    if (readNodeContent(path.join(net.path, `layer_${layer}`, `node_${n}.html`))) usedCount++;
-  }
-  const cap = layerCapFor(net.hyperparams as { layers: number[]; layerCaps?: number[] }, layer);
-  if (usedCount >= cap) {
-    onLog(`Textron: add node skipped L${layer} (over cap ${usedCount}/${cap}) — merge or update existing nodes first`);
-    return { added: false, merged: false, replaced: false, nodeId: "", layer, skipped: true, reason: `over_cap(${usedCount}/${cap})` };
   }
 
   // Find replacement slot (empty node) or append

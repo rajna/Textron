@@ -1,159 +1,361 @@
-# 交接：pending 管理修复 + 重启验证
+# Textron HANDOVER（压缩版）
 
-## 已修 Bug
-
-### 1. `compactMergeEmptiedNodes` 传参错误（index.ts:1712）
-- **根因**：调用 `compactMergeEmptiedNodes(net, emptiedByMerge, onLog)` 传了 3 个参数，函数签名只有 2 个 `(net, onLog)`
-- **现象**：`onLog is not a function` → 整个 backward apply 阶段崩溃
-- **修复**：改为 `compactMergeEmptiedNodes(net, onLog)`
-
-### 2. fake feedback 抢先消费 pending
-- **根因**：pairing_judge 将"等待/中间消息"误判为反馈 → backward 执行（LLM 返回 reward≈0/零更新）→ 代码无条件消费 pending
-- **现象**：第 31 轮"请等待 planner 对答案"消息消费了"A股涨跌预测"pending，真正反馈到达时无 pending 可匹配
-- **修复**：`forcedSemanticBackward` 返回后加守卫——
-  ```
-  hadLearning = nodesUpdated>0 || nodesAdded>0 || nodesMerged>0
-  hadReward   = abs(reward) >= 0.05
-  shouldConsume = hadLearning || hadReward
-  ```
-  无学习则保留 pending。
-
-### 3. 日志埋点
-- `before_agent_start`：内存状态/磁盘读取/pending 列表构建
-- `agent_end`：写盘内容（activeType + stackTypes）
-- 消费后：剩余栈状态
+> 用途：跨会话交接。保留「未生效改动 + 硬性约束 + 待办 + 决策经验」，历史细节归档为一行摘要。
+> 备份：`HANDOVER.bak.20260903_0904.md`（压缩前原文 505 行）。
+> 生效规则：**index.ts / extension 改动一律需 `/reload`（或重启 pi）才生效**；monitor.html 8766 按请求读盘即时生效；7860/8770 服务各自重启。
 
 ---
 
-## 重启后验证
+# ✦ 最近更新（2026-09-14 23:45）：HighEntropy <Function> 硬落盘 + 前向 fn 引用链 —— 可执行产物不再只留在轨迹里
 
-```bash
-# 重启 planner + coder
-curl -X POST http://localhost:8770/restart/planner
-curl -X POST http://localhost:8770/restart/coder
+> 触发：guard n8 轨迹审计实证——网络 goal 明确要求「可复用交易策略函数/量化程序」，但 `functionBlock` 只在 `semanticBackwardLLM` 的 **prompt 输入侧**被消费（index.ts:1752 截 1500c 送进 user prompt），落盘侧零通路：LLM 实测只产出自然语言 `node_updates`，`layer_*/node_*.html` 无任何 functionSymbol 字面，前向注入也无从引用 → 函数产物全部滞留在 `_trajectories.jsonl`，跨轮 LLM 杠杆无法累积（每轮从零重新推理）。
+> 状态：✅ 3 文件已改（`lib/node_io.ts` · `index.ts` · `lib/compile.ts`）+ esbuild bundle 通过 + `test_fn_persist.ts` 11/11 PASS。git：基线 `7d436ca`（改前状态）→ 修复 `ab13780`。**需 /reload 生效**。
+
+## 一、改动
+- **lib/node_io.ts**: 新增 `readNodeFunction/writeNodeFunction` —— 节点级 `<function symbol="..">代码</function>` 块，**独立于 content 的 1000 字上限**（函数体不再与自然语言抢额度）。`writeNodeHtml` 重写 content 时**保留既有 function 块**（否则每次 node_updates 都会静默抹掉代码）。
+- **index.ts**: 新增 `persistHighEntropyFunction(net, functionBlock, nodeUpdates, taskFamily)`，在 `autoBackward` 落盘后（fallback 之后）执行：①解析 `functionSymbol[:：]\s*([A-Za-z_][A-Za-z0-9_]*)`；②目标节点 = 本轮 `node_updates` 中**最浅层**节点（L0 优先路由锚点），无更新则不写（宁缺勿错）；③写 function 块 + 若 content 缺 symbol 字面则追加 ` [fn:symbol]`（保 substring 引用链）；④事件 `highentropy_function_persisted` / `highentropy_function_skipped(no_node_updates)`；返回值并入 `bwResult.functionPersisted`。
+- **lib/compile.ts**: `compileContext` 对激活节点读 function 块，注入行尾附加 `⟨fn:symbol⟩` → 后续决策/反传能按 functionSymbol 字面命中该节点（与反传规则 8 的引用链对齐）。
+
+## 二、验收断言（下轮交易或任意 backward 轮）
+- `_events.jsonl` 出现 `highentropy_function_persisted`（symbol 非空），且 `layer_*/node_*.html` 内含 `<function symbol=` 块。
+- 被更新节点 content 含 `[fn:symbol]` 字面；prompt 注入行含 `⟨fn:symbol⟩`。
+- 反传 LLM 若仍只写自然语言（不遵规则 8），系统兜底仍保住函数体 —— 即引用链不再依赖 LLM 自觉。
+
+## 三、本轮 n8 审计其余结论（未修，按优先级）
+- **N1 奖励错位（P0）**: worker 决策轮的反传吃的是**上一轮** feedback（第2次决策 turn reward=-0.6 对应上轮 -10），本决策的 +10 落到下一 turn 才反传 → 决策动作与其后果错配（credit assignment 滞后一轮）。修法方向：按 msg_id/round 配对 feedback 与决策 turn，或决策轮不反传、只由反馈轮反传。
+- **N2 无实质轮也反传（P1）**: guard 握手回执 turn 也跑了一次 LLM 反传（reward=0，rationale=「guard仅发握手回执,无实质验收反馈」）；session_start/纯流程轮同理，稀释反传预算。修法：`reward==0 && 无新事实` 时跳过 semantic backward。
+- **N3 覆写式沉淀 ≠ 融合（P1）**: `L0::node_0` activations=41，name 三连演化（抛压衰竭→地量≠止跌→趋势开关优先），但 `nodesMerged=0`、L1→L0 lift 从未发生；L0 cap=2 且 `L0::node_1` 被 off-goal 的「工程容量配置」占坑 → 交易语义只剩 1 个 L0 槽位，异质知识被折叠进同一 content（name 已达 48c 上限）。修法：goal-domain 的 L0 槽位保护 + 强制 lift 候选（把 L1 幂等回执类节点升/降级）。
+- **N4 轨迹 slice（P2）**: turn.thinking 恒 1400c、tools 恒 2400c 截断（实证 `mu1euzgk` tools len=2400 恰好卡界），tool_result 只存 resultPreview（632c）→ 反传 LLM 看到的是残缺证据链。
+- 正收益信号弱：本局 2 次交易 -165/+162 净 ≈ -3 元（噪声级）；账户 +5.80% 来自历史存档（step 39 起），**不可归因于网络**，需累计更多回合才谈「收益趋势」。
+
+---
+
+# ✦ 最近更新（2026-09-14 20:55）：容量硬不变量 + 压缩强制回喂 —— merge 派生 add 不再绕 cap，skip 不许静默
+
+> 触发：用户需求——「规定了2个 无论如何都是不能超的 无论是否 merge导致」+「不应该 skip，应该强制 llm 在反向传播时作出压缩策略」。n8 审计实证 N2（merge 派生 add 绕闸：LLM parsedAddNodeCount=0 但 nodesAdded=2/nodesSkipped=0）与 B7（merge 后同名自补位，净不减）。
+> 状态：✅ 2 文件已改 + esbuild bundle 过 + 隔离测试 15/15 PASS（test_cap_hard.ts）+ 回归 12/12 PASS（test_layercaps.ts）。**需 /reload 生效**。
+
+## 一、改动
+- **lib/lift_merge.ts**: ①`allocSlot` 加 cap 硬闸——append 前按存活节点数对 `layerCapFor` 校验（含默认40），alive>=cap 返回 `null`，`layers[]` 不再被静默 ++ 扩容（N2 机制根源）；②宿主落位 allocSlot=null → `merged:false, reason:host_alloc_over_cap(L{x})`（不落盘，原因交上层压缩轮）；③溢出伴随节点槽位分配**延后到源清空之后**（优先复用 merge 腾出的空壳，内容不丢），仍无空壳→溢出截断（宁截断不超容）。
+- **index.ts**: ①`semanticBackwardLLM` 新增第8参 `compressionMandate?: string`（追加进 user prompt + `semantic_backward_llm_input` 记 mandateChars）；②`forcedSemanticBackward` HE-fallback 后新增**强制压缩轮**（上限2轮，无进展即停）：触发条件=「存在超容层(used>cap)」或「本轮 skipReasons 含 over_cap/layer_full」；`buildCompressionMandate` 列超容层 used/cap+全部节点清单，强制 LLM 输出 node_updates 折叠/merge 收缩（禁 add）；压缩结果并入 bwResult（nodesUpdated/Merged/Skipped/nodeMutations）；事件 `semantic_backward_compression_round/done`，未收敛记 `semantic_backward_compression_unresolved`(error 级)；进度判据=afterSig≠beforeSig（used 递减）。
+- **语义**: cap 现在是硬不变量——addPolicyNode(原有闸)+backward addNodes(原有闸)+liftMergeNodes allocSlot(新闸) 三入口全覆盖；同层 merge（keepTgt/keepSrc 复用参与者）不走 allocSlot，天然净减；超容存量网同层 merge 仍可收缩（T4）。
+
+## 二、验证（test_cap_hard.ts，TEXTRON_HOME 隔离）
+- T1 跨层 merge 撞满层→merged:false+reason、layers 不扩容、alive 恒=cap；T2 同层大内容→宿主复用+溢出复用空壳（不丢内容不扩容）；T3 cap>slots→append 放行到 cap 内；T4 legacy 超容网（9/2）同层收缩放行+跨层拒绝。回归：test_layercaps 12/12。
+- 行为侧断言（下轮反传）：events 出现 `semantic_backward_compression_round`（trigger=over_cap/add_skipped_at_cap）→ `compression_done`（resolved=true 或 progress=false）；满层被拒时 LLM 产出 merge/node_updates 而非重复 add。
+
+## 三、关联
+- 修复 N2（清单#5 后半）/B7 的绕闸面；B1/B2（孤岛/0出边）未动；「skip→强制压缩」对应清单#8 的精神但落在容量轴。清单#3（跨网回写）仍未修。
+
+# ✦ 最近更新（2026-09-14 20:10）：layerCaps 每层容量上限 —— 反传注入网络配置 + add 硬约束，禁无限增长
+
+> 触发：用户需求——「l0节点配置上限是2个 现在超过多个，反向传播时应该告诉 llm 网络配置信息，不是能无限增长的，理想情况是 llm 会根据配置信息来更新网络」；「没有配置的使用默认，有配置的按配置」（默认=旧 MAX_PER_LAYER_SOFT=40 语义）。
+> 状态：✅ 4 文件已改 + esbuild 语法全过 + 隔离测试 12/12 PASS（test_layercaps.ts）+ textron-lab 已迁移 layerCaps=[2,2,2]。**需 /reload 生效**。
+
+## 一、改动
+- **lib/network.ts**: `Hyperparams.layerCaps?: number[]`；`DEFAULT_LAYER_CAP=40`（旧 MAX_PER_LAYER_SOFT 语义权威化）；`layerCapFor(hp,l)` 唯一权威解析（有配置按配置，缺层用末值兑底，无配置默认 40）；`initNetwork` 落盘 `layerCaps:[...layers]`。
+- **lib/node_policy.ts**: `addPolicyNode` 在 grow 前算 used，`used>=cap` → 拒绝并返回 `{skipped:true, reason:"over_cap(u/c)"}`（填空槽也算净新增，一并拦截）；日志带收缩指引。返回类型扩展 skipped/reason（index.ts autoBackward 的 `created.skipped` 分支从此真正生效）。
+- **backward.ts**: applySemanticBackward 的 addNodes 循环加同样 cap 检查（skip 记 `L{x}:over_cap(u/c)` 入 nodeSkipReasons）。
+- **index.ts**: ① semantic backward system prompt 规则 9 重写为 CAPACITY-BOUNDED GROWTH（used>=cap 禁 add、OVER CAP 层必须主动 merge 收缩、无新建层逃生口）+ 规则 6 的 L0 强制加域节点加「room>0 才行，否则 merge 进现有域节点」条件；② user prompt 的 Layer usage 改为 `L0: used=7/cap=2 OVER CAP +5 (add 会被拒, 必须先 merge 收缩) · ... · layerCaps=[2,2,2] · layers(槽位)=[7,1,0]`；③ add_nodes 解析层收紧 `layer < layers.length`（禁止新建层）；④ `GET /api/networks` 返回 layerCaps + nodeCounts 带 cap；⑤ 新增 `POST /api/networks/caps` `{taskFamily, layerCaps:[2,2,2]}`（layerCaps=null 回落默认）。
+- **数据迁移**: `~/.textron/textron-lab/hyperparams.json` 写入 `"layerCaps":[2,2,2]`（备份 .bak-layercaps-*）。当前 L0 used=7 超容 5 → 重载后 L0 一切 add 被拒，prompt 要求 LLM 主动 merge 收缩。
+- **测试**: `test_layercaps.ts`（esbuild bundle + node 运行，12 断言全过，测试网 zz-caps-test 自动清理）。旧代码在 add 时写回 hyperparams.json 不会抹掉 layerCaps（readJson 整对象保留）。
+
+## 二、验证/验收断言（下轮交易或任意 backward 轮）
+- prompt 侧：_events.jsonl `semantic_backward_llm_input` 的 user content 含 `OVER CAP +5` 与 `layerCaps=[2,2,2]`。
+- 行为侧：L0 add → 日志/`_events.jsonl` 出现 `over_cap(7/2)` skip 且 nodesAdded 不增；LLM 应改产出 node_actions merge（收敛后 L0 used 递减）。
+- 默认侧：无 layerCaps 网络（如新建网络）行为不变（40/层）。
+
+## 三、关联已知 bug（guard n8 审计清单，未修）
+B1 activeEdgeSet 空则边永不训练（P0）· B2 新节点 0 出边自锁（P0）· B3 反传 JSON 截断 fallback 跨网写节点（P0）· B4 跨域污染（P1）· B5 轨迹 2400 截断（P1）· B6 反馈轮 HE 被丢（P2）· B7 负奖励期 merge 门控+self-merge（P2）。layerCaps 属新需求非 B 清单项；与 B3 叠加注意：cap 拒绝后 LLM 若重试 add 无效，需靠 merge 产出。
+
+---
+
+# ✦ 最近更新（2026-09-14 05:58）：Live Monitor 网络管理面板——新建网络 / pin 切换 / 每层激活数
+
+> 触发：用户需求——monitor 可初始化新网络(命名+每层节点上限)、激活数可配(每层几个, 原全局 topK=3)、旧网络保留可随时切换。
+> 状态：✅ index.ts + monitor.html 已改，**需重启 pi 生效**(HTML 部分按请求读盘即时生效)；隔离 TEXTRON_HOME 验证 16/16 API 测试 + E2E(prompt 路由 reason=pinned_manual, topKByLayer={0:1,1:1}→selectedIds=["L0::node_0"]) 全部通过。
+
+## 一、改动
+- **index.ts**: ①新增 `readNetConfig/writeNetConfig/topKForLayer`(`~/.textron/_network_config.json`: `{pinnedTaskFamily, topK, topKByLayer}`)；②`autoRouteNetworkDecision` 开头 pin 分支(reason=`pinned_manual`, 显式 explicitTaskFamily 仍最高, pin 网络被删则落回 auto)；③传播循环每层 `ranked.slice(0, topKForLayer(layer, cfg))`(topKByLayer 覆盖全局 topK, 范围均 1-8)；④新增 4 个 HTTP API：`GET /api/networks`(列表+nodeCounts+config)、`POST /api/networks/init`(强制新建, 重名 409, 层数 2-8/每层 1-64)、`POST /api/networks/pin`(taskFamily=null 回自动)、`POST /api/networks/topk`(topK/topKByLayer, 越界 400)。
+- **monitor.html**: hero 下方折叠面板「⚙️ 网络管理」——网络列表点击切换 pin/AUTO、新建表单(名称+各层上限+阈值)、全局/按层激活数输入。不在 poll 重渲染内(输入不丢), 10s 静默刷新。
+- 注：工具 Textron init 的“扩容优先不建新网”策略不变 — monitor 面板才是显式新建入口。
+
+## 二、验证
+- 隔离 env `TEXTRON_HOME=/tmp/textron-verify TEXTRON_MONITOR_PORT=8799` + SDK `createAgentSession` headless 验证：init/pin/topk/409/400/404/持久化/生产无污染 16/16 PASS；真 prompt E2E 确认 pin 路由与按层激活生效。
+- 加载判据：进程启动时间晚于 index.ts mtime。
+
+---
+
+# ✦ 最近更新（2026-09-05 凌晨④）：agent_end 单数据源重构——回合快照从 event.messages 提取, 模块化入 lib/round_snapshot.ts
+
+> 触发：接凌晨③的认知——正确回合模型=每条用户消息一次完整 run(before_agent_start→agent_end), 中间多 turn(assistant→toolCall→toolResult)全在 agent_end.messages 全量数组里；textron 原用 message_update/tool_call/tool_result 增量 hook 跨轮拼 buffer 是"不理解需求就瞎改"(错误理解中间过程), 且增量缓冲依赖 before_agent_start 重置 → coms 续接轮不触发即残留错位。
+> 状态：✅ src 已改(index.ts + 新增 lib/round_snapshot.ts), 需 /reload 生效；隔离环境实测通过(R5→R6: pairing match=0→backward done reward=0.8→task consumed)。
+
+## 一、改动
+- **新增 `src/lib/round_snapshot.ts`**(模块化, 不入 index.ts 主体): `lastUserMessageText(messages)` 取末条 role=user(修复续接轮 userPrompt 残留旧 msg_id 错位); `rebuildToolsFromMessages` 从 assistant content[].toolCall + role=toolResult 重建工具链 ▶in/◀out(等价 tool_call+tool_result 增量缓冲, 无跨 hook 状态); `rebuildThinkingFromMessages` 提取思考链; `extractToolResultText` 递归白名单提取防 [object Object]。
+- **index.ts agent_end**(3359-3361/3408): 用 `lastUserMessageText(runMessages)` 取代 `currentRawUserPrompt`, `rebuildToolsFromMessages(runMessages)` 取代 `currentTurnTools`, thinking 改模块提取 → messages 是唯一权威, 增量 hook 降级为回退(暂未删, 兼容旧流式路径)。
+
+## 二、验证
+- 隔离 TEXTRON_HOME + -ne 显式 -e index.ts 加载, 编译通过无错；R3/R5 任务入栈(task_start)、R4/R6 反馈配对(isFeedback=true matchIdx=0)→ backward done reward=0.8/-0.6 → task consumed 出栈闭环完整；轨迹 userPrompt 每轮 msg_id 逐轮更新(错位修复)。
+- 环境注意：验证反传须先 Textron init 建网络, 否则 loadNetwork 返回 null → backward_failed_at_agent_end(非代码错)。
+
+---
+
+# ✦ 最近更新（2026-09-05 凌晨③）：coms 消息投递改动态 idle——修复多轮续接跳过 before_agent_start 致 reward 丢失
+
+> 触发：n8 审计(sh.688317 交易 2 轮)发现两次复盘反馈(-2/-10)均 no_pending_match、唯一反传(-0.6)却是决策请求误配对；**hook 探针实测**(screen+探针扩展, 三轮 coms)证 root cause=local-coms.ts handlePrompt 固定 `{deliverAs:"followUp"}` → 后续消息被 pi 当"同 run 续接",**每轮仍发 agent_start/agent_end 但跳过 before_agent_start**；而 textron 配对/currentRawUserPrompt 全挂 before_agent_start → 续接轮配对空转、userPrompt 残留首条 msg_id(轨迹错位)、reward 丢失。agent_settled 只在整批消息结束后触发一次(非逐轮)。
+> 状态：✅ **local-coms.ts 已改**(不需 reload——扩展目录 .ts 每次 pi 启动热读？实测已生效)；textron 零改动。
+
+## 一、修复(local-coms.ts handlePrompt, 一行语义)
+- 原：`pi.sendUserMessage(msg, { deliverAs: "followUp" })` 固定续接。
+- 改：`const idle = ctxRef?.isIdle(); const opts = idle ? {} : { deliverAs: "followUp" };` → **空闲时默认投递=每消息独立完整 run**(before_agent_start+agent_settled 逐轮触发, 与正常用户交互同型); 忙时(背靠背)才 followUp 排队兜底防抛错。
+- 实测验证：vf-worker 两轮(任务+复盘反馈)均触发 before_agent_start ✅ + agent_settled ✅(对照 followUp 版 M2/M3 缺失)。
+
+## 二、兼容性/边界
+- 正常聊天不变(本就每轮 before_agent_start)。
+- coms await/response 模式无影响(每条本就等回复)。
+- 极端背靠背(agent 忙时消息到达)→ 走 followUp 兜底, 不抛错。
+- 备份：/tmp/local-coms.ts.bak.*。
+
+---
+
+# ✦ 最近更新（2026-09-04 深夜②）：tool_result content 结构化提取——修复 String() 得 "[object Object]" 内容全失真
+
+> 触发：n8 审计(交易游戏 301171 会话)发现 tool_result 通道修复(见下方 09-04 深夜①块)虽已生效——15:49 起轨迹 turn 全带 tools/thinking 字段、配对 100% matchIdx=0、反传 reward +0.3/+0.7 成功——但 **tools 记录中 out 全部为 `[object Object]`**(近300事件 57/57 条含、单条2400c中15次、resultChars=15=`"[object Object]".length` 铁证)。根因：pi 的 `tool_result` 事件 `content` 类型是 `(TextContent|ImageContent)[]` 结构化数组(元素形如 `{type:"text",text:...}`)，修复代码用 `String(event.content)` 直接转 → 每个对象变 "[object Object]"。input 侧 JSON.stringify 正常，仅 out 侧失真 → [exec] 条目对 backward 的信息增量打折(方向对了、内容提取层没对)。
+> 状态：**src 已改，index.ts 需 `/reload`（重启各 agent）才生效**；trajectory.html 读盘即时生效
+
+## 一、修复
+- **新增 `extractToolResultText(content, depth)`**(index.ts 工具函数区, 与 highentropy.ts `assistantTextPart` 同构的递归白名单提取)：depth≤6；string/number/bool 直返；**数组逐项递归 join"\n"**；对象按白名单键 `text/content/output_text/outputText/value` 优先取叶子，`type=image/input_image` 返 `[image]` 标记防噪音，其余才 `JSON.stringify` 兜底(不序列化 TextContent 整对象)。
+- **tool_result handler 改用提取器**：`extractToolResultText(event.content)` 后再压平空白；缓冲 out ≤640c 不变；`resultChars` 用提取后文本长。
+- 单元验证：数组含 text+image+空串 → 提取 `{"decision":"买入"...} 总资产... [image]`，无 `[object Object]`；纯对象兜底 JSON；字符串直通。
+
+## 二、验证
+- esbuild ✅(107ms)；test_topology ✅；test_lift_merge 42/42 ✅。
+- **待 `/reload` 后断言**：任意 turn 的 tools 字段含真实工具输出文本(如 trade_result/portfolio JSON 内容)而非 `[object Object]`。
+
+---
+
+# ✦ 最近更新（2026-09-04 深夜①）：tool_result/AI 思考同权进任务上下文——修复配对盲区（no_pending_match 零反传根因）
+
+> 触发：交易游戏(sz.301299 两轮持有 +20 分)完成后 sender 5 回合全 `agent_end_backward_skipped reason=no_pending_match`、零次语义反传。审计发现根因=**tool_result 通道数据丢失**：决策 JSON/trade_result/portfolio/复盘打分全在 tool_result 里，但 handler 只 recordMonitorEvent 不消费 → processLog 无交易过程 → 配对 judge 与 backward LLM 无上下文。
+> 状态：**src 已改，index.ts 需 `/reload`（重启各 agent）才生效**；trajectory.html 读盘即时生效
+
+## 一、根因链（排除法锁定，非猜测）
+- 配对/backward 执行链路本身 OK：15:24/15:28 两次 backward 均配对成功（reward=-0.8/-0.8，matchedTaskType=Textron反传链路审计）→ 排除配对代码故障。
+- 唯一缺的是**交易过程数据源**：`pi.on("tool_result")`(index.ts:3267) 仅 recordMonitorEvent，全库 grep 无第二消费方 → 决策/结果/复盘从不进 processLog。
+- 历史病灶：08-19 删 tool_call/tool_result 的 chain.push(UI 简洁)后 handler 成残留半成品；09-03"中间动作 append"只覆盖 assistant turn(HE/蒸馏/tail)，不覆盖工具结果 = **文档宣称已覆盖、代码实际未覆盖**（L0::node_24 早已沉淀此教训却未落地为代码 = 教训空转）。
+
+## 二、修复（4 处 src/index.ts + 1 处 trajectory.html）
+1. **tool_call/tool_result handler**：不扫描、全量写入回合缓冲 `currentTurnTools`（≤24 条滚动；in ≤180c/out ≤640c；配对 ▶tool in / ◀tool out 成对）。
+2. **agent_end 思考提取**：AI thinking 写入 `currentTurnThinking`（thoughts.join 尾部 ≤1400c）——与回答同权保留，不再只发 agent_thought monitor 事件。
+3. **agent_end 拼接 `[ts][exec] 💭思考+🔧工具链` 条目**：taskStart 分支 `newTask.processLog=[exec]`；中间轮分支 append activeTask（与 HE/蒸馏/tail 并列；单条 ≤MAX_PROCESS_ENTRY_CHARS+500≈1200c，遵守 12条/4800c 滚动防 HE 被挤滚）。
+4. **配对 judge taskList**：每个 pending 任务附 `recent=` processLog 尾部（slice(-3) join 后 ≤280c）——judge LLM 现在能看到任务执行过什么（trade_result/复盘），不再仅凭 TaskType 猜。
+5. **trajectory.html**：详情页新增 💭AI 思考过程 / 🔧工具链两个 section；turn 行经 `updateTrajectoryTurnMeta` 回填 thinking/tools 字段（轨迹行先写、思考后提取，故用回填而非直写）。
+
+## 三、生效链路（闭环验证）
+```
+tool_result/thinking → currentTurnTools/Thinking 缓冲
+  → [exec] 条目 append 进任务 processLog
+    → ① backward：processCtx=processLog.join → LLM 见完整执行链（现有机制自动受益，未改）
+    → ② pairing judge：任务列表含 recent processLog → 反馈能配对到具体任务
+    → ③ 轨迹：thinking/tools 字段落 _trajectories + 面板可见
 ```
 
-### 验证项
-
-| # | 验证 | 方法 |
-|---|------|------|
-| 1 | `compactMergeEmptiedNodes` 不崩溃 | 发反馈 → backward → 检查 events 无 `onLog is not a function` |
-| 2 | fake feedback 不消费 | 预测后发"等待"消息 → 检查 `agent_pending_preserved_no_learning` 事件 |
-| 3 | 新日志字段出现 | 检查 events 中 `pending_list_built`/`task_stack_restored` 含 `activeType`/`stackTypes` |
+## 四、验证
+- esbuild 编译 ✅（133ms）；test_topology/lift_merge 回归 ALL PASSED ✅。
+- **待 `/reload` 后跑一轮交易断言**：任务 processLog 含 `[exec]` 条目、配对 judge `matchIdx≥0`、backward reward≠0。
 
 ---
 
-## 当前状态
+> 触发：审计发现 merge 硬编码同层(sp.layer!==tp.layer 即跳过)+节点升层无通道 → L1 永久冻结、无跨层提炼。用户定策 merge 抽象收敛语义，并追问 L3/L4/L5 深层是否兼容。
+> 状态：**src 已改，index.ts / extension 需 `/reload`（重启各 agent）才生效**
 
-- 网络：`astro_stock_prediction` [8,7,29]=44 节点
-- 第 31 轮：2025-01-23，预测 UP 0.55 → 实际 UP +0.515%，命中 ✅
-- 第 32 轮：2025-01-24，预测 DOWN 0.63 → 实际 UP +0.695%，未命中 ❌（backward✅ reward=-0.7）
-- 第 33 轮：2025-01-27，预测 UP 0.58 → 实际 DOWN -0.062%，未命中 ❌（backward🔴未触发）
-- 累计：近 5 轮 2 胜 3 负
+## 〇、机制认知（v2 重构核心，先于代码）
+- **buildTopology 不认识具体层号**：仅 `for l in 0..layers.length-1` 对 l→l+1 按**词面 cos** 建边 + 入度兜底 → 任意层深(L3/L5/L10 同)统一覆盖，**L3/L4 从不特殊**。
+- 孤立根因仅两类：①**词面断层**(内容与邻居无共享词 cos=0，内容问题非层问题)；②**层容量空洞**(hyperparams.layers[i]=0 但物理 node_X.html 存在 → 上游空数组无源可连，此前 L4 孤立的真因)。
+- 隔离实证：5 层 [1,1,1,1,1]，各层无共享词→edges=0；共享“放量突破”→edges=4(0_to_1..3_to_4 全自动)。铁证层号与建边无关。
+- **merge 兼容性 = 机制公式对任意层统一，不是逐层适配**；测试须参数化 runner 而非按层复制场景（旧测试按 L2/L3/L4 各写一遍 = 坏验证，掩盖机制）。
 
-### P0修复验证结果（2026-07-23 第32轮）
+## 一、新增 `src/lib/lift_merge.ts`（v2 机制化，零依赖回环）
+- `liftMergeResultLayer(srcL,tgtL)` 纯函数：`srcL===tgtL && srcL>0 ? srcL-1 : min(srcL,tgtL)` → L2+L2→L1 · L3+L3→L2 · L5+L5→L4 · L2+L3→L2 · 含L0→0(封顶)。任意层深同一公式。
+- `liftMergeNodes(net, src, tgt, onLog)` 机制链：定结果层 → mergeContent 合并(>1000c 溢出落伴随节点) → **宿主落位单点逻辑** keepTgt→keepSrc→allocSlot(无层特判分支) → 写宿主内容(ngram 删影，物化回退内容 tokenize 仍可达共享词) → **ledger 资产重锚**：被吸收节点训练边，另一端存活且 |Δlayer|∈{0,1} → 新键按“小层为from”重建，多键同目标按 n 加权 δ=Σδn/Σn（实例：(0.8,n10)+(-0.6,n6)→δ0.275,n16）；死键删除；不可达丢计数 → 清空源(留壳) → **materialize() = merge 对边的唯一动作**(物化重建全部 prior 边含入度兜底)。
 
-| # | 验证项 | 状态 |
-|---|--------|------|
-| 1 | compactMergeEmptiedNodes 不崩溃 | ✅ 通过 |
-| 2 | fake feedback 不消费 pending | ✅ 通过（pairing_judge正确配对，hadLearning守卫生效） |
-| 3 | 日志埋点 | ✅ 通过（activeType/stackTypes正常输出） |
+## 二、index.ts 接线
+- autoBackward merge 分支：去同层硬限 → 调 liftMergeNodes；emptied 入队 compact；compact>0 后补 materialize；宿主刷 commitNodeHtmlEdges(账→货)
+- RELATED 候选：同层 → |Δlayer|≤1（仍禁跳层 L0↔L2）；prompt MERGE SCAN/RELATED 文案“MERGE LIFTS ABSTRACTION”；normalize 跨层校验改 layer_jump(层差>1 才拒)
 
-**完整闭环已验证通过**，无需重启。
+## 三、配套缺陷修复（compact 账货一致）
+- node_policy.ts 新增 `reindexLedgerAfterRemoval`：层内移除空节点后 ledger 键 node_X 序号同步重索引(>n 减1、==n 删)，物化不引用死节点
+- compactMergeEmptiedNodes：html 移动同步 rename ngram 影子（防孤儿 ngram，L1 node_6~18 残留类）
 
----
+## 四、验证（v2 参数化，42/42 PASS）
+- `test_lift_merge.ts` 重写为参数化 runner：①A 段证层深无关(3/5/6 层建 depth-1 跨层段)；②B 段规则纯函数 11 组(L0..L5×L0..L5 含封顶)；③C 段 `assertMerge(label,srcL,srcId,tgtL,tgtId,expHostL,features)` 单函数跑 L2+L2/L3+L3/L4+L4/L2+L3/L3+L4/L5+L5/L0+L4 八组合——断言宿主层、物化后宿主有边、compact 后无幽灵 ledger 键；④D compact reindex。
+- 生产同构：节点附 ngram 影子(tokenize 保持整段 CJK 为单 token，故共享词须为整段短语)。
+- esbuild src/index.ts ✅；test_topology ✅；test_llm_budget 27/27 ✅
 
-## 架构变更：backward 移至 agent_end
-
-### 变更
-- **Old**: before_agent_start 中配对后立即执行 backward → LLM 需从 raw 上下文编造 Training signal
-- **New**: before_agent_start 配对后仅设 `_backwardPendingMatch` 标记 → agent_end 提取 assistant 的最新 HighEntropy → 注入 backward LLM 的 prompt 作为 "Assistant's analysis" → 执行 backward
-
-### 优势
-assistant 刚生成的 HighEntropy（root cause analysis + corrective rules）直接作为附加训练信号注入 backward LLM，不再需要 LLM 从零编造。
-
-### 测试
-重启后跑一轮预测→反馈闭环，检查 backward events 中 `mode=agent_end_deferred` 即确认新路径命中。
-
-### 重要变更：预测 HighEntropy 不注入 backward LLM
-`forcedSemanticBackward` 的 `previousAssistantHighEntropy` 参数传 `""`（空字符串），因为错误预测的 HighEntropy 标注为 "training packet" 会误导 backward LLM。替代：`enhancedFeedback` 中已有助理刚生成的深度复盘。
-
-### 待测清单（重启后，第34轮）
-1. `mode=agent_end_deferred` 出现 ← 确认 backward 在新路径触发
-2. coder 复盘生成 HighEntropy 块（含根因+修正规则）← 确认 HIGH_ENTROPY_INSTRUCTION 生效
-3. `agent_end_backward_skipped` 事件 → 若出现看 `reason` 定位断点
-4. 节点内容出现 R/Rx/修正规则 等关键词
-5. backward LLM prompt 中无 "预测UP 0.55" 等预测推理文本
-6. MERGE DUTY 无退化
-7. 冷启动正常
+**待验证**：/reload 后跑一轮交易看 semantic_backward 是否出现跨层(Δ=1) merge 且 hyperparams.layers[1] 增长。遗留：backward.ts 未同步(无引用方死代码)；重锚对“另一端同批被吸收”场景 drop 计数可能重复(幂等无害)。
 
 ---
 
-## 🔴 第33轮发现：backward 未触发 — 双重根因
+# ✦ 最近更新（2026-09-03 深夜）：信息获取策略升级——中间轮 HE 优先/LLM 蒸馏、反馈轮全量、AI 思考默认排除
 
-**时间**：2026-07-23 第33轮测试（重启后首轮）
+> 触发：审计发现头部截断 slice(0,200/400/2000) 会切掉回复**尾部**的 HighEntropy 与复盘结论，过程信息靠机械截断丢语义。用户定策：中间轮无 HE 用**蒸馏**不用 slice；反馈轮 content **全量**；思考过程默认不放（参数可选）。
+> 状态：**src 已改，index.ts 需 `/reload`（重启各 agent）才生效**；trajectory.html 读盘即时生效
 
-**症状**：planner通过coms_send发反馈→coder接收并回复（复盘无HighEntropy）→coder agent_end触发→**backward未执行**
+## 一、中间轮 append 三级策略（agent_end 中间动作分支）
+- ① 有 HE（尾部定位提取成功）→ HE **整条**入 processLog，不单条截断（总控 4800c 滚动兜底）；
+- ② 无 HE 且 `TEXTRON_DISTILL_INTERMEDIATE!=0`（默认开）→ 占位 `⏳[蒸馏中]` + 异步 **LLM 蒸馏**（`distillTurnEntry`：nothinking/1024 token/25s，输入本轮原文 ≤6000c，输出 ≤520c 结构化摘要，保留决策/数值/方向/原因/约束）；蒸馏入 `enqueueBackward` 串行链 → 反馈轮反传组装前同链已排空；
+- ③ 蒸馏不可用/失败 → 正文**尾** 640c 保底 `[noHE·tail]`（尾部优先，非头部截断）。
+- 常量：`MAX_DISTILL_OUTPUT=520` / `MAX_FALLBACK_TAIL=640` / `FEEDBACK_PROMPT_MAX=30000`；环境变量：`TEXTRON_DISTILL_INTERMEDIATE`（默认开）、`TEXTRON_INCLUDE_THINKING`（默认关）。
 
-**双重根因**：
-1. **coder复盘无HighEntropy**：HIGH_ENTROPY_INSTRUCTION未强调复盘场景，coder以"收到"结尾，未生成HighEntropy块 → `currentAssistantHighEntropy`为空
-2. **`_backwardPendingMatch` 可能为null**：before_agent_start的配对逻辑触发但可能未正确设置标记（待诊断日志确认）
+## 二、反馈轮 content 全量（不 slice）
+- `assistantAnalysis` 去掉 `slice(0,2000)`（HE 优先，否则剥思考后正文全量）；反传 prompt `Current feedback` 截断 2000 → `FEEDBACK_PROMPT_MAX=30000` 防御护栏。
 
-**证据**：
-- 04:25:15有highentropy_captured（planner预测消息的HE），04:26:18 coder agent_end无highentropy_captured
-- agent_end只有task_stack_persisted，无semantic_backward_start
-- pending列表含"星象预测反馈闭环"（应匹配）
+## 三、AI 思考默认排除（参数可选）
+- `stripThinkingText` 剥离 `<thinking>/<reasoning>` 与思维链标记；`TEXTRON_INCLUDE_THINKING=1` 才纳入；正文提取 `assistantTextPart` 本就只取 content（不含 thinking/reasoning_content），双保险。
 
-**修复**（已完成，待重启生效）：
-1. **HIGH_ENTROPY_INSTRUCTION增强**（index.ts:94）：`NEVER skip` + `lost learning opportunity` + 复盘`CRITICAL`
-2. **agent_end诊断日志**（index.ts:2619+2691）：打印三个变量值 + else分支记录跳过原因
+## 四、可观测性
+- append trace 增 `mode`(he/distill_pending/tail)；蒸馏完成发 `agent_end_process_distilled`（entryIdx/distillOk）；轨迹 turn 行 meta 增 `process_mode`。
 
-### 2026-07-23 HIGH_ENTROPY_INSTRUCTION 增强 + agent_end 诊断日志
+## 五、遗留注意
+- 异步蒸馏回填不影响反传（同链天然有序）；蒸馏失败保留占位不阻断；HE 条目推高总字符 → 滚动丢最旧消化，`process_chars` 持续观察，HE 轮频繁被挤出则调高 4800。
 
-**问题1**：原HIGH_ENTROPY_INSTRUCTION未强调复盘/反馈场景，coder在复盘回复时跳过HighEntropy（以"收到"结尾）→ agent_end无assistant分析可注入backward → backward LLM训练信号缺失。
-
-**修复1**（index.ts:94 HIGH_ENTROPY_INSTRUCTION）：
-1. 加强制性：`NEVER skip this block — even for short replies like "收到"`
-2. 明后果：`missing HighEntropy = lost learning opportunity`
-3. 复盘专项：Technique字段新增 `CRITICAL for reflection/feedback replies: pack root cause analysis AND corrective rules`
-
-**问题2**：agent_end中backward未触发，无法判断是_backwardPendingMatch为null还是HighEntropy/finalAssistantText为空。
-
-**修复2**（index.ts agent_end）：
-1. 在2619行条件前加console.error诊断，打印三个变量的实际值
-2. 在if块后加else分支，记录`agent_end_backward_skipped`事件并注明跳过原因（no_pending_match vs no_assistant_content）
+**验证**：esbuild 语法 OK；TS5 改动区零类型错误；回归 process 限长 6/6、lifecycle_feedback 6/1（存量失败未变）。
 
 ---
 
-## 2026-07-23 本轮回改（4项，待重启生效）
+# ✦ 最近更新（2026-09-03 夜）：任务栈生命周期改造——isTask 即入栈 / 中间动作 append / 绑定即出栈 / 轨迹全链可见
 
-### 1. merge 内容溢出 → 自动泻出新节点（index.ts:1486+1691）
+> 触发：n8 审计发现 13:47 backward reward=-0.8 错配——sender 执行任务(isTask=T,HE=F)未入栈、12:53 审计任务成"僵尸 activeTask"截胡后续配对
+> 状态：**src 已改，index.ts 需 `/reload`（重启各 agent）才生效**；trajectory.html 读盘即时生效
 
-**问题**：mergeContent/mengeNodeContent 去重后若仍超 NODE_CONTENT_MAX_CHARS (1000c)，多余内容直接丢失。
+## 一、入栈条件解耦 HE（断点 A）— `src/index.ts` agent_end
+- `isTask && highEntropy` → `isTask === true`：HE 是辅助凭证**非入栈凭证**，isTask=true 即定义任务开始
+- isTask 兜底：crystal 解析失败时从回答原文正则 `/isTask[:：](true|false)/i` 提取（HE 剥离失败 ≠ 不是任务）
+- trace `agent_end_task_pushed` 增 `hasHighEntropy` 字段区分
 
-**修复**：两处溢出防护——
-- **node_update 路径**（line 1486）：mergedContent > 1000c → 截断至 1000c + addDynamicNode(net, layer, overflow, onLog)
-- **merge action 路径**（line 1691）：merged > 1000c → tgtNode 保留前 1000c + overflow → addDynamicNode(net, tp.layer, overflow, onLog)
+## 二、中间动作 append 到 activeTask.processLog（含长度保护）
+- 非 taskStart 且非反馈轮(feedbackTurn)的 turn → 本 turn 内容 append 到栈顶任务 `processLog`（不再"什么都不做"）
+- 结构：单条 ≤700c / 每任务 ≤12 条 / 总 ≤4800c（`MAX_TASK_PROCESS_*`）；超限滚动丢最旧并记 `dropped`；反馈轮不 append（避免污染）
+- TaskEntry 增 `processLog: string[]`，随 `_last_state.json` 持久化、磁盘恢复可还原
 
-两者均 `nodesAdded++` + `nodeMutations.push({ type: "add", ... })`。日志标记 `update overflow` / `merge overflow`。
+## 三、绑定即出栈（断点 B / 僵尸修复）— `shouldConsume`
+- `hadLearning||hadReward` → `!!bwResult`：backward 成功执行（配对确认）任务立即出栈关闭；hadLearning/hadReward 降级纯诊断；backward 失败仍保留 pending 供重试
 
-### 2. monitor.html 布局修复：每层独立间距 + 垂直居中
+## 四、反传上下文长度评估与控制
+- `lifecycle_context.ts`：新增 `buildProcessContext`——从新到旧滚动保留最近条目，硬上限 `MAX_BACKWARD_PROCESS_CHARS=2400`；`BackwardTaskContextResult` 增 `processContext`
+- backward LLM prompt `Previous user task` slice 1500→4200（`index.ts` semanticBackwardLLM）
+- `lastBackwardState`/trace 增 `processChars/processEntries/previousTaskChars` 监控实际上下文长度，超预算可调参
 
-**问题**：全局 maxN * GYa 统一间距导致 L0(4节点)挤在顶部、L2(30节点)拉满全高 → 左短右长。
+## 五、轨迹原文全链可见（📜 任务开始→过程→反馈→反传）
+- turn 行回填 `task_phase`(task_start/intermediate_append/feedback/none)、`in_stack`(不再要求 HE)、`appended_to_task/process_log_len/process_chars/process_dropped`
+- backward 回填 `consumed`(绑定出栈✓)/`processEntries`
+- trajectory.html 三阶段徽章：`①任务开始·已入栈 → ②中间动作·已累积到任务(N条/Nc) → ③反馈到达·配对反传 → ⟲已反传 r=x.xx + 绑定任务已出栈✓`
+
+**验证**：esbuild 语法 OK ×2；TS5 类型检查改动区零错误；processContext 限长单测 6/6（空log/12×800c截断≤2400/保留最近丢最旧/previousTask 不变）
+
+---
+
+# ✦ 最近更新（2026-09-03 早）：semantic backward 三连败根因修复 + monitor 图回退
+
+> 触发：面板持续 `semantic backward failed · attemptsFailed:3 · no JSON object`（2026-09-02 一晚 4 连败，reward=0 零学习）
+> 状态：**src 已改，index.ts 需 `/reload` 才生效**；monitor.html 已生效（8766 读盘）
+
+## 一、backward 输出预算参数根因修复（P0）
+
+**根因（单变量重放锁定，同一失败 prompt 7020c）**：
+| 参数体 | 实测 |
+|---|---|
+| 旧 `max_completion_tokens=4096`（生产原样） | 💥 86.6s · content **0c** / reasoning 13716c · `finish=length` |
+| `max_tokens=4096` | ✅ 42.4s content 432c 合法 JSON |
+| `max_tokens=8192 + reasoning_effort=low` | ✅ 12.6s content 684c |
+| `max_tokens + enable_thinking=false` | ✅ 4.2–5.5s |
+
+即 **qwen/dashscope 把 `max_completion_tokens` 当 reasoning+content 合并上限**，thinking 思维链(13.7k–16.2k 字符)吃光预算 → content 恒空 → 解析无 JSON；且**旧三重兜底共享同一错误参数 = 假兜底**（同一死法重复三次，只放大失败不产生覆盖）。
 
 **修复**：
-- `layerPitch[l] = max(52, min(96, 2600 / cnt))` 每层按节点数独立算间距
-- `layerOffset[l] = (H - (cnt-1) * pitch) / 2 + pitch / 2` 垂直居中偏移
-- 节点 cy = layerOffset[l] + i * pitch - pitch/2 + jitter
+1. 新增 **`src/lib/llm_budget.ts`** 作为预算参数单一出口：
+   - `readCompatFromDisk()`：三级读 compat（model.compat → models.json[provider] → models-store.json[provider].models[id]），与 pi 自身参数表同源不分叉
+   - `buildBudgetParams()`：参数名按 compat 分流；预算下限分轨——思考轨 `MIN_OUTPUT_BUDGET=8192` / 关思考轨 `MIN_NO_THINK_BUDGET=1024`
+   - `canBoundThinking()`：能否有界思考（qwen/kimi ✅，deepseek ❌）
+2. **`src/index.ts`**：
+   - backward 兜底阶梯 3→**4 重且自适应排序**：不可界思考模型（deepseek：8192 开思考 >150s 不返回、关思考 1.2s 出 JSON）先跑 `chat_nothinking`；per-attempt 超时自适应 45/60/150s（禁旧 180s×N 空转）
+   - 失败诊断增强：错误串带 `finish / partsChars / head`，落 `_sb_logs/_nojson_response.log`
+   - **同根第二处**：pairing judge 旧 `max_tokens:200 + 15s` → 思维链照跑满 → 15s 回不来 → 静默退化启发式 → 反馈配错任务（reward 源错位）。改为 `buildBudgetParams(noThinking=true, 2048)` + 25s，实测 qwen 0.9s / deepseek 0.5s 出合法 JSON
+   - 启动时发 monitor 事件 `semantic_backward_params_resolved`（含实际 params/noThinkingParams）供面板直接排查
+3. **`src/lib/network.ts`**：`TEXTRON_HOME` 支持 env 覆盖（默认不变）→ 验证/生产网络可隔离
+4. 注释修正：旧注释「deepseek 不传 reasoning_effort 基于老模型已过期」有误——deepseek 仍不发（未声明 supportsReasoningEffort，避免 8K+ 思维链超时）；由 llm_budget 统一判定
 
-各层节点在相同画布高度内居中分布，视觉对齐。monitor.html 通过软链接不需要重启。
+**已回退的无证据改动**：曾疑「模型破协议回散文」加 ROLE HARDENING / OUTPUT CONTRACT 两段提示词——复查确认该"散文"负例来自 6 字符 `(历史补录)` 占位 prompt 的**测试伪影**，真实失败频率 0 → 全部回退，只保留有证据的参数修复（纪律：无频率证据不加护栏）。
 
-### 3. MERGE 语义重叠阈值 30%→15%（index.ts systemPrompt + userPrompt）
+**验证**：`test_llm_budget.ts` 27/27（含读真实 ~/.pi/agent 配置断言 6 项）、`test_topology.ts` 全绿、语法检查通过。
+**待生效**：`/reload` 后验证——面板出现 `semantic_backward_params_resolved`；下次 backward 四重阶梯成功且 reward≠0；失败时 `_sb_logs/_nojson_response.log` 有 head 可查。
 
-**问题**：MERGE DUTY 长期零触发 (0/64+轮)，LLM 持续返回 `"no overlap ≥30%"` → node_actions=[keep]。
+## 二、Live Monitor 图 UI 回退 + 连线可读性（已生效）
 
-**修复**：systemPrompt Rule 7 + userPrompt node_update 条件 + MERGE SCAN 段三处 ≥30% → ≥15%，并加"shared keywords, concepts, or domain"语义描述。依据：TF-IDF RELATED 发现阈值 0.05，related pairs 典型 0.12-0.20，15% 在区间下沿。
+**病根**：此前 uncommitted 改动把每条边渲染成 1–6 根发丝（silk bundle）+ 节点缩成 1.7px 微点 + 标签只画选中节点 →「看不清连线」（用户明确要求回退）。silk 版完整备份：`src/monitor_副本.html`。
 
-### 4. boss.md 路径修正
+**处理**：`git checkout HEAD -- src/monitor.html` 回退视觉层，**保留功能性增量**：
+- 同层 `${l}_to_${l}` 边分桶收集（latRaw）——否则 258 条 lateral 边被跨层桶键碰撞**静默吞掉**
+- footer 显示 `lateral: N · ledger trained: N`
+- 连线可读性：实线=跨层主边 / **虚线=同层扩散边**；权重标签阈值 0.35→**0.20**；alpha/线宽设底线（≥0.10 / ≥0.6px），弱边不画噪声（aw<0.02 skip）
 
-`/Users/rama/textron/test.md`（缺 -agent）→ `/Users/rama/textron-agent/test.md`
+**可执行验收**：新增 **`test_monitor_edges.js`**（真实页面脚本跑 Node + 真实 /api/state，断言实际 draw call）——本版 9/9 ✅；silk 版负向对照 4/9 ❌（r=实绘曲线/数据边：1.01 vs 4.07、虚线 0、min alpha 0.021）。已用被回退版本证明测试有区分力。
+
+---
+
+# 历史交接归档（一行摘要，详见备份或已沉淀节点）
+
+| 日期 | 改动 | 状态 |
+|---|---|---|
+| 09-02 | **三层架构重构**（src/lib/topology.ts 新 + backward.ts/node_policy.ts 改 + test_topology.ts）：边机制从直接改 layer_connections → ledger 经验层+ngram 拓扑派生+物化视图；训练只写 ledger delta、materialize() 幂等重建（每 pair 唯一无重复边）；有效权重 w=(1-α)·prior(sim)+α·delta、α=0.95·(1-0.5^(n/10))、ALPHA_MAX≥0.95；账货一致=内容变→重物化+刷 HTML（源头收口，非扫描补丁）；monitor 支持同层 lateral 边（${l}_to_${l} 分桶防跨层碰撞）——已沉淀 L0 node_29 | ⚠️ 未 commit（git HEAD 在 09-01）；extension 需 /reload；test_topology ALL PASSED；monitor lateral 分桶/虚线已并入 09-03 回退版保留 |
+| 09-02 | **轨迹页审计全链路**（trajectory.html +159 + index.ts 后端 + highentropy.ts）：每条轨迹行带状态徽章（⟲已反传/reward/runId · 失败 · 🧩入栈待配对 · Ⓣ任务/⚙非任务(TaskType) · 无HE）；💥失败原因逐 attempt 展示；HighEntropy 训练包/AI 回复原文/前向 L0 失败诊断独立分区；backward 失败也落 kind:"backward" 行（输入原文+逐 attempt 错误+耗时）；index.ts `updateTrajectoryTurnMeta` 回填 he_is_task/he_task_type/in_stack；轨迹真·永久=超 800 条最旧段按月转存 _trajectories_archive/archive_YYYY-MM.jsonl 不删除、semantic_backward.jsonl >4MB 按时间戳改名保留新建空卷；highentropy.ts assistantTextPart 递归抽取（兼容 Responses output_text/content parts）；prompt_injection 区分 "0 context nodes" 与 path retained | ⚠️ 未 commit（git HEAD 在 09-01）；index.ts 回填/归档需 /reload；trajectory.html 读盘即时生效 |
+| 09-01 | stock-trade `/api/step` 决策归一化（app.py 输入归一化，**禁止改共享层 local-coms.ts**）；Textron extract 截断修复（字符串感知平衡扫描 + hasBackwardShape 收紧 + 截断显式失败） | ⏳ 7860 待重启 / extension 待重载（/reload 后一并生效） |
+| 08-19 | backward 异步化（setTimeout(0)+串行队列，agent_end 不阻塞）✅ 已生效 4/4 ok；auth.json apiKey 兜底 ✅；backward prompt 规则2(reward 量化上游反馈)+规则6b(L1 软性 may) ；pairing judge 显式识别执行结果反馈；commitNodeHtmlEdges 账货一致源头收口 | 规则/收口后续随重启生效 |
+| 08-03 | backward 三根因：rescale 参数漂移(4 调用点补参+防御默认) / HighEntropy 硬编码空串→capturedHighEntropy 真透传+RULE8 functionSymbol 原样落盘 / SSE collect 全容器递归+180s+kimi effort=low 分流 | 已随 08-19 重启生效 |
+| 08-03 | Function 透传死代码：highentropy.ts Function 块独立剥离(Technique 不再吞代码)+crystal 尾随 ≤1200c；任务栈持久化 800→2400；merge 吞→`merge_action_dropped` 事件；MERGE SCAN 声明同层约束 | ✅ roundtrip 实测通过 |
+| 08-02 | Function 协议两字段化：废除 action/target/version/diff，改 `functionSymbol + functionAbstract`；create/modify/去重/版本回归 backward+merge（同符号函数自然合并） | ✅ 现行协议 |
+| 07-29 | Function 协议引入（五字段之后可选块）：三问自检(会重复/可参数化/可客观验证) | 已被 08-02 两字段化取代 |
+| 07-25 | `reasoning_effort "minimal"→"low"`（API 有效值枚举，400 全拒→json_mode 0%→>80%） | ✅ 已生效 |
+| 07-25 | `nodesAdded is not defined`（overflow 分支漏声明）+ merge>1000c→addDynamicNode 五步链路 | ✅ |
+
+---
+
+# 待办（按优先级合并）
+
+| # | 任务 | 状态 |
+|---|------|------|
+| 0 | **`/reload` 重启 agent（sender/worker/guard）** 验证任务栈生命周期 + 信息获取策略：isTask 无 HE 也入栈、中间轮 append 三级模式（trace `agent_end_process_appended.mode`=he/distill_pending/tail + `agent_end_process_distilled`）、无 HE 轮出现 ⏳[蒸馏中]→蒸馏摘要回填、backward done 即 consumed 出栈、轨迹行 `task_phase`/`process_mode` 全链可见、反馈轮不再被 2000c 截断 | ⏳ src 已改未 reload |
+| 1 | **`/reload` extension**，验证 backward 预算修复：`semantic_backward_params_resolved` 事件 + 四重阶梯成功 + reward≠0 | ⏳ 本会话未 reload |
+| 2 | 重启 7860 stock-trade 服务使 /api/step 修复生效 | ⏳ |
+| 3 | P0 栈溢出（08-19 ns45er/mc8t3r：`Maximum call stack size exceeded`；疑似 HighEntropy/Function 递归、previousTaskForBackward、边更新循环）——近期未见复现，保留排查方向 | ⏳ 未排查 |
+| 4 | 转化率审计：轨迹→backward 转化率、pairing skip 原因须主动暴露 | ⏳ 观察项 |
+| 5 | 账货不一致存量：假孤立节点由源头 commitNodeHtmlEdges 逐渐收口；**禁 sync 全量扫描补丁** | ⏳ |
+| 6 | L1 信息稀疏+离域占槽（node_5 195c 碎片、node_1 离域）；账外残留 node_X.html 超 hyperparams 编号漂移需归并 | ⏳ 观察 |
+| 7 | Function 落盘端到端验证（`run_stock_game_n6_flat_step` 可检索）；对含 `<Function>` 的 HE 禁破坏性 ngram distill | ⏳ |
+| 8 | sender 输出结构化 `trade_feedback`（统一 -5..5 与 10/-10/-2 语义）+ 等复盘事件再触发 backward | ⏳ |
+| 9 | **`/reload` 后验证 tool_result 通道修复**：跑一轮交易 → 断言任务 processLog 含 `[exec]` 条目(带 trade_result 摘要)、pairing judge 任务列表带 recent 上下文且 matchIdx≥0、backward reward≠0；轨迹页可见 💭思考/🔧工具链 section | ⏳ src 已改未 reload |
+| 10 | **`/reload` 后验证 content 结构化提取修复**：任意 turn 的 tools 字段含真实工具输出文本(trade_result/portfolio JSON)而非 `[object Object]`；可用 grep 轨迹 tools 字段计数 `[object Object]` 归零断言 | ⏳ src 已改未 reload |
+
+---
+
+# 硬性约束（不可违反，否则撤销）
+
+1. **禁止改共享通信层 `local-coms.ts`**（全局 agent 通信，波及所有会话）——修点落在 API 边界
+2. **禁止手动清理/删除/篡改网络节点**——污染治理走 forward 选择、reward、backward 合并/降权
+3. **禁止事后全量扫描补丁**（syncHtmlEdgesFromWeights）——账货一致只走源头 commitNodeHtmlEdges
+4. **预算参数禁止在调用点写死**——一律 `buildBudgetParams()`（本次 P0 就是写死参数名）
+5. 兜底阶梯 attempt 必须沿实际失败轴正交（假兜底 = 同一死法重复 N 次）
+6. 新增规则/护栏前先量化现有覆盖度+实际发生频率；无证据的回退；单变量归因（改一处看一处）
+7. Function 协议 version 维护已废除——version 幻觉/双写震荡，全部归 backward+merge
+
+---
+
+# 决策经验（已沉淀节点，供快速复习）
+
+1. **reward = 上游反馈本身的量化，HighEntropy = 事后总结**（有先后性）：HighEntropy 只做节点内容素材，不得驱动 reward 判定
+2. **方案 ≠ 执行**：落地必须过可执行断言（HTML link 数 == weights 边数）才给正分
+3. **"能解析就成功"会把故障伪装成学习**：截断残骸必须显式失败；形状判定要"实质"（有更新/新增/动作）不要"存在"（有 reward 键）
+4. 字符串感知括号扫描（inString/escaped）是 JSON 提取的通用正确形态（app.py 与 Textron 两处统一）
+5. 该学没学要靠指标告警：backward failed、转化率低、任务栈只 push 不消费，显式记录+告警
+6. reasoning 系模型：预算参数名要按 compat 分流、思维链要可界（effort=low / enable_thinking=false），否则 content 恒空

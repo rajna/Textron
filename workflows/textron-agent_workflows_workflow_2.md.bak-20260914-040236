@@ -1,0 +1,62 @@
+# workflow
+
+```mermaid
+flowchart TD
+    n4([开始])
+    n5[Prompt]
+    n6[Prompt]
+    n7([结束])
+    n8[Prompt]
+    n9[Prompt]
+    n8 --> n7
+    n4 --> n9
+    n9 --> n6
+    n6 --> n8
+```
+
+## 步骤
+
+### n4 (start)
+
+有修改 又要将来验证的 写入textron        agent交接default agent 驱动 stock-trade 交易游戏工作流
+
+1. 了解玩法: 虚拟账户¥10万+真实行情逐日推进; 每轮决策{买入·卖出·持有·不建仓}, /api/step 成交后按后续行情结算, 盈亏反馈复盘反传 textron
+2. 调 GET /api/health 探活
+3. 调 POST /api/enter 自动进入(空 body 不指定股票): default 有进行中→continue; 否则载入 active 存档; 全无→随机新开
+4. 调 GET /api/prompt?session_id= 取决策提示词: 含当前价/涨跌幅/持仓, 截止最近收盘, 面向下一交易日
+5. 调 POST /api/step: body{session_id,decision,tradePrice,tradeQuantity,confidence}, 返回 trade_result 与 portfolio(总资产/浮盈亏/收益率)
+6. 调 GET /api/saves 查存档状态(active进行中/ended已结束)
+7. 调 POST /api/load {file,force?} 恢复存档; 有进行中异股无 force→409
+8. 调 POST /api/resume {file,force?} 复活 ended 档为 active
+9. 调 POST /api/finish 结束游戏并持久化
+10. 守卫: worker 禁获取后续行情; 禁剧透走势; 通知/enter 禁指定股票日期, 选股交 A/B 裁决或 load/resume
+11. 衔接: 杀旧进程与启动 guard/sender/worker 三件套由后继节点执行
+
+### n5 (prompt)
+
+sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持仓效率，盈利能力，回撤幅度，仓位控制，买点卖点，是否错过主升等维度打分，苛刻打分，-5到5分，输出格式：<反馈>：上次交易分数{具体分数} ,打分依据,不要剧透后续行情，发给worker 复盘，worker完事后通知sender
+
+### n6 (prompt)
+
+1. 通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成2次交易推进」，不要指定股票和日期 简单通知就完成任务了。
+2. 验证：sender 调 GET http://127.0.0.1:7860/api/health 确认 UI 服务在线；
+3. 执行：sender 调 POST http://127.0.0.1:7860/api/enter进入交易游戏4. 取：sender 调 GET http://127.0.0.1:7860/api/prompt?session_id={session_id}，取 data.prompt 决策提示词(含当前价/涨跌幅/持仓组合)
+5. 发：sender 调 coms_send 把 data.prompt 发至 worker
+6. 执行：worker 依据 prompt 产出决策 JSON {decision∈买入·卖出·持有·不建仓, tradePrice, tradeQuantity, confidence∈高·中·低, reasoning}；worker 做决策时不能用任何手段获取后续股票数据
+7. 发：worker 调 coms_send 把决策 JSON 发回 sender
+8. 执行：sender 调 POST http://127.0.0.1:7860/api/step，body {session_id,decision,tradePrice,tradeQuantity,confidence}，取返回 step.trade_result 与 step.portfolio(总资产/浮盈亏/收益率)
+9. 反馈：sender根据交易返回状态给worker 打分 账户盈利10分，亏损-10，不亏不赚-2，输出格式：<反馈>：上次交易分数{具体分数}，和账户情况，简要说明分数原因 100字，发给worker 复盘
+10. 复盘：worker 依据盈亏反馈复盘反思，反思结束 调 coms_send 通知 sender 
+11. 判定：sender 计数 /api/step 执行次数，未满2次 则回第4步；满2次则下一步(注意这里的次数是从0开始计数，不是看 stock trade里step数，stock trade里step数因为有存档 可能已经发生很多步了)
+
+### n7 (end)
+
+结束
+
+### n8 (prompt)
+
+sender coms通知guard完成所有交易推进次数，guard 接到通知后要做的：1 guard不用分析 交易情况，guard关注点是textron，2 分析textron日志分析 textron 的网络是否收集到了“完整”的轨迹，对话的所有信息 包含工具调用 2次交易的轨迹是否收集到了，轨迹的标准是任务 执行 反馈奖励，是否反传了，是否帮助交易任务提高盈利，任务反馈是否配对成功，否定的话是严重bug   3 查看textron agent 交接文档 的问题是否解决 新增的feature是否验证 2次 交易推进 worker 应该获得sender 两次 反馈 是否 两次 都反向传播了 针对两次交易记录的反向传播 4 根据分析 简要列出textron agent bug （如果有）以及解决方案，等待用户 决定修改哪几条
+
+### n9 (prompt)
+
+1. 杀旧进程：读 ~/.pi/coms/projects/{project}/agents/{name}.json 取 pid 执行 kill -9， screen -ls {name} 找会话 -X   quit 兜底                                   2. 你不是guard，启动 guard：调 osascript -e 'tell app "Terminal" to do script "pi -e ~/.pi/agent/extensions/local-coms.ts         --cname guard --project {project} --purpose \"调度监控\""' 弹独立 Terminal 窗口        3. 启动 sender：调 osascript -e 'tell app "Terminal" to do script "pi -e ~/.pi/agent/extensions/local-coms.ts        --cname sender --project {project} --purpose \"发任务\""' 弹独立 Terminal 窗口            4. 启动 worker：调 osascript -e 'tell app "Terminal" to do script "pi -e ~/.pi/agent/extensions/local-coms.ts        --cname worker --project {project} --purpose \"执行任务\""' 弹独立 Terminal 窗口

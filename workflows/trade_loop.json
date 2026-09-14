@@ -1,0 +1,125 @@
+{
+  "id": "trade-loop",
+  "name": "trade-loop",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "start",
+      "name": "start",
+      "type": "start",
+      "position": {
+        "x": 0,
+        "y": 100
+      },
+      "data": {}
+    },
+    {
+      "id": "s1",
+      "name": "s1",
+      "type": "prompt",
+      "position": {
+        "x": 200,
+        "y": 100
+      },
+      "data": {
+        "label": "取观察数据",
+        "prompt": "orchestrator.py prompt 取服务端观察数据(截止最近收盘日,面向下一交易日)"
+      }
+    },
+    {
+      "id": "s2",
+      "name": "s2",
+      "type": "subAgent",
+      "position": {
+        "x": 400,
+        "y": 100
+      },
+      "data": {
+        "description": "A股交易决策者",
+        "agentDefinition": "只输出纯净JSON决策{decision,tradePrice,tradeQuantity,confidence},面向下一交易日,不依赖未来信息",
+        "prompt": "根据观察数据输出决策JSON",
+        "agentType": "other"
+      }
+    },
+    {
+      "id": "s3",
+      "name": "s3",
+      "type": "prompt",
+      "position": {
+        "x": 600,
+        "y": 100
+      },
+      "data": {
+        "label": "执行交易",
+        "prompt": "orchestrator.py step 执行B的决策JSON, 然后 pnl 算盈亏"
+      }
+    },
+    {
+      "id": "s4",
+      "name": "s4",
+      "type": "prompt",
+      "position": {
+        "x": 800,
+        "y": 100
+      },
+      "data": {
+        "label": "反馈复盘",
+        "prompt": "盈亏反馈给stock-coder复盘(复盘→根因→下轮要点→确认), 汇报boss"
+      }
+    },
+    {
+      "id": "end",
+      "name": "end",
+      "type": "end",
+      "position": {
+        "x": 1000,
+        "y": 100
+      },
+      "data": {}
+    }
+  ],
+  "connections": [
+    {
+      "id": "c1",
+      "from": "start",
+      "to": "s1",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "c2",
+      "from": "s1",
+      "to": "s2",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "c3",
+      "from": "s2",
+      "to": "s3",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "c4",
+      "from": "s3",
+      "to": "s4",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "c5",
+      "from": "s4",
+      "to": "s1",
+      "fromPort": "out",
+      "toPort": "in"
+    },
+    {
+      "id": "c6",
+      "from": "s4",
+      "to": "end",
+      "fromPort": "out",
+      "toPort": "in"
+    }
+  ]
+}

@@ -359,3 +359,48 @@ tool_result/thinking → currentTurnTools/Thinking 缓冲
 4. 字符串感知括号扫描（inString/escaped）是 JSON 提取的通用正确形态（app.py 与 Textron 两处统一）
 5. 该学没学要靠指标告警：backward failed、转化率低、任务栈只 push 不消费，显式记录+告警
 6. reasoning 系模型：预算参数名要按 compat 分流、思维链要可界（effort=low / enable_thinking=false），否则 content 恒空
+
+---
+
+# 2026-09-14 n8 验证轮（第二轮，guard 实证）：Function 落盘调用链断裂 → 已修复
+
+## 现象（四项断言全否，证据均为产物字面）
+| 断言 | 结果 | 证据 |
+|---|---|---|
+| A `highentropy_function_persisted` 事件 | ❌ 0 条 | 按 events JSON `type` 字段精确解析（85237 条）；裸 `grep -c` 得 4 全是 trace 命令/tool_result 回显（假阳性样本，务必按 type 判定） |
+| B 节点 `<function symbol="...">` 块 | ❌ 0 | 6 个节点文件 `</function>` 命中 0（`grep 'function symbol'` 会命中 content 文本提及 `<function symbol="σ">`，必须找闭合标签或 readNodeFunction） |
+| C content `[fn:σ]` | ❌ | 出现的 `[fn:σ]`/`[fn:audit_fn_persist_chain]` 是 LLM 复述 Technique 文本形成的**伪引用链**，非 persist 写入 |
+| D 前向注入 `⟨fn:σ⟩` | ❌ | compile.ts:30 已实现，但依赖 readNodeFunction 读到块 → 块数 0 时永不产生 |
+
+## 根因（单变量）
+`src/index.ts:2952` 在 `forcedSemanticBackward`（:2830 起）内直接引用 `semanticBackwardLLM`（:1669 起）的**局部 const `functionBlock`**（:1752）→ 三次反传全部 `ReferenceError: functionBlock is not defined`（runId `...-ren8bh`/`...-prfcm5`/`...-8nibks`，另 15:50:00 再次复现），并存 `agent_pending_preserved_backward_failed`。
+抛错点在 `semantic_backward_apply` **之后** → nodesUpdated=4/nodesMerged=1 已落盘，而 `persistHighEntropyFunction` 从未执行 → Function 通路整条断，同时把正常反传标记为 failed。
+**栈与加载状态**：runtime `~/.pi/agent/extensions/textron/index.ts` 是 `src/index.ts` 软链（md5 一致）→ 代码已加载，非"未生效"；反传 prompt 侧 `<Function>`（含 functionSymbol）透传正常；worker 报文确带 symbol（box_break_riskbudget_hold / trend_broken_override / trend_broken_min_lot_clear / broken_exit_reentry_plan）→ symbol 解析非瓶颈。
+
+## 假绿成因（必须记住）
+`test_fn_persist.ts` 从未调用 `persistHighEntropyFunction`/`forcedSemanticBackward`（T5 仅注释"模拟"复刻逻辑）→ 11/11 PASS 无覆盖；esbuild bundle 不做类型检查，tsc 的 `TS2304 Cannot find name 'functionBlock'` 零门禁逃逸。
+
+## 修复（commit d511192，最小 diff）
+1. `extractFunctionBlock(highEntropy)` 抽为**同层单一事实来源**，`semanticBackwardLLM` 与 `forcedSemanticBackward` 共用 —— 禁跨函数引用局部变量。
+2. persist 调用点 **try/catch 隔离**（`highentropy_function_persist_failed`）：审计/落盘插桩不得击穿反传主链。
+3. `symbol==""` 早退并记 `highentropy_function_skipped(reason=symbol_parse_failed)`：禁写无 symbol 块（否则 `⟨fn:σ⟩` 永不命中的假达标）。
+
+## 验证（可复现命令）
+```bash
+cd ~/textron-agent
+# 类型门禁：必须零新增错误，且 TS2304 functionBlock 消失（对照 HEAD）
+npx --yes -p typescript@5.9.2 tsc --noEmit --target es2022 --module esnext \
+  --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck --lib es2023,dom src/index.ts
+# 调用链回归（零依赖）
+node --experimental-strip-types test_fn_persist_chain.ts   # 8/8 PASS
+# 打包（模拟 pi 加载）
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/esbuild \
+  src/index.ts --bundle --platform=node --format=esm --external:node:* --external:@earendil-works/* --outfile=/tmp/bundle_check.mjs
+```
+对照实测：HEAD 24 条错误含 `TS2304 functionBlock`；修复后 24→23（仅消除该条），**零新增**。
+
+## 下一步（下一轮验证，勿省）
+1. **重启三件套 / reload extension** 使修复生效（esbuild 加载期快照）。
+2. 重跑 n6 2 次交易推进 → 断言 A/B/C/D 四项（含 `</function>` 闭合标签、`⟨fn:σ⟩` 注入行）。
+3. 若 symbol 仍空：查 `highentropy_function_skipped.reason`（应为 `symbol_parse_failed`，说明 HE 报文未带 `<Function>` 或 `functionSymbol：` 格式不符）。
+4. 观察 `agent_pending` 是否被自然消费，避免修复前后 pending 重放导致同轨迹重复反传（收益口径污染）。

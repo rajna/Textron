@@ -28,12 +28,46 @@ export function readNodeName(filePath: string): string {
   return compressNodeName(readNodeContent(filePath));
 }
 
+const FUNCTION_BLOCK_RE = /<function(?:\s+symbol="([^"]*)")?>\s*([\s\S]*?)\s*<\/function>/i;
+
+/** 读取节点持久化的 <Function> 块（可执行产物，独立于 content 的 1000 字上限）。 */
+export function readNodeFunction(filePath: string): { symbol: string; code: string } | null {
+  try {
+    const html = fs.readFileSync(filePath, "utf-8");
+    const m = html.match(FUNCTION_BLOCK_RE);
+    if (!m) return null;
+    const code = String(m[2] || "").trim();
+    return code ? { symbol: String(m[1] || "").trim(), code } : null;
+  } catch { return null; }
+}
+
+/**
+ * 原地注入/替换节点的 <Function> 块（不触碰 content/edges/name）。
+ * 用途：反传结束后把本轮 HighEntropy.Function 硬落盘——LLM 若未按引用链规则
+ * 把 functionSymbol 写进 content，函数产物仍可在网络里持久化（可执行知识不丢）。
+ */
+export function writeNodeFunction(filePath: string, symbol: string, code: string): boolean {
+  try {
+    const html = fs.readFileSync(filePath, "utf-8");
+    const body = String(code || "").trim();
+    const block = body ? `<function${symbol ? ` symbol="${symbol.replace(/"/g, "&quot;")}"` : ""}>\n${body}\n</function>` : "";
+    let next = html.replace(FUNCTION_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n");
+    if (block) next = next.replace(/\s*$/, "\n") + `\n${block}\n`;
+    fs.writeFileSync(filePath, next, "utf-8");
+    return true;
+  } catch { return false; }
+}
+
 export function writeNodeHtml(filePath: string, layer: number, nodeId: string, content: string, outEdges: { toId: string; weight: number }[], name?: string) {
   const storedContent = String(content || "").slice(0, NODE_CONTENT_MAX_CHARS);
   const nodeName = (name || compressNodeName(storedContent)).slice(0, 64);
+  const preservedFn = readNodeFunction(filePath);
   const edgesHtml = outEdges
     .map((e) => `  <link rel="out" href="../layer_${layer + 1}/${e.toId}.html" data-weight="${e.weight.toFixed(4)}">`)
     .join("\n");
+  const fnHtml = preservedFn
+    ? `\n<function symbol="${preservedFn.symbol.replace(/"/g, "&quot;")}">\n${preservedFn.code}\n</function>`
+    : "";
   fs.writeFileSync(filePath, `<!DOCTYPE html>
 <meta name="layer" content="${layer}">
 <meta name="id" content="${nodeId}">
@@ -44,7 +78,7 @@ ${nodeName}
 </name>
 <content>
 ${storedContent}
-</content>
+</content>${fnHtml}
 `, "utf-8");
 }
 

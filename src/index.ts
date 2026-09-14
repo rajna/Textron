@@ -44,7 +44,7 @@ import { ensureDir, readJson, writeJson, ts, dlog, clamp, completeContent,
          parseLayerNodeId, seedRandom, formatNodesForLLM, previewText } from "./lib/utils";
 import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInstruction } from "./lib/entropy";
 import { lastUserMessageText, rebuildToolsFromMessages, rebuildThinkingFromMessages } from "./lib/round_snapshot";
-import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml,
+import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNodeFunction, writeNodeFunction,
          validateKnowledgeCrystal, intraLayerOrthogonalityCheck,
          isNgramFragmentContent, contextSimilarity, prepareContextLine } from "./lib/node_io";
 import { normalizeMergeFragment, mergeDistinctContentFragments,
@@ -2359,6 +2359,54 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
   }
 
   /**
+   * HighEntropy <Function> 硬落盘（引用链不依赖 LLM 自觉）。
+   * 背景：functionBlock 原先只在反传 prompt 输入侧被消费，LLM 实测只写自然语言 node_updates，
+   * 导致 functionSymbol 无落盘通路、前向注入无从引用。此函数把本轮函数产物落进网络节点：
+   * ① <function symbol=..> 块（readNodeFunction 可读，独立于 content 1000 上限）；
+   * ② 节点 content 缺 functionSymbol 字面时追加 [fn:symbol] 兜底（保 substring 引用链）。
+   * 目标节点 = 本轮实际更新的最浅层节点；无更新则不写（宁缺勿错）。
+   */
+  function persistHighEntropyFunction(
+    net: NonNullable<ReturnType<typeof loadNetwork>>,
+    functionBlock: string | undefined,
+    nodeUpdates: Record<string, string | { name?: string; content?: string; context?: string }> | undefined,
+    taskFamily: string,
+  ): { symbol: string; nodeId: string; contentAppended: boolean } | undefined {
+    const raw = String(functionBlock || "").trim();
+    if (!raw) return undefined;
+    const symbol = (raw.match(/functionSymbol\s*[:：]\s*`?([A-Za-z_][A-Za-z0-9_]*)`?/) || [])[1] || "";
+    const code = raw.slice(0, 1200).trim();
+    if (!code) return undefined;
+    const candidates = Object.keys(nodeUpdates || {})
+      .map((key) => ({ key, parsed: parseLayerNodeId(key) }))
+      .filter((x) => !!x.parsed)
+      .sort((a, b) => (a.parsed!.layer - b.parsed!.layer));
+    const target = candidates[0];
+    if (!target) {
+      recordMonitorEvent({ type: "trace", action: "highentropy_function_skipped", taskFamily, reason: "no_node_updates", symbol });
+      return undefined;
+    }
+    const p = target.parsed!;
+    const fp = path.join(net.path, `layer_${p.layer}`, `${p.nodeId}.html`);
+    if (!fs.existsSync(fp)) return undefined;
+    let contentAppended = false;
+    const content = readNodeContent(fp);
+    if (symbol && !content.includes(symbol)) {
+      const suffix = ` [fn:${symbol}]`;
+      const room = NODE_CONTENT_MAX_CHARS - suffix.length;
+      if (room > 0) {
+        const outEdges = (net.weights.layer_connections[`${p.layer}_to_${p.layer + 1}`] || [])
+          .filter((e) => e.from === p.nodeId).map((e) => ({ toId: e.to, weight: e.weight }));
+        writeNodeHtml(fp, p.layer, p.nodeId, content.slice(0, room) + suffix, outEdges, readNodeName(fp) || compressNodeName(content));
+        contentAppended = true;
+      }
+    }
+    writeNodeFunction(fp, symbol, code);
+    recordMonitorEvent({ type: "trace", action: "highentropy_function_persisted", taskFamily, nodeId: target.key, symbol, contentAppended, codeChars: code.length });
+    return { symbol, nodeId: target.key, contentAppended };
+  }
+
+  /**
    * 网络目标（goal）驱动的「离域清洗候选」计算 —— 单一事实来源，两处复用：
    * ① semanticBackwardLLM：把候选推进 prompt，让 LLM 看见并决定重写什么（看不见就改不掉）；
    * ② applySemanticNodeUpdates：把候选标为 forceOverwrite，让落盘走 replace 而非 merge 拼接。
@@ -2893,6 +2941,16 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         recordMonitorEvent({ type: "trace", action: "highentropy_fallback_skip", taskFamily, reason: "invalid_or_empty_highentropy", activatedIds, hasHighEntropy: !!previousAssistantHighEntropy });
       }
     }
+
+    // ── 2026-09-14 <Function> 硬落盘（引用链不依赖 LLM 自觉） ─────────────
+    // 问题(guard n8 实证): functionBlock 仅在反传 prompt 输入侧被消费; LLM 实测只产出
+    // node_updates 自然语言, 节点文件无 functionSymbol 字面 -> 可执行产物(网络 goal 明确
+    // 要求的「可复用策略函数」)全部留在 _trajectories.jsonl 而没进网络, 前向注入也拿不到。
+    // 修法: 反传结束后由系统兜底——①写 <function symbol=..> 块到本轮更新节点(独立于
+    // content 1000 上限); ②若该节点 content 缺 functionSymbol 字面, 追加 [fn:symbol]
+    // 保证引用链 substring 可命中; ③记事件供审计。
+    const fnPersist = persistHighEntropyFunction(net, functionBlock, result.node_updates, taskFamily);
+    if (fnPersist) Object.assign(bwResult, { functionPersisted: fnPersist });
 
     // ── 2026-09-14 容量强制压缩轮: skip 不许静默 ─────────────────────────
     // 需求: 每层 cap 是硬不变量(任何路径含 merge 派生不得超容); 且满层/超容拒绝新增时

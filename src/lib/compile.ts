@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { readNodeName } from "./node_io";
+import { readNodeName, readNodeFunction } from "./node_io";
 import { NGRAM_DISTILL_PROMOTE, DEFAULT_WEIGHT } from "./network";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
 import { isNgramFragmentContent, prepareContextLine } from "./node_io";
@@ -22,7 +22,12 @@ export function compileContext(
     if (seen.has(n.id)) continue;
     seen.add(n.id);
     const line = prepareContextLine(n.content);
-    if (line) lines.push(`[L${n.layer} ${n.id}] ${line}`);
+    if (!line) continue;
+    // 函数引用链：节点若持久化了 <function symbol=...>，注入时带上符号名，
+    // 让后续决策/反传能按 functionSymbol 字面命中该节点（与反传规则 8 的引用链对齐）。
+    const nodeFile = `${String(n.id).match(/node_\d+/)?.[0] || String(n.id)}.html`;
+    const fn = readNodeFunction(path.join(net.path, `layer_${n.layer}`, nodeFile));
+    lines.push(`[L${n.layer} ${n.id}] ${line}${fn?.symbol ? ` ⟨fn:${fn.symbol}⟩` : ""}`);
   }
   return lines.join("\n");
 }

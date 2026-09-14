@@ -6,6 +6,22 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 01:50）：n8 第七轮 —— goalSim 恒 0 根因（CJK 分词颗粒度）+ F1+F2 运行期验收 ✅
+
+> 触发：guard n8 本轮交易验证（2 次推进：61.17 止损清仓 -2 / 空仓观察 -2，总评 2 分）。
+> 状态：✅ 已改 `d165351`（`src/lib/similarity.ts` tfidfTokens）。**需 /reload 生效**。
+
+## 一、F1+F2 运行期验收（上轮改动，本轮实证生效）
+- `l0_score_start.nodeCount=2`（≥2 ✅ 目录驱动候选池）；`propagate_done.contextIds=["L0::node_1"]`（≥1 ✅ 阈值保底）；`context_user_message_injected.injectedPromptPreview` 非空；「0 context nodes injected」消失。前向注入链路修复完成。
+
+## 二、本轮反传链路失败实证（决定性新根因）
+- 事件链：`semantic_backward_goal_guard` 三节点 goalSim **全 0** → 全部判 off-goal → prompt 注入 MUST-CLEANSE 指令 → 4 模式全部 "no JSON object"（chat_json head 明明以 `{` 开头，JSON 语法非法；chat_stream 直接输出纯文本计划）→ `goal_cleanse_fallback`×5 + `highentropy_function_skipped(no_node_updates, symbol=sameDayBreakStopLoss)` → nodesUpdated=0，本轮交易知识未沉淀。
+- **根因 A（本轮已修）**：`tfidfTokens` 把 CJK 连续串整段成 token（「沉浸出交易经验」7 字一 token），goal 与节点断句稍异即零交集 → 余弦恒 0。实证：L1::node_0 明写「k线序列/均线斜率/黄金分割位/风报比」与 goal 完全对齐，goalSim=0。
+- **修法**：CJK run = 整段短语（精确命中加权）+ run 内去重相邻二字组合（抗断句交集基底）。一处修改，下游 goalCleanseTargets / l0_score / novelty / findSimilarNode 全部受益。
+- 验证：策略节点 goalSim 0.444、交易语料 0.363、纯工程语料 **0**（判别力恢复，真正离域者才进 cleanse 名单）；回归 test_fn_persist_chain 8/8、test_fn_persist 11/11、test_fn_block_survival 9/9。
+- **根因 B（未修，下一批）**：① backward JSON 解析健壮化——balanced 提取后应对候选做容错修复（未转义引号/裸换行/尾逗号），且 `_nojson_response.log` 只落 1000c 头部，无法诊断语法病灶，应落完整 raw；② cleanse 指令措辞不应强制覆写（goalSim 低≠离域，修复 A 后影响已减但仍在）；③ N1 奖励错位（决策轮吃上轮 feedback）与 N2 空转轮反传仍在。
+- **存量失败（与本次无关，stash 对照确认）**：test_lift_jump 2 fail（宿主 L0 内容吸收）+ test_cap_hard ENOENT（测试自身 /tmp 目录依赖）。
+
 # ✦ 最近更新（2026-09-15 01:30）：前向复活 F1+F2 —— 孤儿候选池（目录驱动）+ selected ⊆ context 保底注入
 
 > 触发：用户质询「前向不复活为什么还不改」。

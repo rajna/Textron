@@ -6,6 +6,38 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 02:10）：n8 第九轮 —— JSON 恢复层 + SSE 无缝拼接 + 失败完整raw落盘（8 连败根因）
+
+> 触发：guard n8 本轮交易验证（2 次推进均空仓记平-2，苛刻评分+1）。两次反传 4 模式×2 轮 **8 连败** 全部 "no JSON object"。
+> 状态：✅ 已改 `7b17f2d`（src/index.ts + test_json_repair.ts）。**需 /reload 生效**。
+
+## 一、d165351（CJK bigram）验证结论：已生效 ✅
+- 本轮 `semantic_backward_goal_guard`：L1::node_0（策略）goalSim=**0.4441**（与上轮验收值 0.444 一致）；L0::node_0/node_1（工程语料存量）goalSim≈**0.01** → 判别力恢复，真正离域者才进 cleanse 名单。无需进一步验证。
+
+## 二、本轮 8 连败根因（证据链闭合）
+1. **流式假换行（确证）**：`readSse` 收集 SSE delta 后 `extract` 用 `join("\n")` 拼接——glm-5.3-flash 流式 delta 单字符粒度 → JSON 字符串值/数字/key 内灌入裸 `\n` → 全候选非法。铁证：失败 head `L 0 full ( cap = 2 )` 逐字符空格（diag 的 `\s→space` 压缩后特征）。
+2. **非流式内容级瑕疵（强证据）**：chat_json head 合法 JSON 开头 + finish=stop + partsChars≤1783 非截断，但 balanced 字符串感知扫描也救不起 → 字符串值内未转义双引号使扫描 inString 错位。重放 6/6+诱导 5/5 均合法 → 低频、内容相关（无法离线稳定复现）。
+3. **可观测性本末倒置（结构性缺陷）**：`semantic_backward_llm_raw_response` 事件在 `extract()` **之后**发出 → extract 抛异常时永不发出；_nojson_response.log 只落 1000c head → 失败轮完整 raw 哪里都没有，语法病灶永不可见。
+
+## 三、修复内容（单主题：JSON 恢复层，两道正交防线）
+- **防线①源头（readSse）**：delta `join("\n")`→`join("")` 无缝拼接（delta 本是增量切片无需分隔）——结构级污染只能在此修复（repair 层救不了 key/数字语义破坏，T5b 实证）。
+- **防线②内容（extract）**：新增 `tryRepairJsonParse`——状态机修复字符串值内未转义引号（后瞻非结构字符→转义）、裸 \n\r\t→转义、尾逗号删除；repair 成功发 `semantic_backward_json_repaired` 事件。合法 JSON 原样通过（T4 假阳性防护）。
+- **诊断（extract 失败路径）**：_nojson_response.log 改落 **完整 raw**（[FULL_RAW] 块）+ rollover 2MB；下轮若再败可直接看语法病灶。
+- 测试：test_json_repair.ts **12/12**（未转义引号/裸换行/尾逗号/假阳性防护/流式拼接/散文包裹/垃圾输入/结构级污染边界）；回归 fn_persist 11/11、fn_persist_chain 8/8、fn_block_survival 9/9；esbuild bundle ✅。
+- 注意：`test_fn_persist*.ts` 用 `node --experimental-strip-types` 直跑会 ERR_MODULE_NOT_FOUND（entropy 子路径解析），须 esbuild bundle 后跑（fn_persist_chain 例外可直跑）。
+
+## 四、验收断言（/reload 后下轮反传）
+- 流式不再出现逐字符空格 head；`semantic_backward_json_repaired` 事件出现则 repair 层命中；8 连败场景 → 至少一个 attempt 成功、backward status=ok、nodesUpdated>0、`highentropy_function_persisted` 恢复。
+- 若仍全败：读 `_sb_logs/_nojson_response.log` 的 [FULL_RAW] 块直接定位病灶。
+
+## 五、遗留（未修，按优先级）
+- 根因 B② cleanse 指令措辞强制覆写（goalSim 低≠离域；L0 两个工程语料存量节点本轮又被 LLM 判 MUST-CLEANSE 但覆写未落地）→ L0 工程语料出清依赖下轮 repair 救起的覆写或 merge 收缩。
+- 根因 B③ N1 奖励错位（决策轮吃上轮 feedback）+ N2 空转轮反传（本轮 2 次反传 inputChars 615/1849 均为流程轮）。
+- 存量失败：test_lift_jump 2 fail（宿主 L0 内容吸收）+ test_cap_hard ENOENT（测试自身 /tmp 依赖）。
+- 收益趋势：本轮 2 次均空仓（-2/-2），账户 ¥102,493（+2.49% 存档基数）；网络对收益的贡献仍不可归因，需累计更多回合。
+
+---
+
 # ✦ 最近更新（2026-09-15 01:50）：n8 第七轮 —— goalSim 恒 0 根因（CJK 分词颗粒度）+ F1+F2 运行期验收 ✅
 
 > 触发：guard n8 本轮交易验证（2 次推进：61.17 止损清仓 -2 / 空仓观察 -2，总评 2 分）。

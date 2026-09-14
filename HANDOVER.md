@@ -480,3 +480,54 @@ agent-022388 独立复验第三轮 A/B/C/D 全过，同时报出 N5/N6/N7。guar
 
 ## P4 冗余清理
 落盘 code 保留 `functionSymbol：x` / `functionAbstract：y` 标签头 ⇒ 块内 symbol 重复。可在 `persistHighEntropyFunction` 落盘前剥离标签行（仅保留 `functionAbstract` 之后的代码体）。
+
+---
+
+# 2026-09-14 n8 第五轮（default 复验）：前向注入停摆的确定性根因 —— 「知识已入网却零收益」
+
+## 轮次事实（先看这条，它决定了整轮实验是否可归因）
+n6 交易轮（存档 `sz.301299`，会话 `a0dbe632a067`）第 2 笔「卖出 300股 @ ¥68.40」**委托越出当日区间 → `success:false` 未成交**，账户由 ¥106,108 → ¥102,493（-¥3,615，持仓未变，属市价波动）；两轮合计 **-¥4,565**。
+而同一时刻 `layer_0/node_1.html` 的 content 已明文写着该规则：「`tradePrice` 是报价非成交价——fill 落在当日 [最低,最高] 内，越界 `success:false`，故报价须先裁剪进当日 K 线区间」。**同一错误在 8 分钟内重演。**
+
+## 根因 R1：孤儿节点 —— L0 候选池由 `hyperparams.layers[0]` 驱动，而非磁盘目录
+`src/index.ts:3378`
+```ts
+const l0Nodes = [];
+for (let n = 0; n < net.hyperparams.layers[0]; n++) { ... }   // ← 只扫到 layers[0] 个槽位
+```
+三行实证（2026-09-14T16:27:35Z）：
+- `l0_score_start` → `nodeCount: 1, nodes: [{id: "L0::node_0", hasContent: true}]` —— **L0::node_1 从未进入评分候选**
+- `layer_0/node_1.html` 实际存在，`contentChars = 999`（交易游戏操作手册：/api/step 计数口径、session_id 位置、tradePrice 语义、打分口径）
+- `hyperparams.json` 的 `layers` 实测两次采样为 `[1,2,1,0]` 与 `[1,0,2,1]`，**与磁盘 node 文件数（L0=2, L1=2, L2=2, L3=1）系统性不一致** ⇒ `layer_0/node_1`、`layer_1/node_0/1` 等均为**孤儿**（存在、有内容、不可达）
+
+**结论：知识确实"入网"了，但它落在引擎从不扫描的地址上。** 这不是网络学习失效，是索引与磁盘脱节；把改善寄托在「空洞回收 / L0 只容域内 / meta_to_domain_ratio」之前，必须先修这条 —— 否则任何域内知识只要落在 index ≥ `layers[i]` 的槽位就永久沉默。
+
+## 根因 R2：阈值断层 —— 已 `selected` 的节点被 `score < threshold` 挡在 `context` 之外
+`propagate_done` 实测：`selectedIds: ["L0::node_0"]` 而 `contextIds: []` ⇒ **0 注入**。
+`l0_exploration_applied.topAdjusted` 连续 7 次采样 vs `threshold = 0.2`：
+`0.2138` ✅ / `0.1212` / `0.1602` / `0.0431` / `0.1001` / `0.1385` / `0.0995` —— **仅 1/7 越过阈值**。
+分数链（`index.ts:3407`）：`llmScore*(1-0.15) + prScore*0.15` → 再被 `moe_route` 的 `gatedScores` 覆盖（`moe_route_done.enabled=false, maxExpertScore=0`）→ 再经 `applyExplorationPolicy`。
+⇒ `selectedIds ≠ ∅` 但 `contextIds = ∅` 是**稳定的退化态**，不是偶发。判据上应确立不变式：**selected ⊆ context（选中即注入）**，或每层 top-1 保底注入；"选中判据"与"注入判据"不该用两个不同阈值各判一次。
+
+## 决策经验（本轮要固化到交接的核心）
+1. **「知识入网 ⇏ 收益改变」有三个必要条件，缺一即收益恒不变**：①知识落在引擎实际扫描的槽位（R1）②该节点分数越过注入阈值（R2）③注入文本在决策时被采纳。三者任一断裂，外部现象与「网络没学到」**完全同形**，本轮 -¥3,615 即此 —— 因此**不能以"收益没变"反推"训练无效"**，必须先证 `injectedCount ≥ 1`。
+2. **派发纪律**：`injectedCount ≥ 1` 是派发交易验证轮的**前置门禁**。`0 context nodes injected` 的轮次是空转实验，改进效果不可归因，跑再多轮也只增加噪声。
+3. **归因纪律**：未成交（或仅持仓存续）时 `portfolio.total_value` 的差额**全部是市价波动，不可归因于决策**；此类轮次记 `flat` 并标注 `unattributed`，严禁按盈利 +10 / 亏损 -10 打分 —— 本轮第 2 笔的 -¥3,615 本质是「执行失败 + 市价」，不是「判断错误」。
+4. **验收纪律**：四判据须同时成立才判过 —— `injectedCount ≥ 1` ∧ `merge_action_lifted` ∧ `persisted symbols ⊆ 磁盘闭合块` ∧ `dangling 不增`。
+
+## P0-0 修正意见（对「决策侧强制 clip tradePrice」的反对与替代）
+直接对 `tradePrice` 静默 clip 会**把「限价可能打空」这一真实约束消掉**，等于删掉执行层的核心学习信号，并使「挂单价格质量」永远无法被训练。
+替代（保留信号 + 可归因）：
+- clip 后**必须同时回传** `requested_price` 与 `clipped: true`，让轨迹能把「报价失真」与「判断错误」分开；
+- 或改为**服务端返回当日可成交区间提示**（`[low, high]` 在 `prompt` 中给出，不剧透走势方向），把「裁剪进区间」留给决策侧显式执行 —— 这样 clip 是可学行为，而非被系统偷偷代劳。
+- 未成交分支统一置 `unattributed: true`，打分侧按经验 3 记 flat。
+
+## 最小修复（按收益排序，均单点可测）
+- **F1（最高，孤儿根因）**：L0/L1/...候选池改为**目录驱动**（`glob(layer_i/node_*.html)` 且 `readNodeContent 非空`），或启动/载入时**校正不变式** `layers[i] = max(声明值, 该层有内容的最大 index+1)`。验收：`l0_score_start.nodeCount ≥ 2` 且 `L0::node_1` 出现在 `nodes`。
+- **F2（阈值断层）**：确立 `selected ⊆ context`；或对每层 top-1 保底注入。验收：`propagate_done.contextIds.length ≥ 1`。
+- **F3**：`injectedCount` 写入每轮 trace，并在 `contextIds.length === 0` 时记 **error 级** `forward_injection_stalled`（本轮正是静默 0 注入跑了 7 个回合无人报警）。
+
+## 附：本轮 P0/P1 验收结论（供下一轮对照）
+- P0（块稳态存活）**FAIL**：本轮 2 个 persisted symbol（`volBreakoutHoldScore` 16:20:10、`engulfFalsifyTrim` 16:21:43，均落 L2::node_0）终态全网真块 = ∅。**蒸发机制非 merge**（nodesMerged 全 0），是 `writeNodeFunction` 的**单槽替换**（`html.replace(FUNCTION_BLOCK_RE,"")` + 末位追加，RE 无 `g` flag）。tsx 复现：persist(symA) ✓ → `writeNodeHtml`(content 重写) **保留 symA ✓（f69f38d 此项生效）** → persist(symB) ⇒ symA 消失、blocks=1。对照上文 P2「待修」，本轮独立确证。
+- P1（跨层提升）**FAIL**：`merge_action_lifted` 本轮 0 次；`nodesMerged` 本轮全 0。另发现**零事件静默吞没**：16:20:47 三件套侧提出合法 merge（`L2::node_0 → L1::node_1`, Δ=1），结果 `nodesMerged=0 / nodesSkipped=0 / skipReasons=[]` —— 根因 `liftMergeNodes` 前置 `!tgtContent?.trim() → empty_content`（L1 两槽 content 皆空 ⇒ 提升到空槽位永远失败），且失败**只走 `onLog` 不写 monitor event**。→ 建议补 `merge_action_rejected{reason}` 事件，禁止只 log。
+- **口径污染告警（方法论）**：`agent-022388`（pid 918，启动 23:18:17）**早于** ca826eb(00:01:09)/f69f38d(00:03:31) 且未重启，其 16:23:36 / 16:24:08 两轮旧代码 backward 写入了 `reason:"layer_jump"`（该字面仅存在于 `src/index.ts.bak-*`）并把工程域元知识灌进 `stock_alpha`。⇒ **验收必须记录 writer pid 与 extension 源 hash**，多进程共享 `_events.jsonl` + 网络目录时，否则会把未重启旧进程的写入误判为本轮回归。

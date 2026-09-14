@@ -1,229 +1,219 @@
-# Textron TODO
+# Textron 元讨论：符号压缩 → 引用造句 → 概念繁衍
 
-## Backward 质量修复 + 冷启动（2026-07-22 晚）
+> 记录时间：2026-07-25
+> 参与：planner（星象预测 agent）+ boss（代码架构）
+> 主题：Textron 节点 name 如何成为像 ∫ / Transformer 那样的高熵压缩符号
 
-### 已修（待重启验证）
-- [x] **DELETE 禁止**：systemPrompt schema 移除 `delete` 示例，Rule 1 新增 `NEVER propose delete`，解析层过滤 LLM 输出的 delete action
-- [x] **name 蒸馏合并**：`applySemanticNodeUpdates` 和 `updateExistingNodeByPolicy` 的 name 改为 `distillNodeName(oldName + newName)` 而非全量替换
-- [x] **MERGE DUTY**：新增 Rule 7，强制 LLM 扫描 RELATED 节点 ≥30% 重叠时提 merge
-- [x] **冷启动虚拟 L0**：forward 0节点时从当前消息创建 `_seed_0` 虚拟节点，backward prompt 单独展示 SEED 节点引导 LLM 用 add_nodes 落地
-- [x] **_seed_ 写入防护**：`applySemanticNodeUpdates` 检测 `_seed_`/`_cold_` 前缀跳过写盘
+---
 
-### ⚠️ 已知遗留
-- [ ] **agent_end 冷启动缺口**：`agent_end` 依赖 `isTask && highEntropy` 才推栈。冷启动时若 LLM 不输出 isTask=true，即使 forward 有了虚拟 L0，agent_end 也不推栈 → 下轮无 backward → 虚拟节点永远不落地。**风险等级：低**（HighEntropy 指令始终注入 systemPrompt，LLM 通常会输出；只有极端冷启动第一轮且 LLM 遗漏 HighEntropy 时才触发）。建议观察几轮后决定是否修，修复方向：`agent_end` 检测到 0 nodes + network matched 时，即使没有 HighEntropy 也构造最小任务入栈。
-- [ ] **MERGE DUTY 27轮0触发（第27轮审计发现）**：Rule 7 prompt存在但LLM在node_actions中从不产出merge。需强化输出格式：在schemaHint中显式列出merge action示例，或在user prompt中逐对展示RELATED节点重叠度并强制LLM逐对回答merge/keep。改index.ts需重启→通知boss。
+## 一、当前问题：name 是"人名"不是"符号"
 
-## Content Limit 1000c + Merge 防截断（2026-07-22）
+当前 L0 节点 name 现状：
+- `Warframe AI CogView-3-Flash assets_raw/ assets/` — 工程路径拼接，非概念
+- `z.type createLinearGradient createRadialGradient` — 变量名拼接，非概念
+- `4 DOWN UP json_mode reasoning_effort HANDOVER.md` — 事件元数据，非概念
 
-- [x] 新增 `content_limits.ts`，网络节点 Content 统一上限 **1000字符**；HighEntropy `Task≤100`、`Technique≤500` 独立控制
-- [x] `index.ts` validator、update/add、merge、rescale、semantic backward schema/prompt 全部对齐1000
-- [x] `storage.ts` 与 `index.ts` 最终写入层增加1000硬上限，防止新调用者绕过
-- [x] `backward.ts`、`orthogonality.ts` 清除残留120字符硬截断
-- [x] 前向节点单条最多1000字符，并增加 compiled context 总预算，避免多节点无界放大prompt
-- [x] 新增 `test_content_limits.ts` 验证merge超过旧480上限、1000硬上限和磁盘round-trip
-- [ ] 重启后运行时验收：观察 backward 的 `nodeUpdates` 可保留>480且≤1000字符，compiled context不超过预算
+**这些 name 只用于区分节点（"人名"），没有被后续知识引用，不产生新概念。**
 
-## MoE Router + Novelty Expansion（2026-07-21）
+对比 ∫ 和 Transformer：
 
-- [x] 新增运行时 MoE Router：`moe_router.ts`，L0 评分后经 E0/E1/... 虚拟专家 top-k 门控再传播。
-- [x] 新增 novelty policy：`novelty_policy.ts`，`routeUncertain`、`moeMaxScore<0.08`、负 reward + HighEntropy 触发 L0 新主题锚点。
-- [x] 保持“始终注入”策略：`content_match`/`best_effort` 只标 `uncertain=true`，不再 abstain historical prior。
-- [x] `_last_state.json` 保存 `routeUncertain/moeMaxScore`，下一轮 backward 可消费。
-- [x] 修复 extension runtime symlink：`~/.pi/agent/extensions/textron/{moe_router,novelty_policy}.ts`。
-- [x] 文档：最新进展写入 `PROGRESS_2026-07-21_moe_novelty.md`。
-- [ ] 运行时验收：检查 `route_done(policy=always_inject_and_let_backward_converge)`、`moe_route_done(maxExpertScore)`、`semantic_add_node_synthesized(targetLayer=0)`、`semantic_backward_apply(nodeMutations)`。
-- [ ] 污染修正观察：`L2::node_32` 仍保存旧中间态“低置信 abstain”；后续 backward 应更新为“始终注入+收敛治理”。
+| 维度 | ∫ / Transformer | Textron 当前 name |
+|------|----------------|-------------------|
+| 压缩比 | 7个独立概念→1词 | 内容→前几个关键词 |
+| 引用率 | 百万次/年 | 0次 |
+| 繁衍力 | BERT/GPT/ViT | 无 |
+| 位置 | LLM SFT 学到 | 每次注入需重新解释 |
+| 验证 | 引用=信任 | 引用=路由得分 |
 
-## 步骤⑥ 深度分析结论（2026-07-20，176轮 backward + _events.jsonl）
+## 二、改造思路：backward 造句 → forward 引用链 → 符号固化
 
-- 前向：L0 LLM 打分失败 **213+ 次**（几乎全是 Empty response content，多模式重试均败）→ local fallback 兜底
-- 反向：reward 正27/负66/零83；近20次 apply 中 15 次 +0.02 兜底；HighEntropy 缺失 **489 次**；reward 日均值 -0.12→-0.19→-0.53 恶化
-- 内容：节点高熵性 ✅；但 astro_stock_prediction 混入开发类知识（污染）
-- 趋势：正确率 45.5%→52.9%→50.0% 波动无上升
+### 2.1 机制改造（当前 Textron 可落地）
 
-优化清单：
+**原理**：backward 写节点 content 时，不用"name:content"的孤立定义格式，而是要求 LLM 用其他节点的 name 造句，把 name 嵌入 content 上下文。forward 时 LLM 看到的不再是定义而是"用法"。
 
-- [ ] ~~P0: 去掉 +0.02 假正 reward 兜底~~（2026-07-20 用户决定**不改**，保留原逻辑；证据留档：_events apply 日志 + L2::node_52“兜底弱正会稀释真信号”）
-- [ ] P1: L0 打分 213+ 次空响应——调查 provider 空响应根因（疑 max_tokens 截断/拒答），加重试降级链落点记录
-- [ ] P1: HighEntropy 缺失 489 次——提取失败时用 assistant 正文经 buildAtomKey/distillNodeName 自动蒸馏兜底
-- [ ] P1: 审计负 reward 的 `noise_penalty` 范围——第16轮激活边仅11条，但日志显示大量非激活边同时降权；确认是否会造成全图权重塌缩，并将惩罚限制到选中路径或可证明相关的邻边
-- [ ] P2: 网络污染隔离——非星象任务禁入 astro_stock_prediction（路由策略或 taskFamily 强制）
-- [ ] P2: ngram_distill_skip 82 次——分析跳过原因分布
-- [ ] P3: 实现 L2::node_52 提出的“权重均值收敛”监控指标
+```
+当前（定义导向）：
+  L0::node_X: hhhh = 满月时K线反转概率+15%
 
-## Lifecycle feedback 边界（2026-07-21）
-
-- [x] 控制性确认/继续/等待消息不触发 semantic backward，并保留前一真实任务状态
-- [x] 长重启交接（>420字符）按明确 lifecycle intent 识别，不再因长度绕过分类
-- [x] 控制轮在 `agent_end` 不覆盖或创建待反馈状态，即使旧状态/HighEntropy 为空
-- [x] `_last_state.json` 恢复时丢弃已持久化的控制任务，避免旧版本污染跨重启延续
-- [x] 修复 `_last_state.json` 仅保存前500字符导致长控制消息恢复误判；`rawUserPrompt` 改完整保存，`effectivePrompt` 保留4000字符
-- [x] 真实结果反馈只触发上一轮 backward，`agent_end` 立刻清空待反馈状态并删除 `_last_state.json`，避免下一轮预测任务被用来评价反馈复盘
-- [ ] 重启后运行时验收新增保护：`semantic_backward_skipped`、`agent_end_state_preserved`、`state_restore_skipped`/`agent_end_state_cleared`；真实结果反馈仍须触发负/正 reward
-
-## Scale-Rescue 启发 1（2026-07-20 已实现，Wang–Zahl inspired）
-
-## Scale-Rescue 启发 1（2026-07-20 已实现，Wang–Zahl inspired）
-
-理论来源：王虹–Zahl 3D Kakeya 证明（arXiv:2502.17655）元操作——任意集合在【正确尺度】下都有分形结构；蒸馏失败 = 尺度错误，不是垃圾。主定理（任意凸集并的体积估计）远超 Kakeya 本身，是为“意外收获”。
-
-已实现：
-
-- [x] `name_distill.ts` 新增 `buildAtomKey()`：从被拒内容提取 top 高熵关键词，阅读序 `·` 连接（避免 ngram-fragment 隔离 regex），<2 个区分词才返回 null（真无结构才放弃）。已单测。
-- [x] `index.ts` 新增 `rescaleRejectedCrystal()`：按拒绝原因分两路
-  - downscale（too_long/low_entropy/raw_ops/temporal/truncated/meta）→ 原子锚点节点，经 addPolicyNode mergeSimilar 去重
-  - upscale（too_short/not_transferable）→ `_rescale_pending.json` 缓冲（上限 20，FIFO），同层 tokenSimilarity≥0.2 片段配对合并成主题节点再过 gate
-- [x] 四处拒绝分支已接入：`applySemanticNodeUpdates`、`autoBackward` add_nodes、手动 filledNodes ×2。skipReasons 带 `→rescale:<action>` 后缀。
-- [x] rescale 事件记录到 `_events.jsonl`（type=rescale）。
-
-后续待办：
-
-- [ ] ngram distill 拒绝路径（`ngram_distill_skip`，~2790 行）尚未接 rescale——旧内容仍在节点上不算丢失，优先级低；若要接，走 downscale-only。
-- [ ] 观察指标（跑一周后回顾 `_events.jsonl`）：downscale/upscale 触发频率、atom 节点占比、pending 缓冲配对成功率、atom 节点是否被 L0 打分命中。
-- [ ] 若 atom 节点泛滥：提高 `buildAtomKey` 的 minTokens 或加 atom 专用容量上限。
-- [ ] `prepareContextLine` 读路径隔离不接 rescale（设计如此：读路径只过滤展示，不学习）。
-
-## Scale-Rescue 启发 2-5（待实现）
-
-- [ ] 启发 2：节点显式尺度标签（`<meta name="scale">`，词熵/长度估算粒度）；forward 时先估计 query 尺度谱，scale-matched routing 而非一律 L0 打分；合并/去重改多尺度 TF-IDF（bigram/word/phrase 三尺度加权）——“在正确尺度上比较两个集合”。
-- [ ] 启发 3：clumpy/regular 二分 → 正交性判据完备化。新知识与已有节点关系必居三类（重叠 merge / 同域异面共存对照 / 全新 add），引入同层横向边保存“同域异面”对照关系，避免 merge 丢失差异信息。
-- [ ] 启发 4：induction on scales → L0 自相似一致性巡检。L0 节点 name 应 ≈ 下游节点 name 集合的再蒸馏（name of names 分形塔）；用现成 `sharesKeywordWithContent()` 巡检，失配触发 L0 重蒸馏。
-- [ ] 启发 5：distill 管线 API 化（`textron distill <text> --scale=N`），供代码库知识图谱/对话记忆/skill 库复用——textron 的“体积估计定理”。
-
-## Critical: implement strict forward/backward learning loop
-
-Target loop:
-
-1. User sends current input `U_n`.
-2. Before AI answers, Textron runs forward propagation based on `U_n`:
-   - score L0 nodes using the current user input
-   - propagate through weighted graph
-   - select path nodes
-   - compile selected node context
-   - inject compiled context into the prompt/system prompt before the AI answer
-3. AI answers and must include a compact high-entropy summary at the end:
-
-```xml
-<HighEntropy>
-≤200 chars: reusable high-entropy summary of the answer's decisions, fixes, reasoning, and transferable implementation insight. No raw logs, file listings, or session summaries.
-</HighEntropy>
+改造后（引用导向）：
+  L0::node_X: hhhh = 满月时K线反转概率+15%
+  L1::node_Y: 月合冥王+hhhh触发→确认反转信号 | 连续下跌≥4日+hhhh→买入窗口
+  L2::node_Z: hhhh失效场景=新月次日+Phase<0.3→改用相位净计数
 ```
 
-4. On the next user turn `U_{n+1}`, before answering, Textron must run backward for the previous turn using:
-   - current user input / feedback `U_{n+1}`
-   - previous selected path `P_n`
-   - previous AI answer high-entropy summary `H_n` extracted from `<HighEntropy>...</HighEntropy>`
-5. Backward must produce reward + node/edge update instructions, then update the graph.
-6. Backward must complete before the new forward pass for `U_{n+1}` starts.
-7. After backward finishes, run the normal forward process for `U_{n+1}` and answer.
+forward 激活 `hhhh` 时，同时注入"hhhh 被用在哪些句子里"。LLM 从上下文学到"hhhh 怎么用"——这就是 SFT 中 ∫ 被学到的方式。
 
-## Missing / broken pieces to implement
+### 2.2 backward prompt 改造（Rule 8: SYMBOL EMBEDDING）
 
-- [x] Inject a mandatory `<HighEntropy>...</HighEntropy>` instruction into the assistant prompt for every turn.
-- [x] Capture assistant final output or stream deltas and extract `<HighEntropy>`.
-- [x] Persist `lastAssistantHighEntropy` alongside `lastUserPrompt`, `lastActivatedIds`, and `lastSelectedEdgeIds`.
-- [x] Add `lastAssistantHighEntropy` to `semanticBackwardLLM` input.
-- [ ] Change next-turn backward from fire-and-forget to awaited execution before current-turn forward. *(Deferred by design: current requirement is "backward need not await; ensure reverse updates happen".)*
-- [x] Stop zero-activation raw user prompt seeding into L0. Never create L0 nodes from raw user text.
-- [ ] Add a quarantine/quality filter so low-entropy existing nodes do not participate in scoring/propagation.
-- [x] Avoid manual network edits as a normal workflow. Project TODOs belong in repo files, not Textron nodes.
+```
+Rule 8. SYMBOL EMBEDDING: When writing node_updates content, USE existing node names from RELATED/EXISTING as building blocks in your sentences. Example: if nodes "满月反转" and "月合冥王" are related, write content like "月合冥王+满月反转触发→买入信号". This embeds the symbol into usage context, giving it a "vector position" through citation. Nodes that get repeatedly cited this way become stable high-entropy anchors — like ∫ in mathematics. Nodes that are never cited or only cited in wrong predictions will naturally decay through edge weights.
+```
 
-## Design principle
+### 2.3 name 质量改造（已部分完成）
 
-Textron is an external small brain for agent use, not a memory log. Network nodes should store transferable decision patterns, routing keys, and high-entropy reusable principles. Raw commands, HTTP checks, process IDs, UI restart messages, user prompt copies, and session summaries must never become graph nodes.
+- ✅ name_distill.ts: identLike 评分 10+len/2 → 4-len/4（文件路径/变量名不再压制域名）
+- ✅ backward Rule 4: name MUST be compressed symbolic anchor（like ∫ or Transformer）
+- 待做：name 被引用后，引用统计影响 forward 路由权重
 
-## Implemented (2026-07-04 ~ 07-05)
+### 2.4 验证标准
 
-- [x] HighEntropy fallback updates all selected path layers (L0/L1/L2), not only deepest.
-- [x] Fallback layers get progressively longer content (≤48/≤100/≤120 chars), not identical copies.
-- [x] No hardcoded layer roles (L0≠trigger, L1≠tradeoff, L2≠tactic). Network learns orthogonal roles via edge-weight training.
-- [x] Node update merged with old content instead of blind replacement. High overlap → append new tokens; low overlap → `|` separator; ≤120 char cap.
-- [x] Compiled Textron context injected into user prompt (not system prompt), wrapped in `<TextronSkill>` XML tags.
-- [x] New network auto-creation replaced with node expansion on best-match existing network. `init` and `backward` auto-create both redirected.
-- [x] nbeat bridge uses generic `NBEAT_PI_EXTRA_ENV_JSON` + `NBEAT_JOB_STATE_FILES` instead of Textron-specific env vars.
-- [x] nbeat child Pi scoped `textron_state.json` via `TEXTRON_STATE_FILE` env for create→refine backward continuity.
-- [x] nbeat UI backend selector (LMMS / PCM) with same style as Deliverables chips.
-- [x] Modular synthesis backend architecture: `scripts/backends/{pcm,lmms}.py` + dispatcher `generate_beat.py`.
+一个合格的符号 = ∫ 标准：
+1. **引用率 > 3**：被至少 3 个其他节点在 content 中造句引用
+2. **存活率 > 5轮**：连续 5 轮 forward 被路由命中
+3. **正 reward 占比 > 50%**：被引用的节点平均 reward > 0
+4. **衍生 ≥ 1**：产生了新的高阶符号（类似 Transformer→BERT/GPT）
 
-## Convergence: making Textron learn like a real neural network
+## 三、Transformer 架构 LLM 改造方案
 
-Research summary from NLP classics, graph algorithms, entropy theory, and 2024 GNN convergence papers.
+### 3.1 当前 Transformer 的局限
 
-### Current bottleneck
+```
+输入: [tok_1, tok_2, ..., tok_n]
+输出: 预测 tok_{n+1} ∈ vocabulary（固定词表，如 50K tokens）
+```
 
-- Edge weights update per-sample with no convergence target.
-- No loss function; qualityScore oscillates without downward trend.
-- No regularization; nodes can duplicate or overfit.
-- Forward propagation runs once; no guarantee of stable activation distribution.
+- 词表固定，无法容纳新概念符号
+- 信息存储在 attention/FFN 权重里，无法精确定位"某条规则"
+- 学到的是"统计共现"，不是"符号引用"
 
-### P0: PageRank-style iterative propagation to steady state
+### 3.2 改造方向：Concept Sequence Prediction
 
-**Source**: Brin & Page (1998), Markov chain convergence theory.
+**将"预测下一个 token"改为"预测下一个 token + 预测下一个概念符号"：**
 
-Forward should iterate until node activations stabilize: ∥aₜ₊₁ − aₜ∥ < ε.
-Connected non-bipartite graph guarantees unique stationary distribution πP = π.
-Maps to Textron: edge matrix as stochastic matrix; steady-state activations = truly learned path.
+```
+输入: [tok_1, tok_2, ..., tok_n, concept_1, concept_2, ..., concept_m]
+输出: {
+  next_token: 分布 over vocabulary（原有）
+  next_concept: 分布 over dynamic concept space（新增）
+}
+```
 
-### P0: Entropy-driven node quality
+**Dynamic Concept Space** 不是固定词表，而是一个可增长的符号集合：
 
-**Source**: Shannon entropy, Maximum Entropy Principle (Jaynes, 1957).
+```
+concept space = {
+  "满月反转": {def: "满月时K线反转概率+15%", cited: 23, reward_avg: +0.7},
+  "月合冥王": {def: "情绪极端化概率上升", cited: 15, reward_avg: +0.4},
+  "新符号X": {def: null, cited: 0, reward_avg: 0},  ← 由模型自己创造
+}
+```
 
-Replace regex-based validateKnowledgeCrystal with: node_score = H(content) × relevance(task).
-High-entropy nodes = dense information per token → preferred in scoring.
-Low-entropy nodes (template, repetition, operational traces) → penalized.
+### 3.3 训练流程改造
 
-### P1: Spreading Activation with depth decay
+```
+Phase 1: 基础语料预训练（同标准 LLM）
+Phase 2: 概念蒸馏训练
+  - 输入一段语料
+  - 模型输出预测 token + 预测/创造概念符号
+  - 后续语料中若出现该符号（引用），计算 citation reward
+  - 引用越多，符号权重越高（类似 Hebbian learning）
 
-**Source**: Collins & Loftus (1975), Anderson (1983) ACT-R.
+Phase 3: 符号繁衍训练  
+  - 高引用符号可被组合衍生新符号（"满月反转" + "月合冥王" → "满月冥王共振"）
+  - 新符号经后续语料验证（被引用→存活，无引用→消亡）
+  - 形成概念演化树
+```
 
-Activation should decay with layer depth: a[l+1] = a[l] × W × γ^l, γ ∈ (0.85, 0.95).
-Creates natural "highway" paths (frequently reinforced) vs "trail" paths (low-frequency).
-Long paths require stronger edge weights to survive.
+### 3.4 架构改动点
 
-### P1: Curriculum learning / difficulty schedule
+| 组件 | 改动 |
+|------|------|
+| Embedding Layer | 新增 Concept Embedding，维度与 token embedding 相同，但 vocab 动态增长 |
+| Attention | 注意力头分两类：token-token 和 concept-concept，允许 cross-attention |
+| Loss | 新增 concept_loss = α·citation_reward + β·offspring_count + γ·concept_compression_ratio |
+| Output Head | 双输出：token_head（原有）+ concept_head（新，输出动态 concept space 分布） |
+| Vocabulary | 固定词表 + 动态 concept 词表（运行时维护，类似 Textron 的 ~/.textron 网络） |
 
-**Source**: Bengio et al. (2009).
+### 3.5 与 Textron 的关系
 
-Backward learning rate modulated by task difficulty:
-- reward > 0.5 → lr × 1.5 (easy, learn fast)
-- 0.1 < reward < 0.5 → lr normal
-- reward < 0.1 → lr × 0.3 (hard, conservative)
-Warm-up period: first 10 tasks only use high-reward samples.
+Textron 就是这个思想的工程原型：
+- L0/L1/L2 节点 ≈ concept symbols
+- forward propagation ≈ concept selection（哪些概念进入上下文）
+- backward ≈ concept distillation（从经验中提取新概念）
+- edge weights ≈ citation strength（引用次数影响路由权重）
+- node_stats ≈ usage tracking（success/failure 计数）
 
-### P2: Intra-layer orthogonality penalty (contrastive)
+区别在于：Textron 是外挂（外挂式 symbol injection），Transformer 改造是内置（模型自己学会 symbol embedding）。外挂的缺点是 LLM 每次都要重新 parse，内置的缺点是训练成本高。
 
-**Source**: InfoNCE (Oord et al., 2018), SimCLR (Chen et al., 2020).
+### 3.6 可行性评估
 
-Nodes within same layer should be mutually orthogonal.
-If Jaccard(sim) > 0.6 between two L0 nodes → weaken their outgoing edges by ×0.95.
-Forces the network to learn differentiated routing rather than redundant copies.
+| 维度 | Textron（外挂） | Transformer 改造（内置） |
+|------|----------------|------------------------|
+| 实时性 | ✅ 每次 turn 可用 | ❌ 需要 SFT |
+| 成本 | 低（prompt injection） | 高（需要训练） |
+| 精度 | 中（依赖 prompt 工程） | 高（原生表示） |
+| 规模 | 小（100节点级） | 大（百万概念级） |
+| 验证 | 即时（backward reward） | 离线（需要评估集） |
 
-### P2: TF-IDF weighted node scoring
+**结论**：先用 Textron 验证"符号造句 → 引用链 → 概念繁衍"的可行性，如果效果验证成功，再考虑将机制内置到 Transformer 架构中。Textron 是探路者，Transformer 改造是最终形态。
 
-**Source**: Salton (1970s), Deerwester (1990) LSA.
+---
 
-Words appearing across many nodes have low discrimination power.
-L0 score *= (1 − log(df)/log(N)). Pushes nodes toward unique content.
+## 五、planner 代码改进提案（2026-08-02，源于九连失归因）
 
-### P2: Over-smoothing prevention (GNN theory)
+> 背景：当前 loop「测试就测试、审计就审计」，缺改进动作。以下为审计洞见→可执行改进，供 boss 排期。
 
-**Source**: 2024 NeurIPS/ICML GNN convergence papers.
+### 5.1 【核心提案】多轨迹聚合 backward（mini-batch experience replay）——✅ 无需改代码，workflow 层实现
 
-GNNs collapse to uniform node representations without residual connections + normalization.
-Textron faces the same risk: nodes converging to similar content.
-Apply: mergeContent already provides residual (old + Δ); add explicit normalization step.
+**病灶**：当前每条反馈即时 backward = batch size 1 的 SGD。非平稳数据上高方差更新 → 九连失规则震荡：单轮失败推翻刚写入的规则；根因以案例编号索引过拟合，无法迁移。
 
-### Convergence metrics to track
+**workflow 层实现（planner 操作，零代码改动）**：
+1. **跨 regime 4-case 打包**：每条发给 coder 的预测消息包含 4 个 case——2022/2023/2024/2025 各 1 个交易日，按行情 regime 采样（2022 熊市主跌、2023 震荡市、2024 恐慌底/修复、2025 V反强趋势）。coder 一次推理 4 个 case，规则被迫面对 regime 多样性，单 regime 过拟合在输入端被结构性抑制
+2. planner 逐 case 对答案（预测前严禁看 actual），本地缓存 4 条轨迹，**不逐条反馈**
+3. 攒齐 4 条后组装**一条聚合反馈消息**发 coder：含全部 4 case 的预测/实际/理由摘要，指令"提取跨 ≥2 个 regime 成立的不变模式；单案例特质标记 hypothesis 低置信，禁止写成规则"
+4. coder 一次复盘产出跨 regime HighEntropy → hook 一次 backward → 规则出生即带多 regime 支撑
+5. 准入门槛（prompt 层）：修正规则 content 必须引用 ≥2 个案例日期，或显式标"假设·待验证"
 
-- ∥W[t] − W[t−1]∥ → 0 (weight stability)
-- Steady-state activation entropy → stable
-- Median qualityScore trend → increasing
-- Intra-layer mean cosine similarity → decreasing
-- Node content H mean/median → stable
+**代价与边界**：反馈延迟 4 轮（edge 学习滞后）；噪声日（|实际|<0.3%）轨迹不进聚合池，直接丢弃不学（配合弃权档）。API 已验证支持 2022-2025 全历史段（kline actual + horoscope3d 均正常返回）。
 
-### Not applicable (with reasons)
+**预期效果**：规则出生质量提升（跨案例不变式 vs 单案例补丁）；与 boss P1 规则置信度 EMA 互补——EMA 治"推翻"，batch 治"出生"。九连失中第46轮"上弦月降级"第47轮即被打脸的震荡模式在结构上被消除。
 
-- Gradient descent / backprop: Textron has no differentiable loss; reward is discrete.
-- Batch training: Textron is online (one sample per turn). Could simulate via moving average of gradients.
-- Dropout: No parameter matrix to randomly zero; entropy regularization serves similar purpose.
-- Adam/W optimizer: Edge updates are per-path, not per-parameter; momentum could be added but low priority.
+### 5.2 噪声日学习隔离（配合 test.md 第十四节弃权档）
+
+- 硬判方向且 |实际涨跌|<0.3% → reward=0 且**剥离 node_updates**（噪声日禁止写规则，只许更新 edge/统计）
+- 实现位置：mergeDeleteGate 同层，加一个 noiseDayGate
+
+### 5.3 审计洞见强制产出（流程层，已同步修 workflow.md）
+
+- 每轮审计必须以「现象→根因假设→改进方案→预期指标变化→验证轮数」五列表格收尾；无改进提案的轮次标记"空转轮"并说明原因
+- 改进执行分级：P0 planner 直接改代码；需重启写 test.md 通知 boss；实验性改动先基线后上线（AB 对照）
+
+### 5.4 领先指标三件套（替代单一滚动正确率）
+
+| 指标 | 定义 | 数据源 |
+|------|------|--------|
+| 同类错误复发率 | 相同根因标签的失败间隔轮数 | test.md 归因表 |
+| 规则复用率 | 预测轮 HighEntropy/理由中引用既往节点规则的比例 | coder 回复文本 grep 节点 name |
+| 判后准确率 | 剔除弃权日后的方向命中率 | 弃权档启用后统计 |
+
+---
+
+### 5.5 【P0 设计修正】Function v2 = 可执行代码，非散文规则
+
+**错位根因**：v1 Function（name/params/prose rules + diff）与 backward node_updates 是同层语义知识，两通道写同一种东西 → diff落盘散文化/R编号虚空/规则震荡双写。
+
+**v2 职责划分**：
+- backward = 语义知识层（道：为什么错/根因/原则，散文）
+- Function = 可执行计算层（术：输入K线+星象→确定性量化特质→方向提示/弃权判定，代码）
+- 耦合点：**backward 只调 PARAMS（阈值/相位分值，EMA平滑），禁止改函数体**；函数体改动走 workflow 改进流程
+- expect 闭环真激活：Function 可在 2022-2025 历史 case 回放跑分，判后准确率机器验证
+
+**已落地**：`/Users/rama/textron-agent/functions/astro_quant.py` v1.0（planner 首版）
+- PARAMS 表 = 网络47轮沉淀全部阈值（月层硬软差额/换向日计0/非交易日×0.5/趋势吸收-6/弃权档<2.5/火象宫加权）
+- 02-24 案例断言通过：weighted3d=0.6 + moon_diff=-1 → ABSTAIN（与coder手动重算一致）
+- 待 boss 决策：①PARAMS 是否纳入 backward node_updates 作用域（结构化diff天然可应用）②函数节点 content 存签名+参数表，代码体按 name 存 functions/ 目录 ③跨 regime 4-case 协议中 coder 先跑函数再推理（消除 +3.5 虚高类算术失误）
+
+**接线状态（2026-08-02 终裁）**：⛔ **planner 手写版已封存**（functions/SEALED.md）——boss 裁定函数必须由网络通过 HighEntropy Function 块→backward 落盘自然学出，手写=教练替运动员上场、架空主线、污染 AB 归因。coder 两轮 Function modify 块证明涌现路径已发芽，死在落盘端（node_15：diff散文化=半截协议）。**主线工作**：boss 修 backward 落盘端（函数body单版本存储+diff真应用）→ planner 跑轮次审计函数节点是否自然涌现 → 涌现后取封存版对照收敛度。决策①②④全部作废重组为一个问题：backward 如何把 Function 块落成真函数节点。
+
+---
+
+## 四、TODO 清单
+
+| # | 任务 | 状态 | 优先级 |
+|---|------|------|--------|
+| 1 | backward prompt 加 Rule 8 SYMBOL EMBEDDING | ⏳ 待改 | P0 |
+| 2 | 引用追踪：backward 时记录 content 中引用了哪些节点 name | ⏳ 待实现 | P0 |
+| 3 | 引用上下文注入：forward 时注入"被引用的句子"而非纯定义 | ⏳ 待实现 | P1 |
+| 4 | 引用路由加权：citation count 影响 PageRank/路由得分 | ⏳ 待实现 | P1 |
+| 5 | 符号质量评估：4项标准（引用率/存活率/正reward率/衍生数） | ⏳ 待定义 | P2 |
+| 6 | Transformer 架构改造方案（第3节）| 💡 概念阶段 | P3 |

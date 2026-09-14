@@ -194,13 +194,28 @@ def restart_agent(agent_name: str) -> bool:
     purpose = purposes.get(agent_name, agent_name)
 
     # Step 3: 用 osascript 打开新 Terminal 窗口（用户可见 TUI）
-    ext_path = os.path.expanduser("~/.pi/agent/extensions/local-coms.ts")
-    apple_script = (
-        'tell app "Terminal" to do script '
-        '"pi -e ' + ext_path + ' --cname ' + agent_name +
-        ' --project demo --purpose \\"' + purpose + '\\""'
-    )
-    cmd = ["osascript", "-e", apple_script]
+    # 模型继承：Terminal.app 新窗口不继承 PI_*，必须显式注入，否则回落 settings.json 的 defaultModel
+    provider = os.environ.get("PI_COMS_PROVIDER") or os.environ.get("PI_PROVIDER") or ""
+    model = os.environ.get("PI_COMS_MODEL") or os.environ.get("PI_MODEL") or ""
+    model_args = ""
+    if model:
+        if provider:
+            model_args += " --provider " + provider
+        model_args += " --model " + model
+
+    spawn_bin = os.path.expanduser("~/.pi/agent/bin/pi-coms-spawn")
+    if os.path.exists(spawn_bin):
+        # 启动器自行解析模型（env → session file），复用单一实现
+        cmd = [spawn_bin, agent_name, "demo", purpose]
+    else:
+        ext_path = os.path.expanduser("~/.pi/agent/extensions/local-coms.ts")
+        apple_script = (
+            'tell app "Terminal" to do script '
+            '"pi -e ' + ext_path + ' --cname ' + agent_name +
+            ' --project demo --purpose \\"' + purpose + '\\"' + model_args + '"'
+        )
+        cmd = ["osascript", "-e", apple_script]
+    log(f"  模型参数: {model_args.strip() or '(由 pi-coms-spawn 解析)'}")
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)

@@ -2,12 +2,23 @@ import { previewText } from "./utils";
 
 // ── TF-IDF utilities ──
 
+// 2026-09-15 n8: CJK 分词颗粒度修复 —— 原实现对 CJK 连续串整段成 token（如「沉浸出交易经验」
+// 7 字一个 token），两文档断句/标点稍有差异即零交集 → goalSim 恒 0 → 全节点误判 off-goal →
+// MUST-CLEANSE 指令污染反传输出（2026-09-15 01:15 交易轮 4 连败实证）。修法：CJK run 保留
+// 整段短语（精确命中加权）+ 追加 run 内相邻二字组合（抗断句差异的交集基底），run 内 bigram 去重。
 export function tfidfTokens(text: string): string[] {
   const s = (text || "").toLowerCase();
   const out: string[] = [];
   const runs = s.match(/[a-z0-9]+|[一-鿿]+/g) || [];
   for (const run of runs) {
-    if (run.length >= 2) out.push(run);
+    if (/[一-鿿]/.test(run)) {
+      out.push(run);
+      const seen = new Set<string>();
+      for (let i = 0; i + 1 < run.length; i++) {
+        const bi = run.slice(i, i + 2);
+        if (!seen.has(bi)) { seen.add(bi); out.push(bi); }
+      }
+    } else if (run.length >= 2) out.push(run);
     else if (/[a-z0-9]/.test(run) && run.length === 1 && out.length > 0) {
       out[out.length - 1] += run;
     }

@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { readNodeName, readNodeFunction } from "./node_io";
 import { NGRAM_DISTILL_PROMOTE, DEFAULT_WEIGHT } from "./network";
-import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
+import { NODE_INJECT_MAX_CHARS, applyContentLimit } from "../content_limits.ts";
 import { isNgramFragmentContent, prepareContextLine } from "./node_io";
 
 interface ActivatedNode {
@@ -27,7 +27,8 @@ export function compileContext(
     // 让后续决策/反传能按 functionSymbol 字面命中该节点（与反传规则 8 的引用链对齐）。
     const nodeFile = `${String(n.id).match(/node_\d+/)?.[0] || String(n.id)}.html`;
     const fn = readNodeFunction(path.join(net.path, `layer_${n.layer}`, nodeFile));
-    lines.push(`[L${n.layer} ${n.id}] ${line}${fn?.symbol ? ` ⟨fn:${fn.symbol}⟩` : ""}`);
+    // 写入宽 / 读取窄：节点 content 不再截断，注入侧按单节点预算限幅（防写入变宽后 prompt 膨胀）。
+    lines.push(`[L${n.layer} ${n.id}] ${applyContentLimit(line, NODE_INJECT_MAX_CHARS)}${fn?.symbol ? ` ⟨fn:${fn.symbol}⟩` : ""}`);
   }
   return lines.join("\n");
 }

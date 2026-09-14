@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { distillNodeName } from "../name_distill.ts";
-import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
+import { NODE_CONTENT_MAX_CHARS, applyContentLimit } from "../content_limits.ts";
 import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInstruction } from "./entropy";
 import { jaccard, nameTokens } from "./similarity";
 
@@ -74,7 +74,7 @@ export function writeNodeFunction(filePath: string, symbol: string, code: string
 }
 
 export function writeNodeHtml(filePath: string, layer: number, nodeId: string, content: string, outEdges: { toId: string; weight: number }[], name?: string) {
-  const storedContent = String(content || "").slice(0, NODE_CONTENT_MAX_CHARS);
+  const storedContent = applyContentLimit(String(content || ""));
   const nodeName = (name || compressNodeName(storedContent)).slice(0, 64);
   const preservedFn = readNodeFunction(filePath);
   const edgesHtml = outEdges
@@ -102,7 +102,7 @@ export function validateKnowledgeCrystal(raw: string, targetLayer?: number): { o
   if (!content) return { ok: false, content, reason: "empty" };
   const minLen = targetLayer === 0 ? 18 : 28;
   if (content.length < minLen) return { ok: false, content, reason: "too_short" };
-  if (content.length > NODE_CONTENT_MAX_CHARS) return { ok: false, content, reason: "too_long_session_summary" };
+  if (NODE_CONTENT_MAX_CHARS > 0 && content.length > NODE_CONTENT_MAX_CHARS) return { ok: false, content, reason: "too_long_session_summary" };
 
   const rawOps = /(HTTP\s+20\d|localhost:\d+|PID\s*\d+|nohup|pkill|ps aux|curl\s|tail\s-|log tail|Serving UI|Templates at|Output at|bridge\s*已?重启|重启\s*nbeat\s*UI)/i;
   if (rawOps.test(content)) return { ok: false, content, reason: "raw_operational_trace" };

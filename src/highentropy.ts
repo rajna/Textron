@@ -80,6 +80,7 @@ function isMetaInstruction(text: string): boolean {
 
 function completeContent(text: string, maxLen: number): string {
   const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (!maxLen || maxLen <= 0) return s;   // 0/负数 = 不限制（写入宽）
   if (s.length <= maxLen) return s;
   const sentenceEnd = s.lastIndexOf("。", maxLen);
   if (sentenceEnd > maxLen * 0.6) return s.slice(0, sentenceEnd + 1);

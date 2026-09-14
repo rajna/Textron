@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { readJson, writeJson, previewText, completeContent } from "./utils";
 import { validateKnowledgeCrystal } from "./node_io";
-import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
+import { NODE_CONTENT_MAX_CHARS, applyContentLimit } from "../content_limits.ts";
 import { nameTokens, tokenSimilarity } from "./similarity";
 // addPolicyNode imported at call site to avoid circular dependency
 
@@ -130,7 +130,7 @@ function rescaleRejectedCrystalInner(
     return { rescued: false, action: "downscale_rejected" };
   }
   if (RESCALE_UP_REASONS.has(baseReason)) {
-    const item: RescalePendingItem = { content: content.slice(0, NODE_CONTENT_MAX_CHARS), layer: targetLayer, reason: baseReason, ts: new Date().toISOString() };
+    const item: RescalePendingItem = { content: applyContentLimit(content), layer: targetLayer, reason: baseReason, ts: new Date().toISOString() };
     const up = tryUpscalePair(net, item, onLog, addPolicyNode);
     recordArtifactEvent({
       type: "rescale",

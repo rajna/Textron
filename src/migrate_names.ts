@@ -10,7 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { distillNodeName } from "./name_distill.ts";
-import { NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
+import { NODE_CONTENT_MAX_CHARS, applyContentLimit } from "./content_limits.ts";
 
 declare const process: { argv: string[]; env: Record<string, string | undefined>; exit(code?: number): never };
 
@@ -32,7 +32,7 @@ function readTag(filePath: string, tag: string): string {
 }
 
 function writeNodeHtml(filePath: string, layer: number, nodeId: string, content: string, outEdges: { toId: string; weight: number }[], name: string) {
-  const storedContent = String(content || "").slice(0, NODE_CONTENT_MAX_CHARS);
+  const storedContent = applyContentLimit(String(content || ""));
   const nodeName = name.slice(0, 64);
   const edgesHtml = outEdges
     .map((e) => `  <link rel="out" href="../layer_${layer + 1}/${e.toId}.html" data-weight="${e.weight.toFixed(4)}">`)

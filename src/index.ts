@@ -37,7 +37,7 @@ import { distillNodeName, buildAtomKey } from "./name_distill.ts";
 import { applyExplorationPolicy, buildLocalScores, lexicalRelevance, parseNodeScores, rankLayerWithExploration } from "./scoring_policy";
 import { routeL0ThroughMoe } from "./moe_router.ts";
 import { decideNoveltyExpansion } from "./novelty_policy.ts";
-import { DEFAULT_COMPILED_CONTEXT_MAX_CHARS, NODE_CONTENT_MAX_CHARS } from "./content_limits.ts";
+import { DEFAULT_COMPILED_CONTEXT_MAX_CHARS, NODE_CONTENT_MAX_CHARS, applyContentLimit } from "./content_limits.ts";
 
 // ─── Lib modules ────────────────────────────────────────────────
 import { ensureDir, readJson, writeJson, ts, dlog, clamp, completeContent,
@@ -1693,7 +1693,7 @@ export default function (pi: ExtensionAPI) {
       // Cold-start virtual node: content is in previousTask, not on disk yet
       const isVirtual = parsed && !content && (parsed.nodeId.startsWith("_seed_") || parsed.nodeId.startsWith("_cold_"));
       if (isVirtual) {
-        content = previousTask.slice(0, NODE_CONTENT_MAX_CHARS);
+        content = applyContentLimit(previousTask);
         name = compressNodeName(content);
       }
       return { id, name, content, parsed, isVirtual };
@@ -1750,7 +1750,7 @@ export default function (pi: ExtensionAPI) {
     // 2026-08-03: <Function> 块（functionSymbol/functionAbstract）随训练包透传——parseHighEntropyCrystal 只取
     // Name/Task/Technique，Function 块不进 prompt 则 functionSymbol 落盘核验（引用链 H1）结构性不可能通过。
     const functionBlock = extractFunctionBlock(previousAssistantHighEntropy);
-    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char","content":"<1000 char"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<1000 char"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"}]}';
+    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char","content":"<无字数上限，写全"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<无字数上限，写全"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"}]}';
     // ── Build filtered existing nodes list (global top-1 by TF-IDF relevance) ──
     const existingNodesTfidf = tfidfSimilarity(net, previousTask.slice(0, 200), currentUserMessage.slice(0, 200));
     const allExistingNodes: { key: string; layer: number; name: string; content: string; sim: number }[] = [];
@@ -1945,7 +1945,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           out.node_updates = out.node_updates || {};
           out.node_updates[victim] = {
             name: (previousCrystal.name || compressNodeName(cleanseText)).slice(0, 64),
-            content: cleanseText.slice(0, NODE_CONTENT_MAX_CHARS),
+            content: applyContentLimit(cleanseText),
           };
           goalCleanseFallback = victim;
           recordMonitorEvent({
@@ -2418,7 +2418,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const content = readNodeContent(fp);
     if (symbol && !content.includes(symbol)) {
       const suffix = ` [fn:${symbol}]`;
-      const room = NODE_CONTENT_MAX_CHARS - suffix.length;
+      const room = NODE_CONTENT_MAX_CHARS > 0 ? NODE_CONTENT_MAX_CHARS - suffix.length : Number.MAX_SAFE_INTEGER;
       if (room > 0) {
         const outEdges = (net.weights.layer_connections[`${p.layer}_to_${p.layer + 1}`] || [])
           .filter((e) => e.from === p.nodeId).map((e) => ({ toId: e.to, weight: e.weight }));
@@ -2533,16 +2533,19 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const outEdges = (net.weights.layer_connections[edgeKey] || [])
         .filter((e) => e.from === parsed.nodeId)
         .map((e) => ({ toId: e.to, weight: e.weight }));
-      const newContent = validation.content.slice(0, NODE_CONTENT_MAX_CHARS);
+      const newContent = applyContentLimit(validation.content);
       // isCleanse（网络目标驱动的离域清洗）：**真覆盖**，不与旧内容/旧名拼接。
       // 拼接会把两个域焊成关键词垃圾抽屉（实测："layerCaps存活数硬闸… | 成功经验（sz.301299…）"），
       // 且旧名残留会让 Name 子串路由继续把工程回合路由到交易节点。
       let mergedContent = isCleanse
         ? newContent
         : (oldIsArtifact ? completeContent(newContent, NODE_CONTENT_MAX_CHARS) : mergeContent(oldContent, newContent));
-      if (!isCleanse && mergedContent.length > NODE_CONTENT_MAX_CHARS) {
-        const overflow = mergedContent.slice(NODE_CONTENT_MAX_CHARS);
-        mergedContent = mergedContent.slice(0, NODE_CONTENT_MAX_CHARS);
+      // 写入宽: NODE_CONTENT_MAX_CHARS=0（不限）时不再触发溢出拆分，融合内容完整留在本节点。
+      // 仅在显式配置了正上限时才走溢出→新节点分流。
+      const contentLimit = NODE_CONTENT_MAX_CHARS > 0 ? NODE_CONTENT_MAX_CHARS : Number.MAX_SAFE_INTEGER;
+      if (!isCleanse && mergedContent.length > contentLimit) {
+        const overflow = mergedContent.slice(contentLimit);
+        mergedContent = mergedContent.slice(0, contentLimit);
         const overflowResult = addDynamicNode(net, parsed.layer, overflow, onLog, compressNodeName(overflow));
         if (overflowResult.added) {
           nodesAdded++;
@@ -2914,7 +2917,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     }
     // Cold-start bootstrap: no forward path + no previous HighEntropy → seed L0 anchor from current message
     if (noForwardPath && !previousAssistantHighEntropy && (result.add_nodes || []).length === 0) {
-      const seedContent = currentUserMessage.slice(0, NODE_CONTENT_MAX_CHARS);
+      const seedContent = applyContentLimit(currentUserMessage);
       const validation = validateKnowledgeCrystal(seedContent, 0);
       if (validation.ok) {
         const seedName = compressNodeName(validation.content).slice(0, 48);
@@ -3568,7 +3571,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
     // ── Cold-start virtual L0: if no nodes activated, seed one from current message ──
     if (selectedPath.length === 0 && String(event.prompt || "").trim().length > 20) {
-      const seedContent = String(event.prompt || "").trim().slice(0, NODE_CONTENT_MAX_CHARS);
+      const seedContent = applyContentLimit(String(event.prompt || "").trim());
       const seedName = compressNodeName(seedContent).slice(0, 48);
       const virtualId = "_seed_0";
       selectedPath.push({ id: virtualId, layer: 0, content: seedContent, activation: 0.5 });

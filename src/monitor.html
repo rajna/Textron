@@ -503,21 +503,33 @@ function updateGraphView(name,net,state){
 
   var byL={};
   for(var i=0;i<net.nodes.length;i++){var nd=net.nodes[i];if(!byL[nd.layer])byL[nd.layer]=[];byL[nd.layer].push(nd)}
-  var layers=net.layers,nL=layers.length,maxN=Math.max.apply(null,layers);
+  var layers=net.layers,nL=layers.length,layerCounts=[];
+  for(var l=0;l<nL;l++)layerCounts[l]=(byL[l]||[]).length;
+  // Shared vertical rhythm: capacity is metadata; visible nodes determine the canvas height.
+  // Every layer maps into the same track range so sparse and dense columns stay aligned.
+  var maxN=Math.max.apply(null,layerCounts.concat([1]));
 
-  // ── organic layout: adaptive pitch + deterministic jitter (biological feel) ──
   var GYa=Math.max(52,Math.min(GY,Math.floor(2600/Math.max(1,maxN))));
   var Rv=maxN>30?12:(maxN>18?13:15);
   var W=nL*GX+P*2,H=maxN*GYa+P*2;
+  var railInset=maxN>6?Math.min(4,Math.floor(maxN*.08)):0;
 
-  // Layer-aware vertical centering: each layer uses its own pitch
-  // to spread nodes evenly, then offset to center within canvas height.
-  var layerPitch={},layerOffset={};
-  for(var l=0;l<nL;l++){
-    var cnt=(byL[l]||[]).length;
-    layerPitch[l]=Math.max(52,Math.min(96,Math.floor(2600/Math.max(1,cnt))));
-    layerOffset[l]=(H-(cnt-1)*layerPitch[l])/2+layerPitch[l]/2;
+  function sharedSlots(count){
+    if(!count)return[];
+    if(count===1)return[Math.floor((maxN-1)/2)];
+    var slots=[],span=maxN-1-railInset*2;
+    for(var si=0;si<count;si++){
+      var slot=Math.round(railInset+si*span/(count-1));
+      // Rounding can collide when a nearly-full layer is mapped to the shared grid.
+      if(si>0)slot=Math.max(slot,slots[si-1]+1);
+      slot=Math.min(slot,maxN-count+si);
+      slots.push(slot);
+    }
+    return slots;
   }
+
+  var layerSlots={};
+  for(var l=0;l<nL;l++)layerSlots[l]=sharedSlots(layerCounts[l]);
 
   var weights=net.weights||{},edgeWeights={},latRaw=[];
   for(var k in weights){
@@ -538,9 +550,12 @@ function updateGraphView(name,net,state){
       var nd=list[i],id=qid(l,nd.id);
       var seed=hash32(name+'|'+id);
       var mut=mutationMap[id];
+      var slots=layerSlots[l],slot=slots[i];
+      var jitterY=Math.min(8,GYa*.12);
       var nd2={qid:id,id:nd.id,layer:l,
-        cx:x(l)+(rand01(seed^0x9e37)-0.5)*72,
-        cy:layerOffset[l]+i*layerPitch[l]-layerPitch[l]/2+(rand01(seed^0x51f7)-0.5)*layerPitch[l]*0.42,
+        // Keep columns crisp; the small deterministic drift is enough to avoid a sterile grid.
+        cx:x(l)+(rand01(seed^0x9e37)-0.5)*24,
+        cy:P+(slot+0.5)*GYa+(rand01(seed^0x51f7)-0.5)*jitterY*2,
         name:nd.name||'',context:nd.context||nd.content||'',
         filled:!!(nd.name||nd.content),sel:!!selected[id],
         score:scores[id],phase:rand01(seed)*6.283,drift:0.6+rand01(seed^0x77aa)*0.9,
@@ -593,6 +608,7 @@ function updateGraphView(name,net,state){
   }
 
   gv.data={nodes:nodes,edges:edges,selEdges:selEdges,amb:amb,phantom:phantom,mutations:moved,backwardEdges:backwardEdges};
+  gv.layerCounts=layerCounts;
   gv.R=Rv;
   var dpr=(W*H>1500000)?1:Math.min(2,window.devicePixelRatio||1);
   if(gv.W!==W||gv.H!==H||gv.dpr!==dpr){
@@ -621,6 +637,16 @@ function renderStatic(gv){
   g.setTransform(gv.dpr,0,0,gv.dpr,0,0);
   g.clearRect(0,0,gv.W,gv.H);
   g.lineCap='round';g.textAlign='center';
+  // Quiet lane scaffolding makes empty layers and uneven counts legible without competing with edges.
+  for(var li=0;li<gv.layerCounts.length;li++){
+    var lx=x(li),count=gv.layerCounts[li];
+    g.fillStyle=li%2?'rgba(143,184,255,.018)':'rgba(255,255,255,.012)';
+    g.fillRect(lx-GX*.34,50,GX*.68,gv.H-76);
+    g.fillStyle='rgba(215,228,255,.16)';g.fillRect(lx-0.5,56,1,gv.H-88);
+    g.font='700 11px Inter,sans-serif';g.fillStyle='#b9c7e6';g.fillText('L'+li,lx,24);
+    g.font='10px Menlo,monospace';g.fillStyle=count?'#687da8':'#4f5b78';
+    g.fillText(count+' node'+(count===1?'':'s'),lx,40);
+  }
   for(var i=0;i<d.edges.length;i++){
     var e=d.edges[i],aw=Math.abs(e.w);
     /* 可读性底线(2026-09-03): 每条边=一条单线(不拆发丝); 弱边保留但不抢注。旧公式

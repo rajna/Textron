@@ -1152,13 +1152,13 @@ export default function (pi: ExtensionAPI) {
       return "";
     }
 
-    async function callScorer(attempt: { jsonMode: boolean; label: string; maxParam?: "max_tokens" | "max_completion_tokens"; tokens?: number; temperature?: boolean; reasoningEffort?: boolean }) {
+    async function callScorer(attempt: { jsonMode: boolean; label: string; budget: Record<string, unknown> }) {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-      const requestBody: Record<string, unknown> = { model: model.id, messages };
-      if (attempt.maxParam) requestBody[attempt.maxParam] = attempt.tokens || 4096;
-      if (attempt.temperature) requestBody.temperature = 0;
-      if (attempt.reasoningEffort) requestBody.reasoning_effort = "low";
+      // 预算/思考开关统一由 lib/llm_budget 的 buildBudgetParams 单一出口生成。
+      // 各家"关思考"开关名不同(qwen=enable_thinking:false / deepseek=thinking.type:disabled /
+      // 其余退 reasoning_effort:low)；手写参数名/预算就是 L0 四连败的病灶。
+      const requestBody: Record<string, unknown> = { model: model.id, messages, ...attempt.budget };
       if (attempt.jsonMode) requestBody.response_format = { type: "json_object" };
 
       const res = await fetch(endpoint, {
@@ -1351,8 +1351,17 @@ export default function (pi: ExtensionAPI) {
       return normalizeScores(parsed);
     }
 
+    // L0 打分 attempts：预算/思考开关全部走 buildBudgetParams 单一出口。
+    // ① 关思考优先 —— deepseek 关思考后实测 1.2s 出合法 JSON（最稳最快）；
+    //    旧版仅 tokens:1024 + reasoning_effort:low → 思考吃光预算 → instruction-echo → 解析失败。
+    // ② 保底抬预算到 4096（不关思考）。
+    const l0Compat: any = resolveModelCompat(model) || {};
+    const l0ModelRef = { id: model?.id, provider: model?.provider, baseUrl: model?.baseUrl };
     const attempts = [
-      { jsonMode: true, label: "json_mode/max_tokens/temp0", maxParam: "max_tokens" as const, tokens: 1024, temperature: true, reasoningEffort: true },
+      { jsonMode: true, label: "json_mode/nothinking4096",
+        budget: { ...buildBudgetParams(l0ModelRef, l0Compat, 4096, { noThinking: true }), temperature: 0 } },
+      { jsonMode: true, label: "json_mode/budget4096",
+        budget: { ...buildBudgetParams(l0ModelRef, l0Compat, 4096, {}), temperature: 0 } },
     ];
     const errors: string[] = [];
     for (const attempt of attempts) {

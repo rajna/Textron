@@ -343,7 +343,7 @@ function trajRowHtml(it,i){
     '<section class="detail-section user"><div class="detail-label">👤 user 消息（原文）</div><div class="detail-body">'+bodyHtml(userPrompt,'用户消息为空')+'</div></section>'+
     '<section class="detail-section answer"><div class="detail-label">🤖 AI 回复正文（原文）</div><div class="detail-body">'+bodyHtml(answer,'AI 回复未捕获')+'</div></section>'+
     (it.thinking?'<section class="detail-section answer"><div class="detail-label">💭 AI 思考过程（thinking）</div><div class="detail-body">'+bodyHtml(it.thinking,'思考为空')+'</div></section>':'')+
-    (it.tools?'<section class="detail-section answer"><div class="detail-label">🔧 工具调用/结果链（tool_call·tool_result）</div><div class="detail-body">'+bodyHtml(it.tools,'工具链为空')+'</div></section>':'')+++
+    (it.tools?'<section class="detail-section answer"><div class="detail-label">🔧 工具调用/结果链（tool_call·tool_result）</div><div class="detail-body">'+bodyHtml(it.tools,'工具链为空')+'</div></section>':'')+
     (hasHe?'<section class="detail-section he"><div class="detail-label">🧠 HighEntropy 训练包</div><div class="detail-body">'+bodyHtml(he,'HighEntropy 为空')+'</div></section>':'')+
     '<section class="detail-section nodes"><div class="detail-label">🧭 激活节点 · '+(Array.isArray(it.activatedIds)?it.activatedIds.length:0)+' 个</div><div class="node-path">'+nodesHtml(it.activatedIds)+'</div></section>'+
     (it.forward_diag&&it.forward_diag.failed?'<section class="detail-section backward"><div class="detail-label">⚠ 前向 L0 打分失败诊断 ('+(it.forward_diag.durationMs||0)+'ms)</div><div class="detail-body">'+bodyHtml((it.forward_diag.errors||[]).map(function(x,xi){return (xi+1)+'. '+x}).join('\n'),'无错误')+'</div></section>':'')+
@@ -375,7 +375,7 @@ function loadTraj(){
   fetch('/api/trajectories?page='+trajState.page+'&pageSize='+trajState.size+'&filter='+encodeURIComponent(trajState.filter)+qa+'&t='+Date.now(),{cache:'no-store'})
   .then(function(r){return r.json()})
   .then(function(d){
-    var totalPages=Math.max(1,Math.ceil((d.total||0)/d.size));
+    var totalPages=Math.max(1,Math.ceil((d.total||0)/(d.pageSize||trajState.size)));
     fillArchSel(d.months||[], d.archive||'');
     var h='<div class="tr-head"><span>时间</span><span>内容 · 状态(Ⓣ任务/🧩配对/⟲反传·reward) · 消息</span></div>';
     for(var i=0;i<(d.items||[]).length;i++)h+=trajRowHtml(d.items[i],i);

@@ -6,6 +6,26 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 01:30）：前向复活 F1+F2 —— 孤儿候选池（目录驱动）+ selected ⊆ context 保底注入
+
+> 触发：用户质询「前向不复活为什么还不改」。
+> 状态：✅ 已改（本书）。**需 /reload 或重启三件套生效**。
+
+## 一、F1 孤儿候选池（机械主因）
+- 原实现 `for (n < net.hyperparams.layers[0])` 只按**声明槽位数**遍历 ⇒ 磁盘上存在但超出声明的节点**永不参与 `l0_score`**。
+- 实证：`layers[0]=1` 而 `layer_0/node_1.html` 有 999c 交易规则 ⇒ `l0_score_start.nodeCount=1`（知识落在引擎从不读取的地址上）。
+- 修法：候选池**目录驱动**（`readdirSync(layer_0)` + 正则 + index 排序），声明槽位内空槽保留占位、超出声明的按磁盘真实存在纳入；观测事件 `l0_pool_dir_driven{declared,maxFound,pooled}`。
+
+## 二、F2 selected ⊆ context（阈值断层）
+- 原实现只在 `score > threshold` 时进 `contextActivated`；实测 `topAdjusted` 7 次仅 1/7 越过 `threshold=0.2` ⇒ `selectedIds` 非空而 `contextIds` 空 = **稳定退化态**（有路径无上下文）。
+- 修法：**每层 top-1 保底注入**（该层有 selected 但全不过阈值时取 top-1）；观测事件 `propagate_done{thresholdFallbackLayers, contextCount}`。
+
+## 三、验证
+- 单测复刻：F1 池 `[0]` → `[0,1]`；F2 注入 `0` → `1`；esbuild bundle 通过。
+- 运行期验收（重启三件套后）：`l0_score_start.nodeCount ≥ 2`、`propagate_done.contextCount ≥ 1`、`context_user_message_injected.injectedPromptPreview` 非空，且 `0 context nodes injected` 消失。
+
+---
+
 # ✦ 最近更新（2026-09-15 01:00）：content 上限取消 + FUSION NOT OVERWRITE —— 拆掉「抽象融合」的两重天花板
 
 > 触发：用户质询「反传时 LLM 输入了前向节点信息，为何更新时提供的是覆盖而非融合？」「n8 要求审抽象融合效率，为什么没发现？」

@@ -3385,14 +3385,32 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     }
     dlog("ROUTE", `auto-routed to network: ${tf}`, { layers: net.hyperparams.layers, threshold: net.hyperparams.threshold });
 
-    const l0Nodes = [];
-    for (let n = 0; n < net.hyperparams.layers[0]; n++) {
-      const nodePath = path.join(net.path, "layer_0", `node_${n}.html`);
-      l0Nodes.push({
-        id: `node_${n}`,
-        name: readNodeName(nodePath),
-        content: readNodeContent(nodePath),
-      });
+    // F1 (2026-09-15 目录驱动候选池): 原实现 `for (n < hyperparams.layers[0])` 只按声明槽位遍历，
+    // 磁盘上存在但超出声明的节点成为「孤儿」永不参与 l0_score（实测 layers[0]=1 而 layer_0/node_1.html
+    // 有 999c 交易规则 ⇒ l0_score_start.nodeCount=1，前向看不到该知识）。
+    const l0Nodes: { id: string; name: string; content: string }[] = [];
+    {
+      const l0Dir = path.join(net.path, "layer_0");
+      let files: string[] = [];
+      try { files = fs.readdirSync(l0Dir); } catch { files = []; }
+      const idxs = files
+        .map((f) => /^node_(\d+)\.html$/.exec(f))
+        .filter((m): m is RegExpExecArray => !!m)
+        .map((m) => parseInt(m[1], 10))
+        .sort((a, b) => a - b);
+      const declared = net.hyperparams.layers[0] || 0;
+      const maxFound = idxs.length ? idxs[idxs.length - 1] : -1;
+      // 声明槽位内保留空槽占位语义；超出声明的仅纳入磁盘真实存在的节点（孤儿回收）
+      const upper = Math.max(declared - 1, maxFound);
+      for (let n = 0; n <= upper; n++) {
+        const exists = idxs.includes(n);
+        if (!exists && n >= declared) continue;
+        const nodePath = path.join(l0Dir, `node_${n}.html`);
+        l0Nodes.push({ id: `node_${n}`, name: readNodeName(nodePath), content: readNodeContent(nodePath) });
+      }
+      if (maxFound >= declared) {
+        recordMonitorEvent({ type: "trace", action: "l0_pool_dir_driven", taskFamily: tf, declared, maxFound, pooled: l0Nodes.length });
+      }
     }
     dlog("L0", `loaded ${l0Nodes.length} L0 nodes`, l0Nodes.map(n => ({ id: n.id, name: n.name || "(empty)", hasContent: !!n.content })));
 
@@ -3550,6 +3568,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const netCfg = readNetConfig();
     const topK = forwardTopK();
     const selectedByLayer = new Map<number, string[]>();
+    const thresholdFallbacks: string[] = [];
     for (const la of layerActivations) {
       for (const node of la.nodes) currentActivationScores[`L${la.layer}::${node.id}`] = node.score;
       const ranked = la.layer === 0
@@ -3566,7 +3585,13 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           activation: node.score,
         });
       }
-      for (const node of selected.filter((n) => n.score > threshold)) {
+      // F2 (2026-09-15 selected ⊆ context 不变式): 每层 top-1 保底注入。
+      // 原实现只在 score>threshold 时注入；实测 topAdjusted 仅 1/7 越过 threshold=0.2
+      // ⇒ selectedIds 非空而 contextIds 空（稳定退化态），网络对决策零影响。
+      const above = selected.filter((n) => n.score > threshold);
+      const inject = above.length > 0 ? above : (selected.length > 0 ? [selected[0]] : []);
+      if (above.length === 0 && inject.length > 0) thresholdFallbacks.push(`L${la.layer}`);
+      for (const node of inject) {
         contextActivated.push({
           id: node.id,
           layer: la.layer,
@@ -3635,6 +3660,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       downstreamRelevanceFiltered: relevanceFilteredNodes.slice(0, 12),
       downstreamRelevanceFilteredCount: relevanceFilteredNodes.length,
       allScoresZero: Object.values(currentActivationScores).every((v) => Number(v) <= 0),
+      thresholdFallbackLayers: thresholdFallbacks,
+      contextCount: contextActivated.length,
       durationMs: Date.now() - tStart,
     });
     broadcast({

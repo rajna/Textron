@@ -451,3 +451,32 @@ T1 层向真值表 9/9；T2 三级提升端到端（`L3::node_0`→`L0::node_0`�
 1. **`agent_end_backward_skipped:no_pending_match` 漏学**：窗口内 7 次 `highentropy_captured` 仅 3 次真正反传，`no_pending_match` 3 次（`hasHighEntropy=true,hasFinalText=true`）说明「本轮自产的高熵包」因 pending 匹配失败被丢弃 → 每轮约 40% 的 LLM 杠杆空转。方向：agent_end 时若 pending 无匹配，用「该轮自身 task/answer」作为目标补一次 self-backward，而非直接丢弃。
 2. **轨迹工具信息被 slice**：`src/index.ts:4076` `tools: turnTools.join(" ⏎ ").slice(0, 2400)` —— 一轮全部工具调用压成单串并硬截断 2400 字符，n8「信息不要被 slice」的诉求正落在此处；且 task stack 里 `highEntropy` 也被 `slice(0,2400)`。
 3. L1/L2 空壳占位：`hyperparams.layers` 与实际存活数不一致（`[2,0,1,1]` 却有 `layer_1/node_0|node_1` 空文件），建议一次性 compact 或让 `allocSlot` 优先复用空壳（`allocSlot` 已实现，缺的是触发）。
+
+---
+
+# 2026-09-14 n8 第四轮（guard）：function 块「稳态存活」缺陷族 —— 优先级排序 + 前置修复（commit 见下）
+
+agent-022388 独立复验第三轮 A/B/C/D 全过，同时报出 N5/N6/N7。guard 复核磁盘实况**确认全部成立，且比报告更严重**，并新增 N8。以下为按修复顺序的优先级（P0 必须先于 P1 的 lift-jump 验收，否则新功能会放大旧缺陷）。
+
+## 磁盘实况（`~/.textron/stock_alpha/`，2026-09-14 之后）
+真实 function 块（必须 `<function symbol="X">…</function>` 闭合对）：**全网仅剩 1 个**，且是历史垃圾块 `layer_2/node_0.html` 的 `symbol=""` + 体为 `([\s\S]*?)`。
+第三轮落盘的 4 个真块（`box_tol_entry_gate` / `side_effect_post_guarded` / `gate_threshold_adapt` / `assert_fn_persist_callchain`）**全部蒸发**；同一时刻 content 仍挂着 `[fn:box_tol_entry_gate]` `[fn:gate_threshold_adapt]` `[fn:adaptive_box_probe_ladder]` `[fn:side_effect_post_guarded]` → 引用链由「部分断」变「全断」。
+**验证陷阱（必须用集合判据）**：LLM 会把审计正则字面 `<function symbol="σ">` 当散文写进 content（本项目实测 `layer_0/node_0`、`layer_1/node_0`、`layer_2/node_1` 各 2 处未闭合），裸 grep `<function` 或单点正则都会假阳性 —— 必须 `<function…>…</function>` **闭合对匹配**，并按 `content 的 [fn:σ] ⊆ 磁盘 <function symbol="σ"> 块集合` 做**集合差**判定。
+
+## P0 已修（本轮第二处改动，commit 见下）：块随内容移位 + 污染块 sanitize
+- **N8 块不随 content 移位（蒸发主因）**：`src/lib/node_policy.ts` 空壳压缩 `writeNodeHtml(dst, …, srcContent, …)` 只保留 **DEST 自己**的块（`readNodeFunction(dst)`，空壳→无块），源文件随后 `fs.unlinkSync(src)` ⇒ 一次 compact/merge 蒸发一批函数。修法：从 **SOURCE** 读块显式搬到 DEST（与 ngram 影子文件同批）。
+- **N6 污染块永久保留**：`readNodeFunction` 新增 `isValidFnSymbol(symbol)`（ASCII 标识符）单一不变式，`symbol=""` / `σ` / 无 symbol 一律视为**无块**；`writeNodeFunction` 加同向防御（非法 symbol 不落块）。效果：历史脏块不再被 `writeNodeHtml` 一路带下去、`compile` 不再注入 `⟨fn:σ⟩`。
+- 回归：`test_fn_block_survival.ts` **9/9 PASS**（T1 拒 3 类脏块/收合法块、T2 writeNodeHtml 保块、T3 移位携带块且源槽无幽灵块）；`test_lift_jump.ts` 18/18 不回归；tsc 与 HEAD 对照 **24→24 零新增**。
+
+## P1 已修（上一 commit ca826eb）：跨层「向上提升」merge 解禁
+`mergeLayerAllowed()` 只拒向下跳层；**但其验收必须与 P0 同批** —— lift-merge 会显著提高 merge/compact 频率，若块携带未修，抽象融合每成功一次就丢一批函数产物。
+
+## P2 待修：N5 function 块同节点单槽覆盖
+`writeNodeFunction` = `<function…>` 全量替换后追加一块 ⇒ **最后写入者胜**（`box_tol_entry_gate` 15:56:37 落 L0::node_1，`gate_threshold_adapt` 15:57:45 写同节点 → 前者静默消失，而 content 仍留 `[fn:box_tol_entry_gate]`）。
+设计：改为按 symbol **upsert 多块**（`readNodeFunctions()` 复数读 + 按 symbol 合并写）；`compile.ts` 的注入位由「单 symbol」改为「该节点全部块 symbol 依次 ` ⟨fn:σ⟩`」。风险点：注入膨胀 —— 需同时给**每节点注入上限**（建议 ≤2）并在 content 超 1000c 时按 token 预算裁剪。
+
+## P3 待修：N7 引用悬空
+`content 的 [fn:σ] ⊄ 磁盘 <function symbol="σ"> 块集合`（现网 4 个悬空）。设计：每轮反传落盘后回扫 content 的 `[fn:σ]` 与磁盘块做集合差，缺失项记 **error 级** `fn_ref_dangling{nodeId,symbol}`；连续两轮仍悬空 = 从 content 移除该标记（防止引用链长期虚挂误导路由）。
+
+## P4 冗余清理
+落盘 code 保留 `functionSymbol：x` / `functionAbstract：y` 标签头 ⇒ 块内 symbol 重复。可在 `persistHighEntropyFunction` 落盘前剥离标签行（仅保留 `functionAbstract` 之后的代码体）。

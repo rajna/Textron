@@ -30,6 +30,17 @@ export function readNodeName(filePath: string): string {
 
 const FUNCTION_BLOCK_RE = /<function(?:\s+symbol="([^"]*)")?>\s*([\s\S]*?)\s*<\/function>/i;
 
+/**
+ * 合法 functionSymbol = ASCII 标识符。
+ * 2026-09-14 (n8 第四轮 guard 实证): 磁盘上存在历史脏块 `symbol=""` (体为正则字面 `([\s\S]*?)`)
+ * 以及 LLM 把审计正则字面 `<function symbol="σ">` 当散文写进 content 的情形。这些块若被
+ * readNodeFunction 认作"有块"，会被 (a) writeNodeHtml 的"保留既有块"一路带下去、(b) compile
+ * 注入成 ⟨fn:σ⟩/⟨fn:⟩ 污染前向上下文。故 symbol 非法一律视为「无块」，作为单一不变式。
+ */
+export function isValidFnSymbol(sym: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(sym || "").trim());
+}
+
 /** 读取节点持久化的 <Function> 块（可执行产物，独立于 content 的 1000 字上限）。 */
 export function readNodeFunction(filePath: string): { symbol: string; code: string } | null {
   try {
@@ -37,7 +48,9 @@ export function readNodeFunction(filePath: string): { symbol: string; code: stri
     const m = html.match(FUNCTION_BLOCK_RE);
     if (!m) return null;
     const code = String(m[2] || "").trim();
-    return code ? { symbol: String(m[1] || "").trim(), code } : null;
+    const symbol = String(m[1] || "").trim();
+    if (!code || !isValidFnSymbol(symbol)) return null;
+    return { symbol, code };
   } catch { return null; }
 }
 
@@ -48,8 +61,10 @@ export function readNodeFunction(filePath: string): { symbol: string; code: stri
  */
 export function writeNodeFunction(filePath: string, symbol: string, code: string): boolean {
   try {
-    const html = fs.readFileSync(filePath, "utf-8");
     const body = String(code || "").trim();
+    // 防御深：非法 symbol 不落块（与 readNodeFunction 同一不变式，防写"看似落盘、永不命中"的假达标块）
+    if (body && !isValidFnSymbol(symbol)) return false;
+    const html = fs.readFileSync(filePath, "utf-8");
     const block = body ? `<function${symbol ? ` symbol="${symbol.replace(/"/g, "&quot;")}"` : ""}>\n${body}\n</function>` : "";
     let next = html.replace(FUNCTION_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n");
     if (block) next = next.replace(/\s*$/, "\n") + `\n${block}\n`;

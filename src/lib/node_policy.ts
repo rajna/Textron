@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeJson, completeContent, previewText } from "./utils";
-import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName, validateKnowledgeCrystal, intraLayerOrthogonalityCheck } from "./node_io";
+import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName, validateKnowledgeCrystal, intraLayerOrthogonalityCheck, readNodeFunction, writeNodeFunction } from "./node_io";
 import { mergeNodeContent, mergeContent } from "./merge";
 import { findSimilarKnowledgeNode, jaccard, nameTokens, tokenSimilarity } from "./similarity";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
@@ -284,6 +284,12 @@ export function compactMergeEmptiedNodes(
               .filter((e: any) => e.from === `node_${m + 1}`)
               .map((e: any) => ({ toId: e.to, weight: e.weight }));
             writeNodeHtml(dst, l, `node_${m}`, srcContent, outEdges, srcName);
+            // 2026-09-14 (n8 第四轮 guard 实证): <function> 块不随 content 一起移位 —— writeNodeHtml 只
+            // 保留 DEST 自己的块(空壳→无块)，源文件随后被 unlink ⇒ 一次 compact/merge 蒸发一批函数产物
+            // (实测第三轮 4 个真块只剩 1 个历史垃圾块，而 content 仍挂 [fn:σ] = 引用链由部分断变全断)。
+            // 修法: 从 SOURCE 读块并显式搬到 DEST，与 ngram 影子文件同批处理。
+            const srcFn = readNodeFunction(src);
+            if (srcFn) writeNodeFunction(dst, srcFn.symbol, srcFn.code);
             moveSidecar(src, dst);
             fs.unlinkSync(src);
           }

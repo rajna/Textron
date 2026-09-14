@@ -2004,6 +2004,40 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
       for (const c of balanced.sort((a, b) => b.length - a.length)) addCandidate(c);
 
+      // 2026-09-15 n8 第九轮：JSON 恢复层。实证：glm-5.3-flash 本轮 8 连败（4 模式×2 轮），
+      // chat_json 非流式 head 合法 JSON 开头 + finish=stop + partsChars≤1783 非截断，但 balanced 扫描也救不起
+      // → 字符串值内未转义双引号使扫描错位；流式则叠加 readSse delta join("\n") 假换行污染（head 逐字符空格铁证）。
+      // 恢复策略：状态机重建——字符串内未转义引号转义、裸控制字符转义、尾逗号删除。合法 JSON 原样通过不受影响。
+      function tryRepairJsonParse(s: string): any | undefined {
+        const variants: string[] = [];
+        try {
+          let out = "";
+          let inStr = false, esc = false;
+          for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (!inStr) { out += ch; if (ch === '"') inStr = true; continue; }
+            if (esc) { out += ch; esc = false; continue; }
+            if (ch === "\\") { out += ch; esc = true; continue; }
+            if (ch === '"') {
+              let k = i + 1;
+              while (k < s.length && /\s/.test(s[k])) k++;
+              const nk = s[k];
+              if (nk === undefined || nk === "," || nk === "}" || nk === "]" || nk === ":") { inStr = false; out += ch; }
+              else out += '\\"';
+              continue;
+            }
+            if (ch === "\n") { out += "\\n"; continue; }
+            if (ch === "\r") { out += "\\r"; continue; }
+            if (ch === "\t") { out += "\\t"; continue; }
+            out += ch;
+          }
+          variants.push(out);
+        } catch { /* 忽略，走原样候选 */ }
+        for (const v of [...variants]) variants.push(v.replace(/,(\s*[}\]])/g, "$1"));
+        for (const v of variants) { try { return JSON.parse(v); } catch { /* 下一个变体 */ } }
+        return undefined;
+      }
+
       // 2026-09-01: 实质形状判定。截断残骸（如 {"reward":0} 碎片）只含 reward 键，
       // 不得视为有效 backward 响应——必须带 node_updates/add_nodes/node_actions 之一。
       // 否则截断会被静默“部分吞掉”，退化成 reward=0 空更新（P1 病灶）。
@@ -2016,11 +2050,21 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
 
       let fallback: ReturnType<typeof normalize> | null = null;
+      let repairedCandidateChars = 0;
       for (const candidate of candidates) {
+        let parsed: any;
+        try { parsed = JSON.parse(candidate); }
+        catch { parsed = tryRepairJsonParse(candidate); if (parsed !== undefined) repairedCandidateChars = candidate.length; }
         try {
-          const parsed = JSON.parse(candidate);
+          if (parsed === undefined) continue;
           const normalized = normalize(parsed);
-          if (hasBackwardShape(parsed)) return normalized;
+          if (hasBackwardShape(parsed)) {
+            if (repairedCandidateChars) {
+              recordMonitorEvent({ type: "trace", action: "semantic_backward_json_repaired", taskFamily: path.basename(net.path), repairedChars: repairedCandidateChars, rawChars: raw.length });
+              onLog(`Textron semantic backward: JSON recovered by repair layer (${repairedCandidateChars}c candidate)`);
+            }
+            return normalized;
+          }
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
               Object.prototype.hasOwnProperty.call(parsed, "reward")) {
             // 仅含 reward 的候选：可能是截断残骸，也可能是有意空更新；先暂存，继续找更大的候选
@@ -2048,12 +2092,13 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         } catch {}
         throw new Error(reason);
       }
-      // 2026-09-03: 诊断可观测性——旧实现只抛 "no JSON object"，监控面板看不到模型到底吐了什么，
-      // 4 连败只能靠人肉 grep 日志。现在把 finish_reason / 双方字符数 / 原文头 直接写进错误串并落盘。
+      // 2026-09-15 n8 第九轮：失败诊断升格——旧实现只落 1000c 头部（diag 内 head 160c），
+      // 语法病灶永远不可见（raw_response 事件在 extract 抛异常后永不发出）。失败时落完整 raw。
       const diag = `no JSON object in semantic backward response (finish=${lastFinishReason || "?"}, partsChars=${raw.length}, head=${raw.slice(0, 160).replace(/\s+/g, " ")})`;
       try {
         ensureDir(path.join(net.path, "_sb_logs"));
-        fs.appendFileSync(path.join(net.path, "_sb_logs", "_nojson_response.log"), `${new Date().toISOString()} ${diag}\n\n`, "utf-8");
+        rolloverLogBySize(path.join(net.path, "_sb_logs", "_nojson_response.log"), 2);
+        fs.appendFileSync(path.join(net.path, "_sb_logs", "_nojson_response.log"), `${new Date().toISOString()} ${diag}\n[FULL_RAW]\n${raw}\n[/FULL_RAW]\n\n`, "utf-8");
       } catch { /* 忽略 */ }
       throw new Error(diag);
     }
@@ -2089,7 +2134,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           }
         }
       }
-      return parts;
+      // 2026-09-15 n8 第九轮：SSE delta 无缝拼接。旧 join("\n") 在单字符 delta 粒度下向 JSON
+      // 字符串值内灌入裸换行（glm-5.3-flash 实证，head 逐字符空格铁证）→ 全候选非法。delta 本是增量切片，无需分隔。
+      return [parts.filter(Boolean).join("")];
     }
     // ── 2026-09-03 输出预算根因修复 ───────────────────────────────────────────
     // 病灶: reasoning 模型默认 thinking=high，4096 预算被 reasoning 吃光 → content="" +
@@ -2199,7 +2246,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         taskFamily: path.basename(net.path),
         mode: "chat_json_stream",
         rawPartsCount: parts.length,
-        rawContent: parts.join("\n").slice(0, 2000),
+        rawContent: parts.join("").slice(0, 2000),
         parsedReward: result.reward,
         parsedRationale: result.rationale || "",
         parsedNodeUpdateKeys: Object.keys(result.node_updates || {}),

@@ -404,3 +404,50 @@ node --experimental-strip-types test_fn_persist_chain.ts   # 8/8 PASS
 2. 重跑 n6 2 次交易推进 → 断言 A/B/C/D 四项（含 `</function>` 闭合标签、`⟨fn:σ⟩` 注入行）。
 3. 若 symbol 仍空：查 `highentropy_function_skipped.reason`（应为 `symbol_parse_failed`，说明 HE 报文未带 `<Function>` 或 `functionSymbol：` 格式不符）。
 4. 观察 `agent_pending` 是否被自然消费，避免修复前后 pending 重放导致同轨迹重复反传（收益口径污染）。
+
+---
+
+# 2026-09-14 n8 第三轮（guard）：跨层「向上提升」merge 被一刀切丢弃 → 抽象融合断路（commit 见下）
+
+## 轮次事实（先确认上一轮修复已生效）
+d511192 在重启后**已验证生效**：`highentropy_function_persisted` 3 次（`box_tol_entry_gate`@L0::node_1 / `side_effect_post_guarded`@L0::node_0 / `gate_threshold_adapt`@L0::node_1），其中 `side_effect_post_guarded` 的 `contentAppended=true` → 上轮标记为「未覆盖」的 append 兜底分支本轮**已真实命中并落盘**；`⟨fn:box_tol_entry_gate⟩` / `⟨fn:side_effect_post_guarded⟩` 均出现在 `prompt_injection_prepared.compiledContextFull` 与 `context_user_message_injected.injectedPromptPreview`；窗口内 `semantic_backward` status 全部 `done`，无 `failed`。
+
+## 本轮根因（单变量，n8 第 4 项：抽象融合效率）
+**`nodesMerged` 结构性恒为 0 ——「向上提升」merge 在解析层被一刀切丢弃。**
+
+证据链（`~/.textron/_events.jsonl` 基线 85421 之后）：
+1. `merge_action_dropped {source:"L3::node_0", target:"L0::node_1", reason:"layer_jump"}`（L85565）、`{source:"L2::node_0", target:"L0::node_0", reason:"layer_jump"}`（L85649）——LLM 主动提出的两次抽象提升，全部被丢弃。
+2. 三次 `semantic_backward_apply` 的 `nodesMerged` 均为 0（`nodesUpdated=1/2/2`，`nodesAdded=1/0/0`）→ 网络只在同一批节点上原地改写，从不整合抽象结构。
+3. 结构后果：`topKByLayer={0:1,1:1,2:1}` → **L3 永不参与前向注入**，`L3::node_0` 的宝贵结论（清仓回补成对 / 1手不可分割 / 触发降级为确认）成为死知识；L1 两个槽位是空壳（`name`/`content` 全空），L2::node_0 亦为空壳；`hyperparams.layers=[2,0,1,1]` + `layerCaps=[2,2,2]` → **L0 满容**，`add_nodes(L0)` 一律被 rule 9 拒（over_cap）。
+4. ⇒ 当 L0 满容时，把下层知识提升进 L0 是唯一能让知识「可注入 + 可循环」的通路，而该通路被 `Math.abs(sp.layer - tp.layer) > 1` 静默切断；层差限制本身没有技术依据 —— `liftMergeNodes` 用 `liftMergeResultLayer()` 取更抽象层、`allocSlot()` 硬闸兜底容量、ledger 资产按规则重锚、`materialize()` 重建全部边，**对任意层差成立**。
+
+## 修复（最小 diff，2 文件）
+1. `src/lib/lift_merge.ts` 新增 `mergeLayerAllowed(srcLayer, tgtLayer): boolean`——**同层/相邻层/任意级向上提升放行，仅拒绝「向下跳层」(tgt-src>1)**。层向判定收敛为单一事实来源。
+2. `src/index.ts` 解析层 `Math.abs(...)>1` 改为 `!mergeLayerAllowed(...)`，丢弃原因区分 `unparseable_id` / `layer_jump_downward`；被放行的向上提升额外记 `merge_action_lifted {source,target,delta}` 便于运行期验收。
+3. 未改：容量硬闸（`allocSlot` 满则截断或 `host_alloc_over_cap`）、`mergeDeleteGate(|reward|≥0.05)`、`delete` 禁止 —— 语义边界保持不动。
+
+## 验证（可复现命令）
+```bash
+cd ~/textron-agent
+# 类型门禁：与 HEAD 对照必须零新增（实测 24 → 24，且改动行无 error）
+npx --yes -p typescript@5.9.2 tsc --noEmit --target es2022 --module esnext \
+  --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck --lib es2023,dom src/index.ts
+# 机制回归（隔离网络，跑完自删）：18/18 PASS
+/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/jiti test_lift_jump.ts
+# 运行期验收（重启三件套后，跑一轮真实反传）
+python3 -c "
+import json,collections
+ev=[json.loads(l) for i,l in enumerate(open('/Users/rama/.textron/_events.jsonl',encoding='utf-8',errors='ignore'),1) if i>BASELINE]
+print('lifted:',[ (e['source'],e['target']) for e in ev if e.get('action')=='merge_action_lifted'])
+print('dropped:',[ e.get('reason') for e in ev if e.get('action')=='merge_action_dropped'])
+print('merged:',[ (e.get('nodesMerged'),e.get('nodesAdded')) for e in ev if e.get('action')=='semantic_backward_apply'])
+print('L3 是否还在:', open('/Users/rama/.textron/stock_alpha/layer_3/node_0.html').read().strip()[:40])
+"
+# 通过判据: 出现 merge_action_lifted 且某次 semantic_backward_apply.nodesMerged>=1，且 L3::node_0 被清空(知识已提升进 L0)
+```
+T1 层向真值表 9/9；T2 三级提升端到端（`L3::node_0`→`L0::node_0`：hostLayer=0、源清空、宿主吸收双方内容、L0 不超容）；T3 满容硬闸仍拒绝且带 reason。
+
+## 下一步候选改进（按杠杆排序，勿并行改）
+1. **`agent_end_backward_skipped:no_pending_match` 漏学**：窗口内 7 次 `highentropy_captured` 仅 3 次真正反传，`no_pending_match` 3 次（`hasHighEntropy=true,hasFinalText=true`）说明「本轮自产的高熵包」因 pending 匹配失败被丢弃 → 每轮约 40% 的 LLM 杠杆空转。方向：agent_end 时若 pending 无匹配，用「该轮自身 task/answer」作为目标补一次 self-backward，而非直接丢弃。
+2. **轨迹工具信息被 slice**：`src/index.ts:4076` `tools: turnTools.join(" ⏎ ").slice(0, 2400)` —— 一轮全部工具调用压成单串并硬截断 2400 字符，n8「信息不要被 slice」的诉求正落在此处；且 task stack 里 `highEntropy` 也被 `slice(0,2400)`。
+3. L1/L2 空壳占位：`hyperparams.layers` 与实际存活数不一致（`[2,0,1,1]` 却有 `layer_1/node_0|node_1` 空文件），建议一次性 compact 或让 `allocSlot` 优先复用空壳（`allocSlot` 已实现，缺的是触发）。

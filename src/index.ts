@@ -65,7 +65,7 @@ import { RESCALE_DOWN_REASONS, RESCALE_UP_REASONS, RESCALE_PENDING_LIMIT,
          type RescalePendingItem } from "./lib/rescale";
 import { setRecordArtifactEvent, chooseExpansionLayer, updateExistingNodeByPolicy,
          addPolicyNode, compactMergeEmptiedNodes, compactEmptyNodes, addDynamicNode, commitNodeHtmlEdges } from "./lib/node_policy";
-import { liftMergeNodes } from "./lib/lift_merge";
+import { liftMergeNodes, mergeLayerAllowed } from "./lib/lift_merge";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -1911,11 +1911,22 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             entry.source = String(a?.source || "").trim();
             entry.target = String(a?.target || "").trim();
             if (!entry.source || !entry.target) continue;
-            // Validate both nodes exist in network; 2026-09-04: 允许相邻抽象层跨层 merge (L1+L2→L1), 拒绝跳层(层差>1)
+            // Validate both nodes exist in network.
+            // 2026-09-04: 允许相邻抽象层跨层 merge (L1+L2→L1)。
+            // 2026-09-14 (n8 第三轮 guard 实证): 原实现额外用 |Δlayer|>1 一刀切丢弃，
+            // 使 LLM 提出的「向上提升」(L3→L0 / L2→L0) 被静默拒 → 每次反传
+            // nodesMerged=0，且 L3 结论永不进前向注入(topKByLayer 只取 0/1/2)= 死知识，
+            // 而 L0 在 cap=2 满容时 add_nodes 一律 over_cap 拒绝 → 抽象融合唯一的通路被切断。
+            // 层向判定改用单一事实来源 mergeLayerAllowed(): 只拒「向下跳层」(把抽象知识
+            // 塞进更具体层)，放行任意级向上提升 —— liftMergeNodes 的宿主定层/ledger 重锚/
+            // 物化重建对任意层差成立，容量由 allocSlot 硬闸兜底(满则截断或 host_alloc_over_cap)。
             const sp = parseLayerNodeId(entry.source); const tp = parseLayerNodeId(entry.target);
-            if (!sp || !tp || Math.abs(sp.layer - tp.layer) > 1) {
-              recordMonitorEvent({ type: "trace", action: "merge_action_dropped", source: entry.source, target: entry.target, reason: (!sp || !tp) ? "unparseable_id" : "layer_jump" });
-              continue; // merge within same or adjacent layer only
+            if (!sp || !tp || !mergeLayerAllowed(sp.layer, tp.layer)) {
+              recordMonitorEvent({ type: "trace", action: "merge_action_dropped", source: entry.source, target: entry.target, reason: (!sp || !tp) ? "unparseable_id" : "layer_jump_downward" });
+              continue; // merge within same/adjacent layer, or upward lift; only downward jumps are rejected
+            }
+            if (sp.layer - tp.layer > 1) {
+              recordMonitorEvent({ type: "trace", action: "merge_action_lifted", source: entry.source, target: entry.target, delta: sp.layer - tp.layer });
             }
           }
           out.node_actions.push(entry);

@@ -39,6 +39,21 @@ export interface LiftMergeOutcome {
  *   同层双节点 → 上提一级; 异层 → 归入更抽象层; L0 封顶(0 不再上提)。
  *   L2+L2→L1 · L3+L3→L2 · L4+L4→L3 · L2+L3→L2 · 含L0→L0
  */
+/**
+ * merge 层向闸（单一事实来源，index.ts 解析层调用）:
+ *   允许 同层(tgt==src)、相邻层(|Δ|=1)、以及任意级「向上提升」(tgt<src)。
+ *   仅拒绝「向下跳层」(tgt-src>1) —— 即把抽象层知识塞进更具体的层，方向与
+ *   liftMergeResultLayer 的「取更抽象层」语义相反，是真正的语义错误。
+ * 背景(2026-09-14 n8 第三轮 guard 实证): 原解析层用 |Δlayer|>1 一刀切丢弃，
+ *   导致 LLM 提出的 L3→L0 / L2→L0 抽象提升被静默拒绝 → merge_action_dropped(layer_jump)
+ *   每次反传 nodesMerged=0，下层结论困在从不前向注入的 L3(topoKByLayer 只取 0/1/2)= 死知识。
+ *   而 liftMergeNodes 本身按宿主定层+ledger 重锚+物化重建实现，对任意层差成立
+ *   (仅容量硬闸会截断/拒绝)，故限制应只针对方向，不应针对跨度。
+ */
+export function mergeLayerAllowed(srcLayer: number, tgtLayer: number): boolean {
+  return tgtLayer - srcLayer <= 1;
+}
+
 export function liftMergeResultLayer(srcLayer: number, tgtLayer: number): number {
   if (srcLayer === tgtLayer && srcLayer > 0) return srcLayer - 1; // 同层提升
   return Math.min(srcLayer, tgtLayer);                            // 异层取抽象 + L0 封顶

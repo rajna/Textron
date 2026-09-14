@@ -1749,7 +1749,7 @@ export default function (pi: ExtensionAPI) {
     const previousCrystal = parseHighEntropyCrystal(previousAssistantHighEntropy ? `<HighEntropy>${previousAssistantHighEntropy}</HighEntropy>` : "");
     // 2026-08-03: <Function> 块（functionSymbol/functionAbstract）随训练包透传——parseHighEntropyCrystal 只取
     // Name/Task/Technique，Function 块不进 prompt 则 functionSymbol 落盘核验（引用链 H1）结构性不可能通过。
-    const functionBlock = previousAssistantHighEntropy.match(/<Function>\s*([\s\S]*?)\s*<\/Function>/i)?.[1]?.trim().slice(0, 1500) || "";
+    const functionBlock = extractFunctionBlock(previousAssistantHighEntropy);
     const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"name":"<48 char","content":"<1000 char"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<1000 char"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"}]}';
     // ── Build filtered existing nodes list (global top-1 by TF-IDF relevance) ──
     const existingNodesTfidf = tfidfSimilarity(net, previousTask.slice(0, 200), currentUserMessage.slice(0, 200));
@@ -2366,6 +2366,14 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
    * ② 节点 content 缺 functionSymbol 字面时追加 [fn:symbol] 兜底（保 substring 引用链）。
    * 目标节点 = 本轮实际更新的最浅层节点；无更新则不写（宁缺勿错）。
    */
+  // 2026-09-14 (n8 验证轮 guard 实证): 原实现把 <Function> 提取写成 semanticBackwardLLM 内的
+  // 局部 const，forcedSemanticBackward 又在 2952 行直接引用它 → ReferenceError: functionBlock
+  // is not defined → 反传整轮 status=failed 且 Function 从未落盘。抽成同层单一事实来源，
+  // 任何调用点都不得再跨函数引用该局部变量。
+  function extractFunctionBlock(highEntropy: string | undefined): string {
+    return String(highEntropy || "").match(/<Function>\s*([\s\S]*?)\s*<\/Function>/i)?.[1]?.trim().slice(0, 1500) || "";
+  }
+
   function persistHighEntropyFunction(
     net: NonNullable<ReturnType<typeof loadNetwork>>,
     functionBlock: string | undefined,
@@ -2377,6 +2385,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const symbol = (raw.match(/functionSymbol\s*[:：]\s*`?([A-Za-z_][A-Za-z0-9_]*)`?/) || [])[1] || "";
     const code = raw.slice(0, 1200).trim();
     if (!code) return undefined;
+    // symbol 解析失败宁可早退：写无 symbol 的 <function> 块会让前向 ⟨fn:σ⟩ 永不命中，
+    // 形成「看似落盘、引用链仍断」的假达标（审计 A 项硬要求 symbol 非空）。
+    if (!symbol) {
+      recordMonitorEvent({ type: "trace", action: "highentropy_function_skipped", taskFamily, reason: "symbol_parse_failed", functionBlockChars: raw.length });
+      return undefined;
+    }
     const candidates = Object.keys(nodeUpdates || {})
       .map((key) => ({ key, parsed: parseLayerNodeId(key) }))
       .filter((x) => !!x.parsed)
@@ -2949,7 +2963,14 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // 修法: 反传结束后由系统兜底——①写 <function symbol=..> 块到本轮更新节点(独立于
     // content 1000 上限); ②若该节点 content 缺 functionSymbol 字面, 追加 [fn:symbol]
     // 保证引用链 substring 可命中; ③记事件供审计。
-    const fnPersist = persistHighEntropyFunction(net, functionBlock, result.node_updates, taskFamily);
+    // 隔离原则：审计/落盘插桩失败不得击穿反传主链（否则整轮 status=failed，
+    // agent_pending 还会重放同一轨迹反传，污染收益口径 —— n8 验证轮实证）。
+    let fnPersist: ReturnType<typeof persistHighEntropyFunction>;
+    try {
+      fnPersist = persistHighEntropyFunction(net, extractFunctionBlock(previousAssistantHighEntropy), result.node_updates, taskFamily);
+    } catch (e) {
+      recordMonitorEvent({ type: "trace", action: "highentropy_function_persist_failed", taskFamily, error: (e as Error).message });
+    }
     if (fnPersist) Object.assign(bwResult, { functionPersisted: fnPersist });
 
     // ── 2026-09-14 容量强制压缩轮: skip 不许静默 ─────────────────────────

@@ -6,6 +6,29 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 01:00）：content 上限取消 + FUSION NOT OVERWRITE —— 拆掉「抽象融合」的两重天花板
+
+> 触发：用户质询「反传时 LLM 输入了前向节点信息，为何更新时提供的是覆盖而非融合？」「n8 要求审抽象融合效率，为什么没发现？」
+> 状态：✅ 已改（`4d9de9b` 上限 + 本轮契约）。**需 /reload 生效**。
+
+## 一、两重天花板（定位）
+1. **物理天花板**：`NODE_CONTENT_MAX_CHARS=1000` —— 任何 merge/append 结果超 1000c 即被截断，融合无法累积（实测 content 恰好 999/1000c、name 拼接爆 48c）。
+2. **语义天花板（主因）**：`node_updates[k].content` 契约是「节点新内容全文」，**没有表达「保留旧要点 + 追加增量」的语法** ⇒ 即便 user prompt 已给出 `Selected path nodes to update … content: …`（旧内容可见），LLM 也只能整段重写。实证：`L0::node_0` oldContent="知识入网⇏收益改变的三必要条件…" → newContent="高质量交易知识被轻易抹除的四因…"（本轮对话原文），整段替换。
+3. **放大器**：`isCleanse` 走真覆盖；非 cleanse 的 `mergeContent` 受 (1) 截断，外部表现同样像覆盖；`0 context nodes injected` 使变动无外部后果可见 ⇒ 长期未被发现。
+
+## 二、改动
+- `content_limits.ts`：`NODE_CONTENT_MAX_CHARS` 1000→0（0=不限）；新增 `NODE_INJECT_MAX_CHARS=900` + `applyContentLimit(text,limit)`（limit<=0 不截断）；全库 9 处 `slice(0, NODE_CONTENT_MAX_CHARS)` 改 `applyContentLimit`。
+- `index.ts` 契约层：schemaHint 增 `mode(merge|replace)` + `keep(旧要点≤400c)`；解析层默认 merge → 合成 `keep ⏎ content`，仅 `mode=replace` 才真覆盖；system prompt 新增规则 10 FUSION NOT OVERWRITE；规则 4「Content≤1000c」→「无上限」；user prompt 增融合语义说明。
+- `lib/compile.ts`：注入侧按 `NODE_INJECT_MAX_CHARS` 限幅（**写入宽 / 读取窄**解耦）。
+- 验证：`/tmp/t_content.ts` 7/7 PASS；esbuild bundle 通过。
+
+## 三、验收（reload 后）
+- `semantic_backward_llm_raw_response` 的 node_updates 现 `keep` 字段且 content 为增量。
+- `apply.changedNodes`：newContent ⊇ oldContent 关键要点（信息并集覆盖率），而非整段替换；content 可超 1000c 且不截断，注入侧仍 ≤900c/节点。
+- **仍未解决（下一批）**：F1 孤儿候选池（`layers[0]` 驱动，磁盘节点不被扫描）+ F2 `selected ⊆ context` ⇒ `injectedCount≥1` 前交易验证轮为空转实验。
+
+---
+
 # ✦ 最近更新（2026-09-14 23:45）：HighEntropy <Function> 硬落盘 + 前向 fn 引用链 —— 可执行产物不再只留在轨迹里
 
 > 触发：guard n8 轨迹审计实证——网络 goal 明确要求「可复用交易策略函数/量化程序」，但 `functionBlock` 只在 `semanticBackwardLLM` 的 **prompt 输入侧**被消费（index.ts:1752 截 1500c 送进 user prompt），落盘侧零通路：LLM 实测只产出自然语言 `node_updates`，`layer_*/node_*.html` 无任何 functionSymbol 字面，前向注入也无从引用 → 函数产物全部滞留在 `_trajectories.jsonl`，跨轮 LLM 杠杆无法累积（每轮从零重新推理）。

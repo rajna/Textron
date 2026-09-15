@@ -103,7 +103,7 @@ trade.py — 交易决策函数（契约注释 / 实现待填写）
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Literal, Optional, Sequence, TypedDict
+from typing import Any, Dict, List, Literal, Optional, Sequence, TypedDict
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 契约常量：决策与置信度的合法取值
@@ -223,7 +223,22 @@ _CFG: Dict[str, float] = {
     "min_stop_pct": 0.02,     # 低于该比例必被当日噪音扫损 ⇒「止损越近≠越安全」
     "trail_ratio": 0.995,     # 突破 res_prev 后止损 trail 到 res_prev·该系数
     "weak_edge": 0.05,        # edge 弱阈值：低于此值不做无畏换手
-    "p_gate": 0.50,           # 胜率闸门：p < 此值时禁止启用机会成本项（见 _target_position 注释）
+    "p_gate": 0.50,           # 胜率闸门（**准入层**）：p < 此值时禁止加仓/建仓，见 _target_position 的 admit
+    # ── p_gate 阈值标定记录（本轮只登记，**刻意不改阈值**）─────────────────────
+    # (a) 近端样本实测（本局 sz.301299，逐日截断回放，次日收益 = next_close/close − 1）：
+    #     口径① 仅日线：admit=True n=4 均值 −0.48%（−3.00%~+2.31%）
+    #                vs admit=False n=3 均值 +1.03%（−1.98%~+2.91%）⇒ 差 −1.51pp；
+    #     口径② 含周线：admit=True n=2 均值 −2.00% vs admit=False n=6 均值 +0.98% ⇒ 差 −2.98pp。
+    #     两口径一致地为**负相关**（准入通过组的次日反而更差），但 n=2~4 且方向与假设相反
+    #     ⇒ 既不足以标定阈值，也不足以否决准入层；故保留 p_gate=0.50，登记为待观察项。
+    # (b) 硬截断 vs 软惩罚：实测 p 的取值是**离散档**（0.44/0.47/0.49/0.52/0.55/0.58），
+    #     0.50 附近无样本 ⇒ 硬截断实际等价于「{0.44…0.49} 归零 / {0.52…} 全额」。
+    #     倾向方案 = **准入层保持硬截断 + 配额层做连续缩放**，两条理由：
+    #       ① 上轮 PASS 的核心可观测证据是「同数值：修补前买 200 / 修补后持有」的行为差分，
+    #          把准入软化成 qty_scale 会让该差分消失，退化回「配额凌驾准入」的失败模式；
+    #       ② 0.50 处无样本 ⇒ 软化的收益无法被数据支撑，属无证据参数拟合。
+    #     下一步优先级 = 提高 p 的**分辨力**（mom_adj / vol_adj 现为 0/0.05、0/0.12 二值，
+    #     量化步长与阈值间距同阶），而不是把闸门软化成连续权重。
     "range_squeeze": 1.5,     # 横盘收缩阈值：箱体 < 该值×ATR ⇒ 方向未定，禁止加仓，等突破确认
     "gap_decay_days": 3,      # 缺口未回补的时间衰减步长（交易日）
     "gap_decay_step": 0.01,   # 每衰减一步对 p 的扣减
@@ -386,7 +401,14 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
     pi_risk_cap = ((total_value * _CFG["risk_budget_pct"] / 100.0) / risk) * close / total_value
     raw = min(kelly, pi_risk_cap, _CFG["pi_max"])          # 未被机会成本项抬升前的原始最优
     pi_star = _clip(raw, 0.0, _CFG["pi_max"])
-    floor_on = (edge >= _CFG["weak_edge"] and p >= _CFG["p_gate"] and not squeeze)
+    # ── 准入层 / 配额层解耦（关键顺序） ────────────────────────────────
+    #   准入层（admit）只回答「**该不该放**」：三闸门 AND
+    #       edge ≥ weak_edge(0.05) ∧ p ≥ p_gate(0.50) ∧ ¬squeeze；
+    #   配额层（kelly / pi_risk_cap / pi_max）只回答「**该放多大**」，
+    #       仅在准入通过后才被消费。两者短路即失败模式：
+    #       kelly 侧 Δπ ≥ eff_buy_band 被当成放行条件 = 把配额当准入（买在收缩箱体上沿）。
+    admit = bool(edge >= _CFG["weak_edge"] and p >= _CFG["p_gate"] and not squeeze)
+    floor_on = admit   # 向后兼容别名：deploy_floor 抬升同样只在准入通过时生效
     if floor_on:   # 机会成本项仅在「正期望 ∧ 方向占优 ∧ 非收缩」时生效
         pi_star = min(max(pi_star, _CFG["deploy_floor"]), _CFG["pi_max"], max(pi_risk_cap, 0.0))
     # binding 归因必须指向真正卡住 π* 的那一项（含被 deploy_floor 抬升的情形），
@@ -403,10 +425,11 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
             "kelly": kelly, "pi_risk_cap": pi_risk_cap, "pi_star": pi_star,
             "binding": binding, "stop": stop, "trail_ok": trail_ok,
             "gap_decay": gap_decay, "squeeze": squeeze, "floor_on": floor_on,
+            "admit": admit,
             "mom_adj": mom_adj, "mtf_pen": mtf_pen}
 
 
-def decide(ctx: TradeContext) -> TradeDecision:
+def _decide_core(ctx: TradeContext) -> TradeDecision:
     """由 K 线信息 + 账户状态产出交易决策（纯函数，只消费 ctx）。
 
     策略内核 = 目标仓位函数 π* 而非离散三选一：
@@ -485,10 +508,15 @@ def decide(ctx: TradeContext) -> TradeDecision:
                           mtf_n=mtf_n, mom_up=mom_up)
 
     def _order_px(side: int) -> float:
-        """申报价：side +1 买入 / −1 卖出。
+        """申报价：side +1 买入 / −1 卖出（**限价锚，非成交价**）。
 
-        成交价恒为 D+1 的价格，申报价只决定申报能否落入 D+1 的 [low, high]（越界即整笔失效）。
-        有明确短期动量时沿动量方向偏移 0.3·ATR 以吸收跳空；反向交易不追价（贴锚价，避免边缘越界）。
+        执行层为限价单真实撮合：买入 effective = min(申报价, D+1 开盘)、
+        卖出 effective = max(申报价, D+1 开盘)；唯一闸门 = 申报价须落入成交日
+        D+1 的 [low, high] 闭区间，越界整笔失效但仍推进一日。
+        推论一：申报价高低**不决定成交价水平**（买取 min / 卖取 max），故不得为「求更好成交价」
+                而偏移报价——偏移只会平移失效概率，不会平移收益。
+        推论二：有明确短期动量时沿动量方向偏移 0.3·ATR，只为吸收跳空（跨过次日 low 的命中窗）；
+                反向交易不追价（贴锚价，避免边缘越界）。
         """
         drift = _CFG["order_slip_atr"] * atr if ((side > 0 and mom_up) or (side < 0 and mtf_down and not mom_up)) else 0.0
         lim = 0.095 * close
@@ -519,10 +547,11 @@ def decide(ctx: TradeContext) -> TradeDecision:
     feats = {"close": close, "atr": round(atr, 3), "sup_prev": sup_prev, "res_prev": res_prev,
              "gap_lower": gap_lower, "gap_upper": gap_upper, "gap_age": gap_age,
              "gap_decay": round(tp["gap_decay"], 3), "squeeze": tp["squeeze"],
-             "floor_on": tp["floor_on"], "risk": round(tp["risk"], 3),
+             "floor_on": tp["floor_on"], "admit": tp["admit"], "risk": round(tp["risk"], 3),
              "b": round(tp["b"], 3), "p": round(tp["p"], 3), "edge": round(tp["edge"], 3),
              "kelly": round(tp["kelly"], 3), "pi_risk_cap": round(tp["pi_risk_cap"], 3),
              "pi_star": round(pi_star, 3), "pi_cur": round(pi_cur, 3), "delta_pi": round(delta, 3),
+             "pi_gap": round(pi_cur - pi_star, 3), "under_target": bool(pi_cur > pi_star + 1e-12),
              "binding": tp["binding"], "stop": round(tp["stop"], 3), "trail_ok": tp["trail_ok"],
              "min_pi_step": round(min_pi_step, 4), "min_eff_delta": round(min_eff_delta, 4),
              "eff_buy_band": round(eff_buy_band, 4), "eff_sell_band": round(eff_sell_band, 4),
@@ -563,6 +592,16 @@ def decide(ctx: TradeContext) -> TradeDecision:
             return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
                         "赔率×胜率期望为负，持有即负期望，退出", **feats)
         if delta >= eff_buy_band:
+            # 准入层先于配额层（第 12 步纠错：kelly 答「该放多大」、不答「该不该放」）：
+            # 三闸门未过 → 直接产出不动仓类枚举，**不得**被 kelly 侧 Δπ≥eff_buy_band 短路。
+            # 对应形态学证据：p<p_gate = 低胜率高赔率赌注的长尾实现频率低而每日独立结算失分；
+            # squeeze = 箱体上沿追多（方向未定）。减仓侧不受此闸门限制。
+            if not tp["admit"]:
+                return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
+                            "配额层 Δπ=+%.1f%% ≥ %.1f%% 已达标，但准入三闸门未过（edge=%.2f｜p=%.2f vs %.2f｜squeeze=%s）"
+                            "⇒ 仓位可放大≠应当放大，本次不动仓"
+                            % (delta * 100, eff_buy_band * 100, tp["edge"], tp["p"],
+                               _CFG["p_gate"], tp["squeeze"]), **feats)
             # 加仓侧动量否决分级（第 11 步）：单周期空头不享有与双周期空头同等的一票否决权。
             #   · mtf_n ≥ 2 且 Δπ < 2×eff_buy_band → 全否决（月/周一致空头 = 趋势证据最强）；
             #   · mtf_n == 1（常见于「月线未收官 bar」）→ 只折半执行，保留 kelly 的方向权；
@@ -611,6 +650,18 @@ def decide(ctx: TradeContext) -> TradeDecision:
                             "当前仓位 %.0f%% 高于目标 %.0f%%（Δπ=%.1f%% ≤ −%.1f%%），减至目标持股 %d 股"
                             % (pi_cur * 100, pi_star * 100, delta * 100, eff_sell_band * 100, tgt_q),
                             **feats)
+        if pi_cur > pi_star + 1e-12:
+            # 「该减不减」边界（超配但未达减仓带）：单步 |Δπ| 小 ≠ 无漂移 —— 若 π* 逐日下移
+            # 而每步差值都 < eff_sell_band，仓位会长期停在目标之上（该减不减的累积漂移）。
+            # 可判定信号（本轮只登记、不改行为）：feats 的 under_target / pi_gap；下一轮建议
+            # 在 ctx["memory"] 传入 last_pi_star，当 π* 连续下移且 pi_gap > 1.5×min_pi_step 时
+            # 把 eff_sell_band 换成「按 π* 斜率缩放」的动态带——而非现在直接放宽固定 12% 带
+            # （放宽固定带会同时削弱「风险敞口失控」的硬减仓信号，属拆东墙补西墙）。
+            return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
+                        "当前仓位 %.0f%% 高于目标 %.0f%%（超配 %.1f%%）但未达减仓带 %.0f%%："
+                        "超配未达带时持有，漂移由 under_target/pi_gap 监控（见 _CFG[p_gate] 旁注）"
+                        % (pi_cur * 100, pi_star * 100, (pi_cur - pi_star) * 100,
+                           eff_sell_band * 100), **feats)
         return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
                     "当前仓位已在目标仓位带内（|Δπ|=%.1f%% < 阈值），持有是仓位已达标而非惰性"
                     % (abs(delta) * 100), **feats)
@@ -659,6 +710,176 @@ def _to_decision(*args: Any, **kwargs: Any) -> TradeDecision:
     pass
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 决策契约守卫（价格语义 / fill 规则 / 零值·整手 三项硬断言）
+# ----------------------------------------------------------------------------
+# 为何必须**可执行**而非仅写在注释里：决策 JSON 直接喂给 /api/step，三项语义一旦漂移
+# （把申报价当成交价调参、非交易枚举带价、买入手数非整百），报错发生在**执行层**，
+# 表现为「整笔失效 success=false 却仍白耗一日」，与「判断错误」完全混同 ⇒ 事后无法归因。
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _contract_violations(d: TradeDecision, ctx: TradeContext) -> List[str]:
+    """三项契约断言 → 违规清单（空列表 = 合规）。
+
+    ① **价格语义**：tradePrice = 申报价（限价锚），既不是成交价也不是价格区间；
+       非交易枚举必须价量双零（0.0 / 0，不得为 None）。
+    ② **fill 规则**：成交价由 D+1 限价撮合给出（买 min(申报, 次日开盘) / 卖 max(申报, 次日开盘)），
+       本层无法也不知道 D+1 极值 ⇒ 只能断言「申报价落在以 D 收盘为锚的 ±9.5% 限幅窗内」；
+       且明确禁止把 fill 与申报价的差额当滑点回灌（差额属撮合语义，不是缺陷信号）。
+    ③ **零值·整手**：买入 qty%100==0 ∧ 申报价×qty ≤ 可用现金；卖出 qty%100==0 ∧ qty ≤ 持仓。
+    """
+    v: List[str] = []
+    dec = str(d.get("decision") or "")
+    price = float(d.get("tradePrice") or 0.0)
+    qty = int(d.get("tradeQuantity") or 0)
+    conf = str(d.get("confidence") or "")
+    daily = list(((ctx.get("kline") or {}).get("daily") or []))
+    close = float((daily[-1].get("close") if daily else 0.0) or 0.0)
+    account = ctx.get("account") or {}
+    cash = float(account.get("cash") or 0.0)
+    qty_held = int((((account.get("position") or {}) or {}).get("quantity") or 0))
+
+    if dec not in DECISIONS:
+        v.append("decision_not_in_enum:%s" % dec)
+    if conf not in CONFIDENCES:
+        v.append("confidence_not_in_enum:%s" % conf)
+
+    if dec in (DECISION_BUY, DECISION_SELL):
+        # ① 价格语义
+        if not (price > 0):
+            v.append("trade_price_must_be_positive")
+        elif round(price, 2) != price:
+            v.append("trade_price_not_2dp")
+        # ② fill 规则（申报价必须落在可成交放宽窗内）
+        if close > 0 and not (0.905 * close - 1e-9 <= price <= 1.095 * close + 1e-9):
+            v.append("order_px_outside_pct_limit")
+        # ③ 零值·整手
+        if qty <= 0 or qty % 100 != 0:
+            v.append("qty_not_lot_100")
+        if dec == DECISION_BUY and price * qty > cash + 1e-6:
+            v.append("buy_exceeds_cash")
+        if dec == DECISION_SELL and qty > qty_held:
+            v.append("sell_exceeds_holdings")
+    else:
+        if price != 0.0 or qty != 0:
+            v.append("flat_decision_must_zero_price_qty")
+
+    # ④ **准入反例断言**（第 12 步）：准入层是买入/加仓的前置必要条件，
+    #    故「p<p_gate」或「squeeze=True」下的任何买入产出都必须被判违规——
+    #    即使 kelly 配额（Δπ ≥ eff_buy_band）已达标也不得放行。
+    snap = d.get("featureSnapshot") or {}
+    p_snap = snap.get("p")
+    sq_snap = snap.get("squeeze")
+    if dec == DECISION_BUY:
+        if p_snap is not None and float(p_snap) < _CFG["p_gate"] - 1e-9:
+            v.append("buy_blocked_by_p_gate:p=%.2f<%.2f" % (float(p_snap), _CFG["p_gate"]))
+        if sq_snap is True:
+            v.append("buy_blocked_by_squeeze")
+    return v
+
+
+def decide(ctx: TradeContext) -> TradeDecision:
+    """稳定 ABI 入口：_decide_core 产出 → 契约守卫 → （违规时）安全降级。
+
+    守卫失败一律降级为「不动仓」，**不抛异常**：执行层对抛错无兜底，宁可吃一次
+    零变动失分（外生、可归因），也不能让整轮拿不到可解析的决策 JSON。
+    """
+    d = _decide_core(ctx)
+    viol = _contract_violations(d, ctx)
+    if not viol:
+        return d
+    account = ctx.get("account") or {}
+    qty_held = int((((account.get("position") or {}) or {}).get("quantity") or 0))
+    snap = dict(d.get("featureSnapshot") or {})
+    snap["contract_violations"] = viol
+    snap["blocked_decision"] = d.get("decision")
+    return {"decision": DECISION_HOLD if qty_held > 0 else DECISION_WATCH,
+            "tradePrice": 0.0, "tradeQuantity": 0, "confidence": CONF_LOW,
+            "reasoning": "契约守卫拦截(%s)，降级为不动仓" % ",".join(viol),
+            "featureSnapshot": snap}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 自测入口：`python3 trade.py` ⇒ 契约守卫 + 冒烟（可作变更后的等价性前置门禁）
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _selfcheck() -> bool:
+    ok = True
+    daily = [dict(open=51.90, high=53.77, low=51.75, close=52.55, volume=2376200),
+             dict(open=52.55, high=53.63, low=51.80, close=52.90, volume=1702500),
+             dict(open=53.97, high=54.80, low=53.60, close=54.08, volume=1487800),
+             dict(open=53.60, high=54.99, low=53.17, close=53.43, volume=1419300),
+             dict(open=53.81, high=54.16, low=51.66, close=52.92, volume=1651400),
+             dict(open=52.64, high=54.17, low=52.37, close=53.30, volume=1370200),
+             dict(open=53.78, high=54.19, low=52.95, close=53.18, volume=1207500),
+             dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
+             dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
+             dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
+             dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
+             dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100)]
+    weekly = [dict(open=61.25, high=61.89, low=58.48, close=58.80),
+              dict(open=52.34, high=54.95, low=43.85, close=52.90),
+              dict(open=53.97, high=54.99, low=51.66, close=53.18),
+              dict(open=52.95, high=55.78, low=52.33, close=54.93)]
+    held = dict(cash=86988.0, total_value=103467.0,
+                position=dict(symbol="sz.301299", quantity=300, cost_price=53.70,
+                              market_value=16479.0))
+    empty = dict(cash=103467.0, total_value=103467.0, position=None)
+    cases = [("带仓", dict(kline=dict(daily=daily, weekly=weekly, monthly=[]), account=held)),
+             ("空仓", dict(kline=dict(daily=daily, weekly=weekly, monthly=[]), account=empty)),
+             ("数据不足", dict(kline=dict(daily=daily[:3], weekly=[], monthly=[]), account=empty))]
+    for label, ctx in cases:
+        d = decide(ctx)
+        viol = _contract_violations(d, ctx)
+        ok = ok and not viol
+        print("[%s] %s: %s px=%s qty=%s conf=%s viol=%s" %
+              ("OK" if not viol else "FAIL", label, d["decision"], d["tradePrice"],
+               d["tradeQuantity"], d["confidence"], viol))
+        ok = ok and d["decision"] in DECISIONS and d["confidence"] in CONFIDENCES
+    # 负例：故意构造违规决策，守卫必须能抓到
+    bad = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 150,
+           "confidence": CONF_MID}
+    viol = _contract_violations(bad, cases[0][1])
+    ok = ok and "qty_not_lot_100" in viol
+    print("[%s] 负例(150股)命中 qty_not_lot_100" % ("OK" if "qty_not_lot_100" in viol else "FAIL"))
+    bad2 = {"decision": DECISION_HOLD, "tradePrice": 54.93, "tradeQuantity": 0,
+            "confidence": CONF_MID}
+    viol2 = _contract_violations(bad2, cases[0][1])
+    ok = ok and "flat_decision_must_zero_price_qty" in viol2
+    print("[%s] 负例(持有带价)命中 flat_decision_must_zero_price_qty"
+          % ("OK" if "flat_decision_must_zero_price_qty" in viol2 else "FAIL"))
+    # 负例（第 12 步新增）：配额达标但**准入未过**的买入产出必须被拦
+    bad3 = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 200,
+            "confidence": CONF_MID, "featureSnapshot": {"p": 0.49, "squeeze": True}}
+    viol3 = _contract_violations(bad3, cases[0][1])
+    hit_gate = any(x.startswith("buy_blocked_by_p_gate") for x in viol3)
+    hit_sq = "buy_blocked_by_squeeze" in viol3
+    ok = ok and hit_gate and hit_sq
+    print("[%s] 负例(p=0.49&squeeze 买入)命中 %s"
+          % ("OK" if (hit_gate and hit_sq) else "FAIL", viol3))
+    # 正例：同一组特征下 p≥p_gate 且非 squeeze 时，同一买入决策必须放行
+    good = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 200,
+            "confidence": CONF_MID, "featureSnapshot": {"p": 0.55, "squeeze": False}}
+    ok = ok and not _contract_violations(good, cases[0][1])
+    print("[%s] 正例(p=0.55 非收缩 买入)准入放行"
+          % ("OK" if not _contract_violations(good, cases[0][1]) else "FAIL"))
+    # 边界用例（本轮新增）：「超配但未达减仓带」必须落为持有，且 under_target=True（漂移可统计）
+    drift_ctx = dict(kline=dict(daily=daily, weekly=[], monthly=[]),
+                     account=dict(cash=102922.0 - 700 * 53.84, total_value=102922.0,
+                                  position=dict(symbol="sz.301299", quantity=700,
+                                                cost_price=53.70, market_value=700 * 53.84)))
+    dd = decide(drift_ctx)
+    s_ = dd.get("featureSnapshot") or {}
+    ok_drift = (dd["decision"] == DECISION_HOLD and s_.get("under_target") is True
+                and dd["tradePrice"] == 0.0 and dd["tradeQuantity"] == 0)
+    ok = ok and ok_drift
+    print("[%s] 边界(超配未达减仓带): %s pi_gap=%s under_target=%s"
+          % ("OK" if ok_drift else "FAIL", dd["decision"], s_.get("pi_gap"), s_.get("under_target")))
+    print("契约守卫 + 冒烟：%s" % ("全部通过" if ok else "存在失败项"))
+    return ok
+
+
 if __name__ == "__main__":
-    # 自测入口：实现完成后可在此调用 decide() 做冒烟验证
-    pass
+    import sys
+    sys.exit(0 if _selfcheck() else 1)
+

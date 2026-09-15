@@ -243,14 +243,14 @@ export default function (pi: ExtensionAPI) {
     processLog: string[];
   }
   const MAX_TASK_STACK = 5;
-  const MAX_PROCESS_ENTRY_CHARS = 4000;      // 单条过程记录上限(字符)
-  // 2026-09-15 n8 第十一轮：轨迹保真 —— 原值 700 使单条 exec 上下文被截到 1200c
-  //（MAX_PROCESS_ENTRY_CHARS+500），叠加 tool_result 640c / tools 尾截 1800c / 总预算 4800c，
-  // 使一轮 20+ 次工具调用 + 数 KB 的交易 JSON（/api/prompt 全文、/api/step 的 portfolio）
-  // 到反传手里只剩 ≤1.2KB 碎片 ⇒ 反传无从做 credit assignment（reward 恒 0 / quality=low）。
-  // 这些上限是「轨迹收集」的实际瓶颈，放宽以使原始交易数据完整入反传。
+  const MAX_PROCESS_ENTRY_CHARS = 20000;     // 单条过程记录上限(字符)
+  // 2026-09-15 n8 第十一轮：轨迹保真 —— 原值 700 使单条 exec 上下文被截到 1200c，
+  // 叠加 tool_result 640c / tools 尾截 1800c / 总预算 4800c，使一轮 20+ 次工具调用 +
+  // 数 KB 的交易 JSON 到反传手里只剩 ≤1.2KB 碎片 ⇒ reward 恒 0 / quality=low。
+  // 实测真值（决定阈值）：/api/prompt 响应 9009B（prompt 字段 4348c）；/api/saves 135694c。
+  // 因此单条上限必须 ≥ 单次交易 API 响应的完整长度，否则「最原始数据」必被砍。
   const MAX_TASK_PROCESS_ENTRIES = 24;        // 每任务最多保留过程条数(超出滚动丢最旧)
-  const MAX_TASK_PROCESS_TOTAL_CHARS = 16000; // 每任务过程总字符上限(防反传上下文膨胀)
+  const MAX_TASK_PROCESS_TOTAL_CHARS = 40000; // 每任务过程总字符上限(防反传上下文膨胀)
   // 2026-09-03 信息获取策略: 中间轮 HE 优先→无HE用 LLM 蒸馏(非slice); 反馈轮全量; AI思考默认排除(参数可选)
   const DISTILL_INTERMEDIATE = process.env.TEXTRON_DISTILL_INTERMEDIATE !== "0"; // 默认开
   const INCLUDE_THINKING = process.env.TEXTRON_INCLUDE_THINKING === "1";          // 默认关
@@ -3920,7 +3920,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const toolName = String(event?.toolName || "?");
       // 2026-09-04: 工具调用入回合缓冲(与 tool_result 同为任务执行上下文, 不扫描过滤, 供 agent_end 拼接 processLog)
       try {
-        currentTurnTools.push(`▶${toolName} in:${inputPreview.slice(0, 600)}`);
+        currentTurnTools.push(`▶${toolName} in:${inputPreview.slice(0, 4000)}`);
         if (currentTurnTools.length > 40) currentTurnTools.shift();
       } catch { /* 缓冲失败不影响主流程 */ }
       recordMonitorEvent({
@@ -3945,9 +3945,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       try {
         const prev = currentTurnTools.length ? currentTurnTools[currentTurnTools.length - 1] : "";
         if (prev.startsWith(`▶${toolName}`)) {
-          currentTurnTools[currentTurnTools.length - 1] = `${prev} → out:${flat.slice(0, 2500)}`;
+          currentTurnTools[currentTurnTools.length - 1] = `${prev} → out:${flat.slice(0, 20000)}`;
         } else {
-          currentTurnTools.push(`◀${toolName} out:${flat.slice(0, 2500)}`);
+          currentTurnTools.push(`◀${toolName} out:${flat.slice(0, 20000)}`);
         }
         if (currentTurnTools.length > 40) currentTurnTools.shift();
       } catch { /* 忽略 */ }
@@ -4089,7 +4089,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const turnExecContext = (() => {
       const parts: string[] = [];
       if (currentTurnThinking) parts.push(`💭${currentTurnThinking.slice(0, 640)}`);
-      if (turnTools.length) parts.push(`🔧${turnTools.join(" ⏎ ").slice(-8000)}`);
+      if (turnTools.length) parts.push(`🔧${turnTools.join(" ⏎ ").slice(-40000)}`);
       if (!parts.length) return "";
       const s = `[${execTag}][exec] ${parts.join(" ⏎ ")}`;
       // exec 条目遵循单条上限(与 HE 之外的蒸馏/tail 一致, 防挤占 4800c 总预算把 HE 滚出窗口)
@@ -4205,8 +4205,11 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         in_stack: isTaskStart,   // 入栈不再要求 HighEntropy(isTask 即登记)
         task_phase: isTaskStart ? "task_start" : (feedbackTurn ? "feedback" : (activeTask ? "intermediate_append" : "none")),
         // 2026-09-04: 轨迹行回填回合执行上下文(思考+工具链)——tool_result/AI 思考与回答同权可见
-        thinking: (currentTurnThinking || "").slice(0, 2000),
-        tools: turnTools.join(" ⏎ ").slice(0, 2400),
+        // 2026-09-15 n8 第十一轮：落盘不再掐断——原 tools 上限 2400c 会把 9009B 的 /api/prompt
+        // 响应砍剩 27%，这是「轨迹收集不完全」的直接原因。落盘以「完整采集」为准，
+        // 长度控制交给条目数上限(currentTurnTools ≤ 40)。
+        thinking: (currentTurnThinking || "").slice(0, 8000),
+        tools: turnTools.join(" ⏎ "),
       });
     } catch { /* 忽略 */ }
 

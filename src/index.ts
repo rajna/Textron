@@ -2490,7 +2490,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // 2026-09-15（手动编码更正）：**删除词表域闸**。工程词汇黑名单是「规则」不是「机制」：
     // ①与领域无关——交易函数只要注释里出现「反传」「node_0」就被静默拒写（实测 8 例 2 例假阳性）；
     // ②不可训练不可收敛——网络无法从词表学到任何东西，行为只随人改词表而变；
-    // ③合法闸门已存在且数据驱动：轨迹级领域证据门禁(semantic_backward_skipped_no_domain_evidence)、
+    // ③合法判据已存在且由 LLM 承担：反传内部 goal guard + keep/drop/merge、写入前置比较与版本化；
     //   LLM 语义判据(FUSION keep/drop/merge 三段式 + node_actions)、写入前置比较与 _node_history 版本化。
     // 故此处只保留结构不变量（长度上限、symbol 合法性），不做任何词汇判定。
     const code = raw.slice(0, 8000).trim();   // 原 1200c 会把函数体截肢（节点里实测的断码来源）
@@ -4289,11 +4289,15 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const capturedIDs = matched.activatedIds;
       const capturedEdges = matched.selectedEdgeIds;
 
-      if (!backwardTaskContext.hasDomainEvidence && !capturedHighEntropy) {
-        log(`Textron semantic backward (agent_end): skipped — no domain evidence`);
-        recordMonitorEvent({ type: "trace", action: "semantic_backward_skipped_no_domain_evidence", taskFamily: capturedTF });
-        updateTrajectoryTurnBackward(turnId, { ran: false, status: "skipped", reason: "no_domain_evidence" });
-      } else {
+      // 2026-09-15（用户指令）：**删除 no_domain_evidence 预闸门**。
+      // 它本质是词表白名单（hasNewDomainEvidence：≥60 字 ∧ 结果|根因|修复|验证|总结|复盘…），
+      // 词表偏工程语而**缺交易结果词**（盈利/亏损/收益/回撤/成交/未成交），且依赖未持久化的
+      // rawPrompt ⇒ 重启后恒 false；与 HE 未捕获叠加即**静默跳过整轮反传**
+      // （实测今日 stock_alpha 轨迹大量 {ran:false,status:'skipped',reason:'no_domain_evidence'}）。
+      // 判官职责本就属于反传内部的 LLM（goal guard + keep/drop/merge + node_actions），
+      // 外层再套硬编码预判只会丢学习信号。此处只保留可观测，不做判断。
+      {
+        recordMonitorEvent({ type: "trace", action: "semantic_backward_entered", taskFamily: capturedTF, hasHighEntropy: !!capturedHighEntropy, promptChars: backwardTaskContext.previousTaskForBackward.length });
         // Inject current assistant's HighEntropy (经验总结) into feedback context
         // 2026-09-03: 反馈轮 content 全量(不 slice); AI 思考默认排除(INCLUDE_THINKING=true 可选)
         const assistantAnalysis = _capturedHE || stripThinkingText(_capturedText || "");

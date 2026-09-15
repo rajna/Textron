@@ -30,7 +30,7 @@ import {
   type NodeNgramState,
 } from "./ngram_distill";
 import { buildTextronPromptInjection } from "./prompt_injection";
-import { buildBackwardTaskContext, serializeTaskForState, restoreTaskPrompt } from "./lifecycle_context";
+import { buildBackwardTaskContext, serializeTaskForState, restoreTaskPrompt, patchTaskRawPrompt } from "./lifecycle_context";
 // 任务侧域闸（n8 第十五轮）：与 rule 0 对称的另一半 —— 离域任务的内容零写入。
 // 裁决逻辑与规则文本均从模块导入，禁止在此内联复刻（单一事实来源）。
 import { evaluateTaskDomainGate, taskDomainGateRule } from "./domain_gate";
@@ -4425,10 +4425,18 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const _capturedHE = currentAssistantHighEntropy;
       const _capturedText = finalAssistantText;
       const _capturedRaw = currentRawUserPrompt;
+      // 2026-09-16 第十六轮 n8：任务侧原文补齐。pending 池内旧条目 rawUserPrompt 常为空
+      // （实测 matchedTaskTs 指向 11:34:37Z / 08:20:10Z 的已出栈旧任务，rawPromptChars=0），
+      // 而本会话 activeTask 原文非空（1607c/1366c）⇒ 在 setTimeout 之前捕获，避免异步期被下一轮覆盖。
+      const _patch = patchTaskRawPrompt({
+        matchedRawPrompt: matched.rawUserPrompt || "",
+        activeTaskRawPrompt: (activeTask && activeTask.rawUserPrompt) || "",
+        currentRoundPrompt: currentRawUserPrompt || "",
+      });
       setTimeout(() => {
         enqueueBackward(async () => {
       const backwardTaskContext = buildBackwardTaskContext({
-        rawPrompt: matched.rawUserPrompt,
+        rawPrompt: _patch.rawPrompt,
         effectivePrompt: matched.effectivePrompt,
         highEntropy: matched.highEntropy,
         processLog: matched.processLog || [],
@@ -4452,7 +4460,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       {
         // learningPromptSource 是「任务侧素材是否退化」的判定信号：raw_prompt=任务原文入反传；
         // high_entropy=原文缺失、退化为 HE 摘要（第十三轮修复前重启后必为 high_entropy）。
-        recordMonitorEvent({ type: "trace", action: "semantic_backward_entered", taskFamily: capturedTF, hasHighEntropy: !!capturedHighEntropy, promptChars: backwardTaskContext.previousTaskForBackward.length, learningPromptSource: backwardTaskContext.learningPromptSource, rawPromptChars: backwardTaskContext.rawPromptChars, placeholderRetryPrompt: backwardTaskContext.placeholderRetryPrompt, matchedTaskTs: matched.ts, matchedPromptChars: (matched.rawUserPrompt || "").length });
+        recordMonitorEvent({ type: "trace", action: "semantic_backward_entered", taskFamily: capturedTF, hasHighEntropy: !!capturedHighEntropy, promptChars: backwardTaskContext.previousTaskForBackward.length, learningPromptSource: backwardTaskContext.learningPromptSource, rawPromptChars: backwardTaskContext.rawPromptChars, placeholderRetryPrompt: backwardTaskContext.placeholderRetryPrompt, matchedTaskTs: matched.ts, matchedPromptChars: (matched.rawUserPrompt || "").length, taskPromptPatch: _patch.patchSource, taskPromptPatchedRawChars: _patch.patched ? _patch.rawPrompt.length : 0 });
         // Inject current assistant's HighEntropy (经验总结) into feedback context
         // 2026-09-03: 反馈轮 content 全量(不 slice); AI 思考默认排除(INCLUDE_THINKING=true 可选)
         const assistantAnalysis = _capturedHE || stripThinkingText(_capturedText || "");

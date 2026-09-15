@@ -146,6 +146,61 @@ function isPlaceholderRetryPrompt(prompt: string): boolean {
   return false;
 }
 
+/** 任务侧原文补齐的候选与结果（2026-09-16 第十六轮 n8）。 */
+export interface TaskPromptPatchInput {
+  /** 配对命中的 pending 任务原文（旧实现常为空） */
+  matchedRawPrompt: string;
+  /** 本会话当前活跃任务（本轮刚 push）的原文 */
+  activeTaskRawPrompt?: string;
+  /** 本轮真实收到的上游 prompt */
+  currentRoundPrompt?: string;
+}
+
+export interface TaskPromptPatchResult {
+  /** 供反传使用的任务侧原文 */
+  rawPrompt: string;
+  /** 取材位置（审计用）: matched / active_task / current_round_prompt / none */
+  patchSource: "matched" | "active_task" | "current_round_prompt" | "none";
+  /** 是否发生补齐（matched 为空且回落到其它来源） */
+  patched: boolean;
+}
+
+/**
+ * 任务侧原文补齐（TASK-SIDE PROMPT PATCH）—— 反传「任务侧」的**单一取材点**。
+ * ------------------------------------------------------------------
+ * 真因（2026-09-16 n8 第十六轮 guard 实证，窗口 L97063–L97477）：
+ * 反传的任务侧取自 pairing judge 命中的 pending 池条目（`_backwardPendingMatch`），
+ * 而池内旧条目的 `rawUserPrompt` 常为空（重启前旧档 / 未持久化）。实测 guard 与
+ * sender 两个回合 `semantic_backward_entered` 均为 `learningPromptSource=high_entropy`
+ * ∧ `rawPromptChars=0` ∧ `placeholderRetryPrompt=true`，`matchedTaskTs` 分别指向
+ * 11:34:37Z 与 08:20:10Z 的**已出栈旧任务**（本会话 state 里的 activeTask 原文
+ * 明明非空：1607c / 1366c）⇒ 反传 LLM 的「任务侧」退化为 HE 摘要。
+ * 后果链（可字面核对）：任务侧失真 ⇒ ①任务侧域闸（domain_gate）拿不到「本轮任务是什么」
+ * ⇒ 恒判在域内 ⇒ 唯一新增的工程域符号 `turn_based_step_driver`（回合制协议/session 重建，
+ * 属 workflow orchestration）写进 L0::node_0；②融合对象错位（拿本轮知识对 8 小时前的任务
+ * 自说自话）⇒ 节点抽象质量下降。
+ *
+ * 不变式（沿用 lifecycle_context 头注释）：**任务原文属上游输入，不可由事后总结替代**。
+ * 本函数只做「取材回落」，不改配对身份、不做语义判断（判官仍属反传 LLM / 域闸 LLM）：
+ *   matched 原文 → 本会话 activeTask 原文 → 本轮 prompt → 空（无可用原文，显式标注 none）。
+ * 占位符（「继续」「收到」等）不视为可用原文，继续向下回落。
+ */
+export function patchTaskRawPrompt(input: TaskPromptPatchInput): TaskPromptPatchResult {
+  const matched = normalizePrompt(input.matchedRawPrompt);
+  if (matched && !isPlaceholderRetryPrompt(matched)) {
+    return { rawPrompt: matched, patchSource: "matched", patched: false };
+  }
+  const active = normalizePrompt(input.activeTaskRawPrompt || "");
+  if (active && !isPlaceholderRetryPrompt(active)) {
+    return { rawPrompt: active, patchSource: "active_task", patched: true };
+  }
+  const round = normalizePrompt(input.currentRoundPrompt || "");
+  if (round && !isPlaceholderRetryPrompt(round)) {
+    return { rawPrompt: round, patchSource: "current_round_prompt", patched: true };
+  }
+  return { rawPrompt: matched, patchSource: "none", patched: false };
+}
+
 /**
  * Pi's before_agent_start hook can mutate event.prompt. Backward must learn from
  * the prompt the agent actually received, while keeping the original user text

@@ -64,7 +64,15 @@
 3. **自产 HE 被丢**：`agent_end_backward_skipped{no_pending_match}` 且 `hasHighEntropy=true` ⇒ 用该回合自身 task/answer 补一次 self-backward，`reward=null/unattributed`（**不得让 HE 驱动 reward**）。窗口实证：`no_pending_match×1` + `pairing_judge_no_match×2` + `no_assistant_content×1` = 4/9 杠杆空转。
 4. **事件写入者归因**：`agent_end/hook/trace` 统一附 `pid` + `md5(src/index.ts)`——多进程共享 `_events.jsonl` 时否则无法排除旧进程写入（第十轮吃过口径污染）。
 
+## 七、n6 运行观察（工作流层，供下一轮 n6/工作流修订）
+
+- **二级等待超时兜底首次触发**：sender 第 2 轮派发后 **10 分钟无回执**，遂以磁盘证据（`trade.py` mtime / 行数 424→488→540）确认 worker 存活后**重发**指令，第二次成功取回决策 JSON。⇒ 不变式：异步链路中「已下发」≠ 完成，超时后应以磁盘证据对账并重发，**禁止**代做决策或判轮次失败（本轮未发生越权/代做，边界改写生效）。建议 `workflow_3` n6 补一条显式超时重发条款（现为 sender 自行兜底，未写入流程）。
+- **买卖方向反转可归因（worker 自述，两轮同位置）**：日线滚动窗口首根自身即跳空 bar 时无法与前根比较 ⇒ `gap=None` ⇒ `b=1.52 / π*=0.005` ⇒ 卖出 400 股；跨周期回退取周线 `gap=[54.95, 58.48]` ⇒ `b=2.32 / π*=0.35` ⇒ 买入 100 股。修法：`_last_gap` 按日→周→月取首个**未被完全回补**缺口，`age` 折交易日（周×5 / 月×21）。
+- **评分语义的推论**：`零变动 = −2`（非 0）使「持有/空仓在平盘日必然失分」成为**外生失分**，与方向判断无关 ⇒ 不可用加仓博取（本轮最大回撤已 −11.07%）。配套判据：最小有效换手 ≈ `score_cost_pct/(ATR/close)` ≈ 5.8%，低于此的置换在逐日评分下为负期望；`deploy_floor` 三闸门 `edge≥0.05 ∧ p≥0.5 ∧ ¬squeeze(箱体<1.5ATR)`。
+- **规程符合性**：两轮派发均按接收方角色祈使句改写，显式声明 worker 只与 sender 交互、禁直连 guard（上轮越权根因已闭环）；2/2 满额后仅向 guard 发一次通知（幂等）。
+
 ---
+
 # ✦ 上一轮（2026-09-15 21:30）：n8 第十四轮 —— 第十三轮改动运行期验收 ✅（`00dc022`/`7b6862b`）；查出 Function 块 50% 蒸发真因（R4a 单块搬运 / R4b 静默淘汰，已修 `c8b015d`）与轨迹工具侧 180c/640c 静默 slice（已修 `db33ba8`）；新发现 `pinnedTaskFamily=stock_alpha` 致工程/调度域知识 50% 灌入交易网络（→ 第十五轮 R5/域闸）
 
 > 触发：三件套 21:15 重启。窗口 `_events.jsonl` 577 事件/9 回合。n6：1 次推进（持有 sz.301299，step 67→68，零成交 flat/-2）；worker 把 trade.py 从「持有=默认档」升维为 `π*=clip(min(Kelly(p,b), π_risk_cap, π_max))`（契约零变更）。

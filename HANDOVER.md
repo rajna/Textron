@@ -6,7 +6,94 @@
 
 ---
 
-# ✦ 最近更新（2026-09-15 19:40）：n8 **第十三轮** —— 反传首次真正打通（`nodesMerged=1` / Function 多槽共存 / 拒写生效）；本轮修 **merge 造双胞胎副本**（`00dc022`）+ **任务原文不落盘致反传「任务侧」退化为 HE 摘要**（`7b6862b`）；另提交上一轮遗留的轨迹全量未提交工作（`0405809`）
+# ✦ 最近更新（2026-09-15 21:30）：n8 **第十四轮** —— 第十三轮两项改动运行期验收 ✅（`00dc022`/`7b6862b`）；查出 **Function 块 50% 蒸发真因**（`R4a` 单块搬运 + `R4b` 静默淘汰，已修 `c8b015d`）与 **轨迹工具侧 180c/640c 静默 slice**（已修 `db33ba8`）；新发现 **`pinnedTaskFamily=stock_alpha` 使工程/调度域知识 50% 灌入交易网络**（下一轮 P0）
+
+> 触发：guard n8 第十四轮。三件套 21:15:08 重启 ⇒ 首次运行期加载 `00dc022`+`7b6862b`+`0405809`。
+> 窗口 = `_events.jsonl` `2026-09-15T13:15:00Z–13:24:52Z`（**577 事件 / 9 回合**）。
+> n6 结果：sender 完成 **1 次推进**——`持有 sz.301299`、`step_index 67→68`、`tradeQuantity=0`（零成交 ⇒ `flat/unattributed`）、打分 **-2**；worker 复盘把 trade.py 从「持有=默认档」升维为仓位函数 `π*=clip(min(Kelly(p,b), π_risk_cap, π_max))`（契约零变更）。
+> git：起点 `18f64d3` → `db33ba8`（轨迹工具侧保真）→ `c8b015d`（function 块搬运/淘汰）。**两项需 n9 重启生效**。
+
+## 〇、本轮三项正向事实（下一轮请当基线，勿再当缺陷修）
+
+| 事实 | 判据（字面） |
+|---|---|
+| **F1 孤儿节点根治**（第五轮根因） | 9 次 `l0_score_start` 全部 `nodeCount:2, nodes:['L0::node_0','L0::node_1']` —— 磁盘驱动的候选池，`L0::node_1` 不再沉默 |
+| **F2 阈值断层根治**（第五轮根因） | 9 次 `propagate_done` 全部 `selectedIds === contextIds` 且 `contextIds.length ≥ 1`（4 轮注入 3 节点、5 轮注入 1 节点）；无 `forward_injection_stalled` |
+| **F3 任务原文侧回归** | 8 次 `semantic_backward_entered` 的 `learningPromptSource` 非 `high_entropy` 的 6 次全部 `raw_prompt`，`rawPromptChars=matchedPromptChars`∈{1096,1346,1414,4522} |
+
+## 一、验收：第十三轮待验证改动 —— 全部生效（**无回滚需求**）
+
+| 上轮改动 | 判据 | 本轮实测（字面） | 结论 |
+|---|---|---|---|
+| `00dc022` merge 溢出判据不再造双胞胎 | 同层无逐字同文节点；`overflow suppressed` 可见 | 窗口 **5 次 merge**（`nodeMutations` 逐条可查）；`layer_0` 终态单节点、`_node_history` 同位快照 `node_0`(2668c) 与 `node_1`(18474c) **内容不同**；`jiti test_lift_overflow_dup.ts` 15/15 | ✅ |
+| `7b6862b` 任务栈落盘 `rawUserPrompt` | 反传任务侧不再是 HE 摘要 | `task_stack_persisted.rawPromptCount=1/1/2`、`rawPromptChars∈{1096,4000,2442,4350}`；反传 `rawPromptChars>0` 且 `placeholderRetryPrompt=false`（6/8）；回归 15/15 | ✅ |
+| `0405809` 轨迹全量 | userPrompt/answer 不静默截断 + HE 载荷本体 + `respondsTo` 配对链 | 17 行轨迹：`userPromptChars=1096/4522/1346…` 且 `userPromptTruncated=false`；`answerTruncated=false`；`highEntropy` 7 字段齐备；`respondsTo` 链 `mu2p2bnv→mu2p3kwx`；`[object Object]` 计数 0 | ✅（**但工具侧未覆盖，见 R4c**） |
+
+> **口径提醒（沿用第十轮纪律）**：`task_prompt_restored{rawPromptRestored:0, rawPromptEmpty:6}`×2 出现在启动瞬间 —— 这是**重启前**落盘的旧栈（无 `rawUserPrompt` 字段），属预期；同一进程 14 秒后 `task_stack_persisted.rawPromptCount=1` 即为新契约生效证据。勿据 `rawPromptEmpty` 反推修复失败。
+
+## 二、n8 七问逐条
+
+**② 轨迹是否完整收集（含对话全部信息 / 工具调用 / 前向注入节点信息）→ 对话侧 ✅、与前向注入 ⚠️、工具侧 ❌（本轮已修）**
+- 对话侧：`userPrompt`/`answer` 全量（见上表），`_trajectories.jsonl` 与 `_events.jsonl` 双写。
+- 前向注入节点信息：本轮轨迹行已带 `forward_diag`（`activatedIds` + `respondsTo` + `matchedTask*`），可 join 到 `propagate_done`；无 slice 迹象。
+- **工具侧三层静默 slice 实证**：窗口 10 回合 40 条工具条目中 **22 条 input 恰为 180c**。样本：guard 下发 n6 第6/10条新要求的 `coms_send`（含 trade.py/元分析/风报比关键字）、worker 的 `edit trade.py`、sender 的 `/api/step` —— 后者被**切在 `tradePrice` 字段处**，`tradeQuantity/confidence` 与响应体（`price/date/next_…`）一并残缺 ⇒「报价 vs 成交价、`success:false`、越界」这类执行层证据不可复核（第五轮归因纪律正需要它）。**根因 R4c，已修 `db33ba8`。**
+
+**③ 轨迹有没有触发 LLM 反向传播 → ✅ 8/9 回合触发（历史最高）**
+`semantic_backward_entered` 8、`_llm_start` 9、`_llm_done` 9（status 全 ok）、`_apply` 8；`skipped_not_feedback` 2、`agent_end_backward_skipped{no_pending_match,hasHighEntropy:true}` 2、`llm_attempt_failed/backward_failed/_extract_failed` **全 0**。reward 序列 `[0.5,0,0.1,-0.4,0,1,0,0,0.1]`（含 -0.4 负反馈，说明 reward 不是常数偏置）。网络侧 `nodesUpdated=8 / nodesAdded=6 / nodesMerged=5`，无空转。
+
+**④ HE / Function 是否沉淀到 stock_alpha → 落盘 ✅、存活 ❌（50% 蒸发，本轮已修）**
+`highentropy_function_persisted` **6 次**（emit_workflow_note / guard_dispatch_constraint_passthrough / structural_gap_rebound_decide / resistance_reject_exposure_trim / relay_agent_message_with_idempotency / trade_step_loop_driver）。**现网存活仅 3**：`structural_gap_rebound_decide`(L1::node_0)、`emit_workflow_note`(L1::node_1)、`trade_step_loop_driver`(L1::node_1)；**L0 三次落盘全部消失**，且留下 5 个悬空 `[fn:σ]`（`assert_unique_layer_names`/`audit_zero_limit_sentinel`/`guard_dispatch_constraint_passthrough`/`serve_raw_trajectory_page`/`trade_game_small_probe_position`）。**根因 R4a+R4b，已修 `c8b015d`。**
+
+**③.5 节点在不断抽象沉淀，还是趋于紊乱噪音 → 双向同时发生（需按域拆分看）**
+- 抽象/沉淀的正例：`node_write_refused_keep_better` 2 次（L1::node_0 scoreOld 0.0336>scoreNew 0.0232；L0::node_0 0.0574>0.0423）⇒ **好知识被保护**；`semantic_backward_compression_done{round:1,beforeSig:"at-cap-skip",afterSig:"resolved",resolved:true,progress:true}` 1 次 ⇒ 满容自愈可用；`node_artifact_repaired_by_backward` 1 次把被清成 `[fn:…]` 的节点内容修复回来。
+- **噪音的正例（本轮最大新发现）**：窗口 6 次落盘里 **3 次是工程/调度域**（`emit_workflow_note`、`guard_dispatch_constraint_passthrough`、`relay_agent_message_with_idempotency`），节点名如「注释即契约·实现留 pass」「决策消息错投·闸门·回执·请求」——与交易毫无关系却进了 `stock_alpha`。`agent_end_task_pushed` 的 taskType 分布 **工程/调度 3 : 交易 3**。成因：`~/.textron/_network_config.json` 的 `pinnedTaskFamily: "stock_alpha"` ⇒ **四条会话（guard/sender/worker/default-agent-0dc022）的工程对话全部被路由进交易网络**。这是「网络趋于紊乱」的**机制级**答案（第十轮已警告口径污染，本轮规模化复现）。**下一轮 P0（见五）。**
+
+**④ 融合质量（轨迹 HE × 前向节点、以及 L1→L0 等已有节点的抽象融合）→ ⚠️ 有融合动作但保真度存疑**
+`nodesMerged=5`（`nodeMutations` 逐条可见 `{type:"merge",source,target,host}`），且 `changedNodes` 的 `newName` 呈「旧名 + 追加新词」的**字符串堆叠**而非语义抽象（如 `sz301299 缺口 54.95 缩量反抽持有·函数 Kelly 风险预算·缩量表`）。融合在**写入前比较**下只写更优者（拒写 2 次），但**融合本身是拼接而非重写**；LLM 在 `node_updates` 里给的是 `mode:merge` 的 keep+delta 结构 ⇒ 长期看是「名字变长、内容变长」而非「抽象度提升」。与 ③.5 的域污染叠加后，L0 路由锚点被工程域占据，**交易类轨迹很难在 L0 找到语义落点**。
+
+**⑥ 根本原因（三条，按杠杆）**
+- **R3 域路由污染（机制级，未修）**：`pinnedTaskFamily=stock_alpha` 是**人工 pin**，把所有会话钉到单一网络 ⇒ 工程/调度元知识 50% 灌入交易网络，是「节点趋于噪音」的直接机制。
+- **R4a 搬运只搬首块（已修）**：`src/lib/node_policy.ts:291` 用 `readNodeFunction`（**单数**）—— 多块源移位后仅首块到达 DEST，其余块随 `unlink` 蒸发。实证：`L0::node_1` 持 2 块（verify_agent_state_isolation + resistance_reject_exposure_trim），移位后宿主 `L0::node_0` 两块皆不在。
+- **R4b 上限淘汰静默（已修）**：`writeNodeFunction` 超 `NODE_FN_BLOCK_MAX=2` 按 code 长度淘汰最短者，**无任何 log/event** ⇒ 「落了 6 块只活 3 块」在监控侧完全隐形。
+- **R4c 轨迹工具侧三层静默 slice（已修）**：input 180c / output 640c / `maxEntries=24` 超限 `shift()`。
+
+**⑤ 是否最大化利用 LLM 杠杆 → 否，三个明确漏点**
+① 自产 HE 被丢：`agent_end_backward_skipped{no_pending_match, hasHighEntropy:true}` **2 次** ⇒ 约 2/9 回合的训练信号直接蒸发（第三轮起老问题）；② 落盘块 50% 蒸发 ⇒ **LLM 产出的 Function 有一半没进网络**（本轮新增证据）；③（第十三条 #3，未修）事件无 `pid`/`srcHash` ⇒ 多进程共享 `_events.jsonl` 时无法区分旧进程写入。
+
+**⑦ 已实施改进（两处，同一不变式：信息不得静默丢失）**
+
+## 三、本轮实施的改进（git 已提交，**需 n9 重启生效**）
+
+### `db33ba8` 轨迹工具侧原文保真（n8 第②项点名缺陷）
+- `src/lib/round_snapshot.ts`：新增 `rebuildToolsFromMessagesDetailed` / `clipWithMark` / `TOOL_INPUT_CAP=4000` / `TOOL_OUTPUT_CAP=8000` / `TOOL_MAX_ENTRIES=200`；单条超 cap 才截且尾部显式标 `…[+Nc/Nc]`；条目溢出记 `droppedOldest` + 首行 `⛔dropped_oldest:N`（不再静默 shift）；`rebuildThinkingFromMessagesDetailed` 暴露 `{chars,truncated}`。
+- `src/index.ts`：轨迹行新增 `toolsChars`/`toolsFidelity`/`thinkingFullChars`/`thinkingTruncated`；新增可观测事件 **`trajectory_tools_fidelity`**（截断/丢弃计数逐轮落盘）。
+- 测试 `test_tools_fidelity.ts` **19/19**（含本轮真实 n6 指令样本 + 源码静态断言，防旧 slice 复现）。
+
+### `c8b015d` function 块多块搬运 + 上限淘汰可观测（50% 蒸发真因）
+- `src/lib/node_policy.ts`：搬运改 `readNodeFunctions`（复数）**逐块**搬运 + `onEvicted→onLog`。
+- `src/lib/node_io.ts`：`writeNodeFunction` 新增可选 `onEvicted(symbols)`（向后兼容；lib 层不引监控依赖）。
+- `src/index.ts`：落盘处 → **error 级 `fn_block_evicted{nodeId,symbol,evicted,maxBlocks,codeChars,dangling}`**；`dangling` = 被淘汰 symbol 仍被 content `[fn:σ]` 引用（引用悬空**即刻可见**，无需等 P3 回扫）。
+- 测试 `test_fn_multiblock_move.ts` **16/16**（端到端 2 块搬运不丢 / 淘汰回调 / 满容 DEST 不静默 / 源码静态断言）。
+- 回归：8 套件全过 —— `fn_block_survival 9`、`tools_fidelity 19`、`lift_overflow_dup 15`、`lift_merge 42`、`lift_jump 18`、`task_persist_roundtrip 15`、`multiblock_move 16`、`content_limit_zero`；`LOAD_OK`；本地 tsc 4.3.5 `194→194` 零新增。
+
+## 四、下一轮 P0 候选（按杠杆排序，**仍只挑一项**）
+
+1. **域路由分离（R3）**：`pinnedTaskFamily=stock_alpha` 让工程/调度对话进交易网络。**修法选项**（择一即可单点验证）：①`/api/networks/pin` 解除 pin，改回 `autoRouteNetworkDecision` 的语义路由；②保留 pin 但加**域门禁**：`taskType` ∉ 网络 goal 域时改走 `init` 新网络（如 `textron_dev`），并记 `route_domain_mismatch` 事件。验收：一轮 n6 中 `taskFamily=stock_alpha` 的反传数 ≈ 交易域回合数，`agent_end_task_pushed` 的非交易 taskType 不再进 `stock_alpha`。⚠️ 注意 7987145 已删除 `no_domain_evidence` 预闸门（「判官交给反传内部 LLM」），本项**不得**退回字符串词表闸门。
+2. **自产 HE 丢弃**：`agent_end_backward_skipped{no_pending_match}` 时若 `hasHighEntropy=true`，应把该回合 task/answer 入栈或补一次 self-backward，并显式标 `reward=null/unattributed`（**不得让 HE 驱动 reward**，沿用「reward=上游反馈量化」不变式）。
+3. **事件写入者归因**（第十三条 #3）：`agent_end`/`hook`/`trace` 事件统一附 `pid` + `md5(src/index.ts)`，否则多进程共享 `_events.jsonl` 时口径污染无法排除。
+4. **融合语义化**：`node_updates{mode:merge}` 的 `keep+delta` 拼接使名字/内容单调变长（`newName` 三连追加），与「抽象」背道而驰；需给 LLM 明确的**压缩比约束**（融合后 content 不得长于 max(旧,新)）。
+
+## 五、下一轮验收断言（逐条可字面核对）
+
+- **A1（轨迹保真）**：新窗口轨迹行出现 `toolsFidelity{inputTruncated,outputTruncated,droppedOldest}`，且 `_events.jsonl` 有 `trajectory_tools_fidelity`；`/api/step` 调用的 input 条目 **>180c** 且含 `confidence` 字段；无 `…[+` 标记的条目 = 未超 cap。
+- **A2（块存活）**：新窗口 `highentropy_function_persisted` 的 symbol **⊆** 磁盘闭合块集合（集合差为空）；若发生淘汰，必有对应 `fn_block_evicted`（`evicted` 非空）。
+- **A3（搬运全量）**：任何 merge/compact 前后，源节点块集合 ⊆ 宿主块集合 ∪ 被淘汰集合（`fn_block_evicted` 可解释差额）。
+- **A4（域隔离，若实施 P0-1）**：`stock_alpha` 窗口内 `agent_end_task_pushed` 的非交易 taskType 计数 = 0。
+- 不变式（继续沿用）：`selected ⊆ context` ∧ `injectedCount ≥ 1` ∧ 拒写时 `scoreOld > scoreNew` ∧ 双胞胎（同层逐字同文）计数 = 0。
+
+---
+
+# ✦ 上一轮（2026-09-15 19:40）：n8 **第十三轮** —— 反传首次真正打通（`nodesMerged=1` / Function 多槽共存 / 拒写生效）；本轮修 **merge 造双胞胎副本**（`00dc022`）+ **任务原文不落盘致反传「任务侧」退化为 HE 摘要**（`7b6862b`）；另提交上一轮遗留的轨迹全量未提交工作（`0405809`）
 
 > 触发：guard n8 第十三轮（三件套 19:33:08~13 重启 ⇒ 首次运行期加载 `2f8344e`+`7987145`；`src/index.ts` mtime 17:55 < 19:33 ⇒ 未提交的轨迹全量改动亦被本轮 bundle 覆盖）。sender 完成 1 次推进：**持有 sz.301299**、`step_index 66→67`、`tradeQuantity=0`（零成交，flat/unattributed）、分数 -2。
 > 状态：✅ `0405809`（轨迹全量，运行期已验证）、`00dc022`（merge 溢出判据）、`7b6862b`（任务原文持久化）。**后两者需 n9 重启生效**。
@@ -56,7 +143,7 @@
 ## 四、本轮新发现（未修，按杠杆排序 —— 下一轮只挑一项）
 
 1. **`agent_end_backward_skipped{reason:"no_pending_match"}` 3 次、其中 `hasHighEntropy=true` 2 次** ⇒ 本轮自产高熵包（1370c/1602c/2592c）直接丢弃，约 **2/4 LLM 杠杆空转**（第三轮起的老问题，仍未修）。判定：pending 匹配失败时**应把该回合自身 task/answer 入栈或补一次 self-backward**，而非丢弃；但**不得让 HE 驱动 reward**（沿用「reward=上游反馈量化」不变式），self-backward 须显式标 `reward=null/unattributed`。
-2. **轨迹工具侧仍被 slice（②未完全达标）**：`rebuildToolsFromMessages` 单条 **input 180c / output 640c**、`maxEntries=24`（超出 `tools.shift()` 静默丢最旧）、`rebuildThinkingFromMessages maxChars=1400`、轨迹行 `thinking.slice(0,8000)`。本轮 `/api/step` 的 `trade_result/portfolio` 只能以 640c 摘要进轨迹 ⇒ 「报价 vs 成交价、`success:false`、越界」这类执行层证据不可复核（第五轮归因纪律正需要它）。修法：按 `RAW_CAP + truncated` 约定改为全量 + 显式标记（与 `0405809` 的 userPrompt/answer 同构）。
+2. **轨迹工具侧仍被 slice（②未完全达标）** —— **（已修：第十四轮 `db33ba8`，实证 22/40 条 input 恰为 180c）**：`rebuildToolsFromMessages` 单条 **input 180c / output 640c**、`maxEntries=24`（超出 `tools.shift()` 静默丢最旧）、`rebuildThinkingFromMessages maxChars=1400`、轨迹行 `thinking.slice(0,8000)`。本轮 `/api/step` 的 `trade_result/portfolio` 只能以 640c 摘要进轨迹 ⇒ 「报价 vs 成交价、`success:false`、越界」这类执行层证据不可复核（第五轮归因纪律正需要它）。修法：按 `RAW_CAP + truncated` 约定改为全量 + 显式标记（与 `0405809` 的 userPrompt/answer 同构）。
 3. **`agent_end` 事件无 writer pid / extension 源 hash**：多进程共享 `_events.jsonl` 与网络目录时，无法区分「未重启旧进程的写入」与本轮回归（第十轮已因此吃过口径污染）。建议在 `hook/trace` 事件统一附带 `pid` 与 `md5(src/index.ts)`。
 4. **工程域元知识仍在 stock_alpha 网络中**：`layer_0/node_0.html` 正文里保留 `571205a(~16:0x) ⇒ 本轮可验收（判据 nodesUpdated>0 / highentropy_function_persisted≥1…`（guard 会话 HE 被吸收），且该句在合并处被**字符级截断**（`量237万 571205a(` 直接相连）；`layer_0/node_1` 在 19:34 前整块是 `异步调度指令的「过期判定」三步法`（工程语料）。⇒ default/guard 会话仍是 `stock_alpha` 的污染源，且 **merge 拼接无句界保护**（有内容被截断/首尾互吃）。
 5. **`<`/`>` 在写入链路中可能被吞**：node_0 正文 `all(b=gap_lower*0.97`、`broke_prior_low=price=gap_lower*0.97` 反复重复，疑为代码中的 `<`/`>` 比较符被某处 HTML 化处理剥离（待下一轮用 `_node_history` 对照原始 raw 判定）。

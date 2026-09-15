@@ -191,8 +191,11 @@
 
 **第十六轮新增（2026-09-16 02:45）**：
 - **未生效改动（需 n9 重启三件套）**：`a121d67` 任务侧原文补齐 `patchTaskRawPrompt`（`lifecycle_context.ts` + `index.ts` 消费点；R6 判据输入侧修复）。
+- **回滚判据（可判定，勿凭态度）**：下一窗口 `semantic_backward_off_domain` **≥1 ⇒ 保留 `75847ed`**；若恒为 **0**（即 `a121d67` 后仍不触发）⇒ 该域闸只是**死代码 + 复杂度**，**回滚 `75847ed`**。
 - **已结清**：`b337ed3` 空包修复运行期 ✅（窗口 0 次 `empty_assistant_text`、n6 零超时）；**估值口径待核对项关闭**（同 `(session, 2026-04-25)` 下 `/api/prompt` ¥103,467 ≡ sender 报数）；`workflow_3` n6 超时重发条款**不必补**（本轮未发生）。
+- **成交机制结论修正（第十节，`ca9e95a`）**：成交价＝限价单真实撮合（买 `min(申报, T+1开盘)` / 卖 `max(申报, T+1开盘)`），「成交价≡申报价」**作废**；`L0::node_1` 正文已固化的错误机制（「成交价≡申报价、零摩擦、触及即全额」）**只登记不改**（硬性约束 2），靠 reward/backward 自然覆盖。
 - **P0 候选（按杠杆，仍只挑一项）**：①**配对源根治**（R6 剩余面：`allPendingTasks` 为何含已出栈的 11:34:37Z 项 / `matched.rawUserPrompt` 空时改选 activeTask —— 本轮只治素材未治配对身份）；②**悬空 `[fn:σ]` 清理**（连续两轮未达标，17→27）；③域隔离**配置/注入侧**（pin per-session 或每轮域一致性复核 + `route_domain_mismatch`）；④层容量 `maxBlocks=2` 下的**淘汰优先级**（可评估「优先淘汰离目标域块」，但判据须由 LLM 给）；⑤`no_pending_match` 丢自产 HE ⇒ self-backward（`reward=null/unattributed`，**不得让 HE 驱动 reward**）；⑥事件统一附 `pid` + `md5(src/index.ts)`。
+- **外部干预回灌（硬性约束 10）**：driver 侧 kill 卡死子进程等干预**不入轨迹/事件** ⇒ guard n8 不可见；**任何此类干预必须显式写回本文档**，否则下轮重现（本轮已入库）。
 # 硬性约束（不可违反，否则撤销）
 
 1. **禁止改共享通信层 `local-coms.ts`**（全局 agent 通信，波及所有会话）——修点落在 API 边界
@@ -204,6 +207,12 @@
 7. Function 协议 version 维护已废除——version 幻觉/双写震荡，全部归 backward+merge
 8. **新增/改名 `src/*.ts` 后必须同步到 `~/.pi/agent/extensions/textron/`**（多数为符号链接自动生效，但**新建文件是实体副本**，如 `domain_gate.ts`）——漏同步 ⇒ `index.ts` 的 `import './xxx'` 找不到模块 ⇒ 扩展加载失败、**三件套全部起不来**（第十六轮前实测）。
 9. **禁止把 `*.test.ts` / 临时脚本放进 `~/.pi/agent/extensions/`**——pi 会把该目录下每个 `.ts` 当扩展加载并执行 ⇒ 测试脚本的输出会污染 `pi` 启动流程、进程启动即退出（第十六轮前实测：guard 新建的 `local-coms.empty-payload.test.ts` 导致三件套全部起不来）。测试放 `~/textron-agent/tests/` 或仓库根。
+10. **禁止 agent 在 home 全盘 `find` / `grep -r` 探索；发给 worker/sender 的指令必须携带可复制的最小 curl 样例**（或指明 `workflows/API.md` 速查及其路径）。
+    - **事实**：第十六轮 sender 两次全盘搜索（**4m50s / 3m40s**、CPU 72%/76%）**堵塞整轮**；driver `kill -9` 子进程后 step 70→71→72 恢复。pi 的 bash 工具是**同步等待**，单条命令即阻塞整轮。
+    - **成因**：全新会话的 agent 无历史、只给「调 `/api/step`」这类抽象指令会触发探索 —— 即**指令不具体＝把探索成本转嫁给子 agent**。
+    - **根治**：指令里直接给可复制的 `curl`（含 `session_id`/body 形状）；API 速查写入 `workflows/API.md` 并给路径。
+    - **诊断**：`ps -eo pid,ppid,etime,%cpu,command` 按 `ppid == agent_pid` 过滤，命中「**%cpu 高 ∧ etime 长 ∧ 含 `find .`/`grep -r`**」即判卡；**处置=只杀子进程**（保 agent 上下文），**不杀 agent**。
+    - **闭环纪律**：这类干预**不进** `_trajectories.jsonl` / `_events.jsonl` ⇒ guard 的 n8 **看不到**；**不显式回灌文档即下轮必重现**。
 ---
 
 # 决策经验（已沉淀节点，供快速复习）

@@ -6,6 +6,36 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 15:50）：n8 第十轮 —— 反传失败可归因（九轮误判终止）+ 三件套状态隔离（配对错乱根因）
+
+> 触发：guard n8 本轮验收（sender 2 次推进：空仓 -2 / 限价越界未成交 -2，账户 ¥102,493 不变）+ 用户质询「为什么反传、任务轨迹记录配对都做不对」。
+> 状态：✅ 已改 `c6538c0`（src/index.ts）+ `pi-coms-spawn`（状态隔离）。**需由 n9 重启三件套生效**。
+
+## 一、反传 4 连败：真根因不在语法层（九轮修复方向全部证伪）
+- **反证链**：本轮 `_nojson_response.log` 新增 4 条 [FULL_RAW]，其中 **3 条 python `json.loads` 与 node `JSON.parse` 双双通过**（第 4 条是 reasoning+JSON 散文，balanced 扫描本可救起）。
+- **离线复刻**：原样抽出源码 `normalize`+`extract` + 真实依赖（lib/node_io、content_limits、lift_merge、lib/utils），喂 4 条真实 raw → **4/4 EXTRACT_OK**。⇒ 解析层、repair 层、balanced 扫描均无罪。
+- **真病灶**：候选循环的 `} catch {}` **静默吞掉 normalize 抛出的语义层异常**，然后在函数末尾统一抛出 `no JSON object` —— 失败消息把病因伪装成语法问题。九轮审计据此去修流式换行 / CJK bigram / JSON repair，全部打偏。
+- **可复现的抛点**：`normalize` 兜底清洗段 `String(previousCrystal.technique || "")` —— `parseHighEntropyCrystal` 返回 undefined 时抛 TypeError（离线 `SC=noprev` 场景 100% 复现，错误消息字节级一致）。同一病灶在 prompt 侧为 `previousCrystal.ok`。修法：`?.` 可选链。
+- **本轮修复**：①候选异常按 stage 累积进 diag（`candidates=N selfParse=ok|fail candErrs=stage#i(len):msg`）②新增 `semantic_backward_extract_failed` 事件（throw 前发出，含 candidateErrors + rawHead 800c）③`previousCrystal?.` 防御。**下轮若仍失败，diag 一次给出病灶层，不再有黑箱。**
+
+## 二、配对/轨迹做不对：三件套共享单态状态文件（机械根因）
+- `TEXTRON_STATE_FILE` 未设 ⇒ guard/sender/worker **共用 `~/.textron/_last_state.json`**。实测该文件栈内混入 5 个他 agent 任务（A股交易决策 / Textron前向复活验收 / 多Agent启动与验证 / macOS进程诊断 / A股交易游戏推进）。
+- 后果链：①**配对池陈旧错域** —— `pending_list_built{count:3, taskTypes:[Textron前向复活验收,提示词工程,A股交易决策]}`，当前任务不在池中 ⇒ `pairing_judge_done matchIdx=-1 isFeedback=false`（8×`skipped_not_feedback` + 5×`agent_end_backward_skipped no_pending_match`）。②**HighEntropy 被顶掉** —— `_last_state.json` 中 activeTask 与 4/5 栈项 `highEntropy=""`：sender 刚落盘的高熵包被紧随其后的 guard 空闲回合以空值覆盖 ⇒ 反传 LLM 无素材，只能从错任务 feedback 编造 ⇒ **节点自诊断的「上游素材错域」（L0::node_0 明写：喂工程语料就写工程语料）**。
+- **本轮修复**：`pi-coms-spawn` 注入 `TEXTRON_STATE_FILE="$HOME/.textron/_last_state.$CNAME.json"`（DRY_RUN 已验证）。每个 agent 独立任务栈，配对池只含自身任务。**旧的共享文件是被污染的，不要迁移。**
+
+## 三、附带发现（未修，按优先级）
+1. **goal_guard 候选池只扫 3 个节点**（`nodesScanned:3`，磁盘实有 7 个：L0×2/L1×2/L2×2/L3×1）⇒ F1「目录驱动」修在了前向 L0 池，`goalInfo.targets` 仍是声明槽位驱动。
+2. **goalSim 把交易语料判成离域**：L0::node_1（内容含「破位止损复盘/量能未缩/结构位」明确交易语料）goalSim=**0.0087**；L1::node_0=0.4441。原因是 L0::node_1 混入了 `<function>` 工程块（`[fn:guardNodeContentOverwrite]`）⇒ 工程文本稀释 TF-IDF ⇒ 判离域 ⇒ 进 MUST-CLEANSE ⇒ **真交易知识被覆写**。修法方向：goalSim 计算前剥离 function 块。
+3. **流程违规**：sender 把 `step.trade_result` 的次日价格区间（[46.90, 50.28]）转述给 worker，等于剧透后续行情（n6 禁止）。
+4. 存量：`test_lift_jump` 2 fail、`test_cap_hard` ENOENT（与本次无关）。
+
+## 四、验收断言（重启三件套后的首轮反传）
+- 若失败：`semantic_backward_extract_failed` 事件必出现，且 diag 含 `selfParse`/`candErrs` ⇒ 病灶层一次定位。
+- 若成功：`nodesUpdated>0` + `highentropy_function_persisted` 恢复 + `semantic_backward_json_repaired`（仅当 repair 命中）。
+- 配对侧：各 agent 的 `_last_state.<cname>.json` 应只含自身任务；`pairing_judge_done.isFeedback=true` 且 `matchIdx` 指向本轮任务（不再 `no_pending_match`）。
+
+---
+
 # ✦ 最近更新（2026-09-15 02:10）：n8 第九轮 —— JSON 恢复层 + SSE 无缝拼接 + 失败完整raw落盘（8 连败根因）
 
 > 触发：guard n8 本轮交易验证（2 次推进均空仓记平-2，苛刻评分+1）。两次反传 4 模式×2 轮 **8 连败** 全部 "no JSON object"。

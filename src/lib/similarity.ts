@@ -26,6 +26,19 @@ export function tfidfTokens(text: string): string[] {
   return out;
 }
 
+/**
+ * 剔除节点内容里的工程 Function 块与 symbol 标记（<function>…</function>、[fn:x]、⟨fn:x⟩）。
+ * 用于相似度/goalSim 等语义判据，避免工程语料稀释领域语义。
+ */
+export function stripFunctionBlocks(text: string): string {
+  return String(text || "")
+    .replace(/<\/?function>/gi, " ")
+    .replace(/<\/?Function>/g, " ")
+    .replace(/[\[⟨]fn:[^\]⟩]*[\]⟩]/g, " ")
+    .replace(/functionSymbol\s*[:：][^\n]*/gi, " ")
+    .replace(/functionAbstract\s*[:：]?/gi, " ");
+}
+
 export function buildTfidfIndex(net: { hyperparams: { layers: number[] }; path: string }): {
   docFreq: Map<string, number>;
   idf: Map<string, number>;
@@ -45,7 +58,11 @@ export function buildTfidfIndex(net: { hyperparams: { layers: number[] }; path: 
         if (m) content = m[1].trim();
       } catch {}
       if (!content) continue;
-      const tokens = tfidfTokens(content);
+      // 2026-09-15 n8 第十一轮：TF-IDF 前剥离 <function> 工程块与 [fn:symbol]/⟨fn:symbol⟩ 标记。
+      // 否则工程块稀释节点向量 —— stock_alpha 实测：L0::node_1（交易语料：破位止损/量能未缩/
+      // 结构位）因混入 [fn:guardNodeContentOverwrite] 被算出 goalSim=0.0087 而判离域 ⇒ 进
+      // MUST-CLEANSE 被覆写，真领域知识反被抛掉。
+      const tokens = tfidfTokens(stripFunctionBlocks(content));
       if (!tokens.length) continue;
       const id = `L${l}::node_${n}`;
       nodeTokens.push({ id, tokens });

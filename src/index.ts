@@ -49,7 +49,7 @@ import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNod
          isNgramFragmentContent, contextSimilarity, prepareContextLine } from "./lib/node_io";
 import { normalizeMergeFragment, mergeDistinctContentFragments,
          mergeNodeContent, mergeContent } from "./lib/merge";
-import { tfidfTokens, buildTfidfIndex, cosineSim, tfidfSimilarity,
+import { tfidfTokens, buildTfidfIndex, cosineSim, tfidfSimilarity, stripFunctionBlocks,
          nameTokens, jaccard, tokenSimilarity, findSimilarNode, findSimilarKnowledgeNode } from "./lib/similarity";
 import { TEXTRON_HOME, DEFAULT_HYPERPARAMS, DEFAULT_WEIGHT, NGRAM_DISTILL_PROMOTE,
          TEXTRON_ALLOW_NODE_GROWTH, getTaskFamilyPath, networkExists, listNetworks,
@@ -243,9 +243,14 @@ export default function (pi: ExtensionAPI) {
     processLog: string[];
   }
   const MAX_TASK_STACK = 5;
-  const MAX_PROCESS_ENTRY_CHARS = 700;       // 单条过程记录上限(字符)
-  const MAX_TASK_PROCESS_ENTRIES = 12;        // 每任务最多保留过程条数(超出滚动丢最旧)
-  const MAX_TASK_PROCESS_TOTAL_CHARS = 4800;  // 每任务过程总字符上限(防反传上下文膨胀)
+  const MAX_PROCESS_ENTRY_CHARS = 4000;      // 单条过程记录上限(字符)
+  // 2026-09-15 n8 第十一轮：轨迹保真 —— 原值 700 使单条 exec 上下文被截到 1200c
+  //（MAX_PROCESS_ENTRY_CHARS+500），叠加 tool_result 640c / tools 尾截 1800c / 总预算 4800c，
+  // 使一轮 20+ 次工具调用 + 数 KB 的交易 JSON（/api/prompt 全文、/api/step 的 portfolio）
+  // 到反传手里只剩 ≤1.2KB 碎片 ⇒ 反传无从做 credit assignment（reward 恒 0 / quality=low）。
+  // 这些上限是「轨迹收集」的实际瓶颈，放宽以使原始交易数据完整入反传。
+  const MAX_TASK_PROCESS_ENTRIES = 24;        // 每任务最多保留过程条数(超出滚动丢最旧)
+  const MAX_TASK_PROCESS_TOTAL_CHARS = 16000; // 每任务过程总字符上限(防反传上下文膨胀)
   // 2026-09-03 信息获取策略: 中间轮 HE 优先→无HE用 LLM 蒸馏(非slice); 反馈轮全量; AI思考默认排除(参数可选)
   const DISTILL_INTERMEDIATE = process.env.TEXTRON_DISTILL_INTERMEDIATE !== "0"; // 默认开
   const INCLUDE_THINKING = process.env.TEXTRON_INCLUDE_THINKING === "1";          // 默认关
@@ -2532,12 +2537,22 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     if (!goal) return { goal, targets, scanned };
     let simMap = new Map<string, number>();
     try { simMap = tfidfSimilarity(net, goal, ""); } catch { simMap = new Map(); }
+    // 2026-09-15 n8 第十一轮：离域判定改成「工程元语料特征」而非「与 goal 词面相似度最低」。
+    // 实测（真实 stock_alpha + 真实 goal）：TF-IDF goalSim 给 L0::node_1（真交易判据）只有 0.0087，
+    // 即剥离 <function> 块后也仅 +0.0028 —— 因为 goal 描述的是「生成策略函数/量化程序」，
+    // 与「破位止损判据」本就词面疏远。若继续用“相似度最低”选覆写目标，会稳定选中真领域知识。
+    // 因此重定义：只清理「含工程元语料且无领域特征词」的节点，领域知识一律豁免。
+    const ENGINEERING_RE = /反传|覆写|CLEANSE|cleansed|layerCaps|goalSim|goal[_-]?guard|验收门禁|集合差|注入预算|节点容量|槽位|merge_action|semantic[_-]?backward|highentropy|\bfn:|guardNode|dangling|孤儿|门禁|快照|回滚|\breload\b|\bhook\b|节点|网络拓扑/i;
+    const DOMAIN_RE = /止损|止盈|买点|卖点|建仓|清仓|仓位|持仓|均线|量能|成交量|换手|K\s?线|涨跌幅|大阴线|阳线|阴线|回撤|支撑|压力|金叉|死叉|缺口|缩量|放量|涨停|跌停|收盘|开盘|最高价|最低价|波动率|风报比|黄金分割|复盘/;
     for (let l = 0; l < net.hyperparams.layers.length; l++) {
       for (let n = 0; n < net.hyperparams.layers[l]; n++) {
         const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
         const c = readNodeContent(np);
         if (!String(c || "").trim()) continue;
         scanned++;
+        // 工程域病态节点才入清理名单；含领域特征词（真交易/交易判据）一律豁免。
+        const text = stripFunctionBlocks(String(c));
+        if (!ENGINEERING_RE.test(text) || DOMAIN_RE.test(text)) continue;
         const key = `L${l}::node_${n}`;
         targets.push({ key, layer: l, name: readNodeName(np) || compressNodeName(c), content: c, goalSim: Number((simMap.get(key) || 0).toFixed(4)) });
       }
@@ -3905,8 +3920,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const toolName = String(event?.toolName || "?");
       // 2026-09-04: 工具调用入回合缓冲(与 tool_result 同为任务执行上下文, 不扫描过滤, 供 agent_end 拼接 processLog)
       try {
-        currentTurnTools.push(`▶${toolName} in:${inputPreview.slice(0, 180)}`);
-        if (currentTurnTools.length > 24) currentTurnTools.shift();
+        currentTurnTools.push(`▶${toolName} in:${inputPreview.slice(0, 600)}`);
+        if (currentTurnTools.length > 40) currentTurnTools.shift();
       } catch { /* 缓冲失败不影响主流程 */ }
       recordMonitorEvent({
         type: "trace", action: "tool_call",
@@ -3930,11 +3945,11 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       try {
         const prev = currentTurnTools.length ? currentTurnTools[currentTurnTools.length - 1] : "";
         if (prev.startsWith(`▶${toolName}`)) {
-          currentTurnTools[currentTurnTools.length - 1] = `${prev} → out:${flat.slice(0, 640)}`;
+          currentTurnTools[currentTurnTools.length - 1] = `${prev} → out:${flat.slice(0, 2500)}`;
         } else {
-          currentTurnTools.push(`◀${toolName} out:${flat.slice(0, 640)}`);
+          currentTurnTools.push(`◀${toolName} out:${flat.slice(0, 2500)}`);
         }
-        if (currentTurnTools.length > 24) currentTurnTools.shift();
+        if (currentTurnTools.length > 40) currentTurnTools.shift();
       } catch { /* 忽略 */ }
       recordMonitorEvent({
         type: "trace", action: "tool_result",
@@ -4074,7 +4089,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const turnExecContext = (() => {
       const parts: string[] = [];
       if (currentTurnThinking) parts.push(`💭${currentTurnThinking.slice(0, 640)}`);
-      if (turnTools.length) parts.push(`🔧${turnTools.join(" ⏎ ").slice(-1800)}`);
+      if (turnTools.length) parts.push(`🔧${turnTools.join(" ⏎ ").slice(-8000)}`);
       if (!parts.length) return "";
       const s = `[${execTag}][exec] ${parts.join(" ⏎ ")}`;
       // exec 条目遵循单条上限(与 HE 之外的蒸馏/tail 一致, 防挤占 4800c 总预算把 HE 滚出窗口)

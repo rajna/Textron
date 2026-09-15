@@ -63,10 +63,12 @@
 2. **悬空 `[fn:σ]` 清理（A3 未达标项）**：`fn_block_evicted` 时同步从 content 剥离 `[fn:σ]`（现只记 `dangling` 不清理）；并加**每轮反传后回扫**（content 的 `[fn:σ]` ⊄ 磁盘闭合块 ⇒ error 级 `fn_ref_dangling`，连续两轮仍悬空则移除标记）。**注意硬性约束 2：存量双胞胎/存量悬空不得手工清理**，由后续 merge/compact 自然归并。
 3. **自产 HE 被丢**：`agent_end_backward_skipped{no_pending_match}` 且 `hasHighEntropy=true` ⇒ 用该回合自身 task/answer 补一次 self-backward，`reward=null/unattributed`（**不得让 HE 驱动 reward**）。窗口实证：`no_pending_match×1` + `pairing_judge_no_match×2` + `no_assistant_content×1` = 4/9 杠杆空转。
 4. **事件写入者归因**：`agent_end/hook/trace` 统一附 `pid` + `md5(src/index.ts)`——多进程共享 `_events.jsonl` 时否则无法排除旧进程写入（第十轮吃过口径污染）。
+5. ~~空载荷回执~~ **已实施（本轮，见第七节）**：`local-coms.ts` 取文本改「仅非空时覆盖」+ 空文本显式报错；**需 `/reload`**。后续可评估：`local-coms` 的 `agent_end` 在 `getBranch()` 上逐条扫描为 O(n)，大量消息时可改为反向扫描首个非空 text。
 
 ## 七、n6 运行观察（工作流层，供下一轮 n6/工作流修订）
 
-- **二级等待超时兜底首次触发**：sender 第 2 轮派发后 **10 分钟无回执**，遂以磁盘证据（`trade.py` mtime / 行数 424→488→540）确认 worker 存活后**重发**指令，第二次成功取回决策 JSON。⇒ 不变式：异步链路中「已下发」≠ 完成，超时后应以磁盘证据对账并重发，**禁止**代做决策或判轮次失败（本轮未发生越权/代做，边界改写生效）。建议 `workflow_3` n6 补一条显式超时重发条款（现为 sender 自行兜底，未写入流程）。
+- **「等待超时」真因 = 空载荷回执（已修，非链路慢）**：sender 第 2 轮派发后约 10 分钟无有效回执；default 侧独立证据为 worker `response_out{msg_id=a31d21b5, error:null}` 且 `sender_session` 与 registry 一致（排除路由错），worker 末条 assistant **仅 thinking 块（11596c）、无 text**。guard 复核源码**证实机制**：`~/.pi/agent/extensions/local-coms.ts` 的 `getLastAssistantText` 逐条 assistant **无条件覆盖赋值**、只拼 `type==='text'` 块 ⇒ 末条空 text 覆盖先前全部有效正文；`agent_end` 侧 `error` 仍为 `null` ⇒ **静默发空包**，请求方视角与「未回复」完全同形。修法（已实施，备份 `local-coms.ts.bak-emptyreply-20260915-222627`）：①`if (text.trim()) lastAssistantText = text;`（仅非空时覆盖 ⇒ 取最后一条非空 text）；②`if (!rawAssistantText.trim()) error = "empty_assistant_text";`（无 text 必须显式报错）。回归 `jiti local-coms.empty-payload.test.ts` **12/12**（T1–T4 行为 + T5 旧实现对照证明缺陷可复现 + T6 源码静态断言）。**需 `/reload`（或重启三件套）生效**。⇒ 双层教训：异步链路的「超时」在归因前不得当默认假设——先取证**对端是否发了空包**；磁盘证据（mtime/行数）只能证明**存活**，证明不了**载荷非空**。
+- **二级等待兜底仍有效（作为兜底层）**：sender 以磁盘证据（`trade.py` mtime / 行数 424→488→540）确认 worker 存活后**重发**指令，第二次成功取回决策 JSON。⇒ 不变式：异步链路中「已下发」≠ 完成，超时后应以磁盘证据对账并重发，**禁止**代做决策或判轮次失败（本轮未发生越权/代做，边界改写生效）。建议 `workflow_3` n6 补一条显式超时重发条款（现为 sender 自行兜底，未写入流程）。
 - **买卖方向反转可归因（worker 自述，两轮同位置）**：日线滚动窗口首根自身即跳空 bar 时无法与前根比较 ⇒ `gap=None` ⇒ `b=1.52 / π*=0.005` ⇒ 卖出 400 股；跨周期回退取周线 `gap=[54.95, 58.48]` ⇒ `b=2.32 / π*=0.35` ⇒ 买入 100 股。修法：`_last_gap` 按日→周→月取首个**未被完全回补**缺口，`age` 折交易日（周×5 / 月×21）。
 - **评分语义的推论**：`零变动 = −2`（非 0）使「持有/空仓在平盘日必然失分」成为**外生失分**，与方向判断无关 ⇒ 不可用加仓博取（本轮最大回撤已 −11.07%）。配套判据：最小有效换手 ≈ `score_cost_pct/(ATR/close)` ≈ 5.8%，低于此的置换在逐日评分下为负期望；`deploy_floor` 三闸门 `edge≥0.05 ∧ p≥0.5 ∧ ¬squeeze(箱体<1.5ATR)`。
 - **规程符合性**：两轮派发均按接收方角色祈使句改写，显式声明 worker 只与 sender 交互、禁直连 guard（上轮越权根因已闭环）；2/2 满额后仅向 guard 发一次通知（幂等）。

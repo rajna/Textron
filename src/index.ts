@@ -1836,7 +1836,7 @@ ${goalRule}1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new c
 6b. L1 DOMAIN CHECK (soft, NOT mandatory): Consider whether the activated L1 nodes are semantically DISTANT from this task's domain (e.g. weapon/music/engineering content while the task is stock trading). If so, the causal layer may be MISSING a domain node — you MAY add 1 L1 domain node (causal mechanism: 若A则B因为C) when the mechanism is genuinely novel and reusable. This is a per-case judgment, not a rule: analyze concretely. A layer being at capacity is NOT by itself a reason to force-add (merging similar content is often the better choice); likewise an off-domain L1 is NOT always wrong — judge by actual semantic distance and reuse value.
 7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
 8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. CAPACITY-BOUNDED GROWTH (硬约束): 网络容量有限，不能无限增长。每层上限见 user prompt 的 Layer usage (cap=网络配置 layerCaps，无配置默认每层 40)。规则: (a) used>=cap 的层 add_nodes 会被系统拒绝(over_cap)——对满/超容层禁止 add_nodes，必须用 node_updates 更新已有节点或用 node_actions merge 去重腾出空间; (b) OVER CAP +N 的层是收缩优先级最高的层: 主动找出该层最冗余/最低质的节点对提出 merge(source→target)，merge 后源节点清空即可回收容量; (c) 仅在目标层 room>0 时才允许 add_nodes，且必须与所有现有节点正交(≥15% 重叠=update 不=add); (d) 不存在"新建层"逃生口: layer>=层数 的 add_nodes 一律拒绝。容量满了不代表停止学习——用 merge 压缩冗余、用 node_updates 提升已有节点信息密度，让同等容量承载更高熵知识。\n10. FUSION NOT OVERWRITE —— 三段式融合 (默认；覆盖必须举证): 节点更新 = **keep(旧内容中仍然成立、可复用的要点) + drop(旧内容中被本轮证据证伪的要点，附依据) + content(本轮新增/修正知识)**。内容素材三源并重：①旧 content（前向节点信息）②本轮 feedback（证伪/修正）③HighEntropy/Function（新增知识）。**禁止只写 content** —— 那等于覆盖，旧知识静默丢失（实测：高质量交易规则被整段顶替）。规则 8 的 keep that node's name 只保名字，**不代替保内容**。仅当旧内容被证伪或与 goal 无关(off-goal)时才 mode=replace 并在 rationale 给出证伪依据。` },
-      { role: "user", content: `Layer usage: ${layerUsageText}${goalUserBlock}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal.ok ? `Name: ${previousCrystal.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nFUSION TARGETS (旧内容=必须评估保留或显式证伪的融合素材，**不是**被替换对象；只写 content 即等于丢弃旧知识):\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content 无字数上限（写全，禁复制旧文）, name=3-6 keywords≤48c.\n\n更新语义（三段式融合，强制）：keep=旧内容仍成立的要点 + drop=旧内容被本轮证伪的要点(附依据) + content=本轮新增。素材三源并重：旧 content(前向节点信息) / 本轮 feedback / HighEntropy·Function。只写 content = 覆盖 = 丢弃旧知识，视为不合格输出；整段替换须 mode=replace 并说明证伪依据。
+      { role: "user", content: `Layer usage: ${layerUsageText}${goalUserBlock}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal?.ok ? `Name: ${previousCrystal?.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nFUSION TARGETS (旧内容=必须评估保留或显式证伪的融合素材，**不是**被替换对象；只写 content 即等于丢弃旧知识):\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content 无字数上限（写全，禁复制旧文）, name=3-6 keywords≤48c.\n\n更新语义（三段式融合，强制）：keep=旧内容仍成立的要点 + drop=旧内容被本轮证伪的要点(附依据) + content=本轮新增。素材三源并重：旧 content(前向节点信息) / 本轮 feedback / HighEntropy·Function。只写 content = 覆盖 = 丢弃旧知识，视为不合格输出；整段替换须 mode=replace 并说明证伪依据。
 
 MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MAY be in the SAME or ADJACENT abstract layer (|Δlayer|≤1; skip jumps like L0↔L2). MERGE LIFTS ABSTRACTION: system places result at the MORE ABSTRACT layer — L2+L2→L1, L1+L2→L1, L1+L1→L0, any L0 merge stays L0 (edges auto-rebuild from merged content via materialize). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}${compressionMandate ? `\n\n${compressionMandate}` : ""}` },
     ];
@@ -1946,12 +1946,15 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // 理由：goal 是用户显式声明的域不变式，不能依赖采样运气。
       if (netGoal && offGoalNodes.length) {
         const covered = offGoalNodes.some((n) => !!out.node_updates && !!out.node_updates![n.key]);
-        const cleanseText = String(previousCrystal.technique || "").trim();
+        // 2026-09-15 n8 第十轮：空指针防御。parseHighEntropyCrystal 在无 HighEntropy/解析失败时
+        // 可返回 undefined；旧写法 `previousCrystal.technique` 会抛 TypeError，被下方 extract 的
+        // catch{} 静默吞掉 → 伪装成「no JSON object」（语义层病灶被误诊为语法层）。
+        const cleanseText = String(previousCrystal?.technique || "").trim();
         if (!covered && cleanseText) {
           const victim = offGoalNodes[0].key;
           out.node_updates = out.node_updates || {};
           out.node_updates[victim] = {
-            name: (previousCrystal.name || compressNodeName(cleanseText)).slice(0, 64),
+            name: (previousCrystal?.name || compressNodeName(cleanseText)).slice(0, 64),
             content: applyContentLimit(cleanseText),
           };
           goalCleanseFallback = victim;
@@ -2051,10 +2054,21 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
       let fallback: ReturnType<typeof normalize> | null = null;
       let repairedCandidateChars = 0;
+      // 2026-09-15 n8 第十轮：失败归因闭环。旧实现 catch{} 静默吞掉 normalize 的异常，
+      // 使「JSON 合法但提取仍失败」的语义级病灶被伪装成 "no JSON object"——九轮审计因此
+      // 全部打偏到语法层（流式换行/CJK分词/repair）。此处把逐候选失败按 stage 累积，
+      // 并在失败 diag 中暴露，使一次失败即可定位（parse / parse+repair / normalize）。
+      const candidateErrors: { i: number; len: number; stage: string; msg: string }[] = [];
+      let ci = 0;
       for (const candidate of candidates) {
+        ci++;
         let parsed: any;
         try { parsed = JSON.parse(candidate); }
-        catch { parsed = tryRepairJsonParse(candidate); if (parsed !== undefined) repairedCandidateChars = candidate.length; }
+        catch (e0) {
+          try { parsed = tryRepairJsonParse(candidate); } catch { parsed = undefined; }
+          if (parsed !== undefined) repairedCandidateChars = candidate.length;
+          else candidateErrors.push({ i: ci, len: candidate.length, stage: "parse+repair", msg: String((e0 as Error)?.message || e0).slice(0, 100) });
+        }
         try {
           if (parsed === undefined) continue;
           const normalized = normalize(parsed);
@@ -2070,7 +2084,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             // 仅含 reward 的候选：可能是截断残骸，也可能是有意空更新；先暂存，继续找更大的候选
             fallback ||= normalized;
           }
-        } catch {}
+        } catch (e) {
+          candidateErrors.push({ i: ci, len: candidate.length, stage: "normalize", msg: String((e as Error)?.message || e).slice(0, 160) });
+        }
       }
       if (fallback) {
         // 只有 raw 整体可完整解析（非截断）时，reward-only 才视为“有意空更新”并接受；
@@ -2094,7 +2110,16 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       }
       // 2026-09-15 n8 第九轮：失败诊断升格——旧实现只落 1000c 头部（diag 内 head 160c），
       // 语法病灶永远不可见（raw_response 事件在 extract 抛异常后永不发出）。失败时落完整 raw。
-      const diag = `no JSON object in semantic backward response (finish=${lastFinishReason || "?"}, partsChars=${raw.length}, head=${raw.slice(0, 160).replace(/\s+/g, " ")})`;
+      // 自解析探针：区分「raw 语法非法」与「raw 合法但 normalize 语义失败」——selfParse=ok
+      // 且 candErrs 全为 normalize 时，病灶必在 normalize 而非解析层。
+      let selfParse = "ok";
+      try { const p = JSON.parse(raw); selfParse = `ok(keys=${Object.keys(p || {}).join(",")})`; }
+      catch (e) { selfParse = `fail(${String((e as Error)?.message || e).slice(0, 80)})`; }
+      const candErrs = candidateErrors.length ? candidateErrors.slice(0, 4).map((x) => `${x.stage}#${x.i}(${x.len}c):${x.msg}`).join(" | ") : "none";
+      const diag = `no JSON object in semantic backward response (finish=${lastFinishReason || "?"}, partsChars=${raw.length}, candidates=${candidates.length}, selfParse=${selfParse}, candErrs=${candErrs}, head=${raw.slice(0, 160).replace(/\s+/g, " ")})`;
+      try {
+        recordMonitorEvent({ type: "error", action: "semantic_backward_extract_failed", taskFamily: path.basename(net.path), rawChars: raw.length, candidates: candidates.length, selfParse, candidateErrors: candidateErrors.slice(0, 8), rawHead: raw.slice(0, 800) });
+      } catch { /* 忽略 */ }
       try {
         ensureDir(path.join(net.path, "_sb_logs"));
         rolloverLogBySize(path.join(net.path, "_sb_logs", "_nojson_response.log"), 2);

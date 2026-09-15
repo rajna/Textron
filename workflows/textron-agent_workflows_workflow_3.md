@@ -55,7 +55,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n8 (prompt)
 
-sender coms通知guard完成所有交易推进次数，guard 接到通知后要做的：1 guard不用分析 交易情况，guard关注点是textron，2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 验证没效果可以回滚代码或 分析下面步骤后 一起修改代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用，信息不要被slice 前向注入 反馈奖励 ai反思的HighEntropy Function2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ，已有节点的抽象融合 比如l1的节点抽象融合进入l0等，融合的质量5 stock_alpha网络是否有提高账户收益了的趋势6 根据分析找出根本原因 1 错误发生在A方面，改进是否可以通过B方面， 2必要时可以运行本工作流 验证 3 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 实施最有潜力的一个改进 ，改代码前先提交代码到git  修改代码 后 把改进写入textron agent 的交接文档 然后通知 default agent 执行 /Users/rama/textron-agent/workflows/textron-agent_workflows_workflow_3.md
+sender coms通知guard完成所有交易推进次数，guard 接到通知后要做的：1 guard不用分析 交易情况，guard关注点是textron，2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 验证没效果可以回滚代码或 分析下面步骤后 一起修改代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用，信息不要被slice 前向注入 反馈奖励 ai反思的HighEntropy Function2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ，已有节点的抽象融合 比如l1的节点抽象融合进入l0等，融合的质量5 stock_alpha网络是否有提高账户收益了的趋势6 根据分析找出根本原因 1 错误发生在A方面，改进是否可以通过B方面， 2 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 实施最有潜力的一个改进 ，改代码前先提交代码到git  修改代码 后 把改进写入textron agent 的交接文档 然后通知 default agent 执行 /Users/rama/textron-agent/workflows/textron-agent_workflows_workflow_3.md
 
 ### n9 (prompt)
 

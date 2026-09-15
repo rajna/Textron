@@ -23,13 +23,14 @@
 
 ## 二、三件套状态隔离 ✅ 验收通过（`TEXTRON_STATE_FILE` 按 cname 隔离）
 - **文件级**：`_last_state.sender.json`(15:52:52)、`_last_state.worker.json`(15:52:43) 新建；guard 进程 env 直读 `TEXTRON_STATE_FILE=/Users/rama/.textron/_last_state.guard.json`。
-- **共享文件冻结**：`~/.textron/_last_state.json` mtime 停在 **15:49:34**（重启前），本轮三件套**零写入**（该文件现在只被无隔离的手动会话如 default agent pid 25298 使用）。
+- **共享文件**：`~/.textron/_last_state.json` 的三件套写入**归零**（mtime 15:54:24 的唯一写入者是无隔离的**手动会话** default agent pid 25298，其 activeTask=「Textron反传根因修复」HE=1796）⇒ 隔离后该文件只服务于非 spawn 进程。
 - **不再混栈**：sender `activeTask=A股交易推进, stack=[]`；worker `activeTask=A股委托执行, stack=[A股涨跌预测]` —— 全为自身任务。对照第十轮共享文件里 guard 栈混入 4 个他 agent 任务。
 - **配对恢复**：`pairing_judge_done{matchIdx≥0, isFeedback:true}` ×4（第十轮为 `matchIdx=-1` + `isFeedback=false`）；`semantic_backward_skipped_not_feedback` = **0**（第十轮 8 次）；残余 `agent_end_backward_skipped{no_pending_match}` ×2 仅出现在 guard 自己的回执回合（属预期）。
-- **高熵包不再被空回合覆盖**：guard 写入自身文件，sender 的落盘包不再被抹。（但空值并未消失 —— 见第三节，来源已换成文本判据误杀。）
+- **高熵包不再被空回合覆盖**：sender 的包已实打实落盘（`_last_state.sender.json` activeTask=`A股交易推进`，**HE=1531c**）。
+- 空值来源已换：本轮 7 次 `agent_end` 中仅 2 次 `hasHighEntropy=true`，另 5 次被 `isTemporalSummary` 误杀（见第三节），**不再是跨 agent 空回合覆盖**。
 
 ## 三、新发现（本轮最高价值，未修）：highEntropy 空值的残余机制 = `isTemporalSummary` 误杀
-- 本轮 5/5 高熵包被拒：`highentropy_missing_at_agent_end{hasTag:true, reason:"temporal_summary"}` ⇒ `semantic_backward{hasHighEntropy:false}`（8 次反传中 7 次无素材）⇒ 即便 `onLog` 修好，融合仍缺高熵输入。
+- 本轮 7 次 `agent_end` 中 **5 次**被判空：`highentropy_missing_at_agent_end{hasTag:true, reason:"temporal_summary"}` ⇒ `semantic_backward{hasHighEntropy:false}`（8 次反传中 7 次无素材；仅通过的 2 包 HE=1531c/1796c 不含触发词）⇒ 即便 `onLog` 修好，融合仍缺高熵输入。
 - 机理（实测）：`src/highentropy.ts:212` `if (isTemporalSummary(technique)) return invalid("temporal_summary")`，其中 `isTemporalSummary`（L67）第一条正则含 `/最近|上次|这次|今天|.../`。交易 Technique 里**天然出现「最近收盘价/最近收盘日」**（直接抄自 UI prompt 固定措辞「成交价默认参考最近收盘价」），以及「上次交易分数」——**恰好全是白名单反馈话术** ⇒ 被整包判为「时间性摘要」丢弃。
 - 判据：被拒包在 `Technique` 内命中 `/最近/` 或 `/\d+次/`；同源问题目标节点（L1::node_0）也因同类文本判据被误杀。
 - 修法方向（下一轮）：`isTemporalSummary` 只应匹配**指代会话时间而非行情时间**的表述（如 `^上次我们|上轮|刚才讨论`），不应裸匹配「最近」；或要求「最近/上次」出现在句首且伴随 `我们/讨论/会话` 才判 temporal。验收：sender/worker 的 `highentropy_missing_at_agent_end` 归零，`semantic_backward.hasHighEntropy=true`。

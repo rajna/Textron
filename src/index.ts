@@ -30,7 +30,7 @@ import {
   type NodeNgramState,
 } from "./ngram_distill";
 import { buildTextronPromptInjection } from "./prompt_injection";
-import { buildBackwardTaskContext } from "./lifecycle_context";
+import { buildBackwardTaskContext, serializeTaskForState, restoreTaskPrompt } from "./lifecycle_context";
 import { chooseTaskFamilyRoute } from "./learning_policy";
 import { assistantMessageText, extractHighEntropy, extractLatestHighEntropyFromMessages, parseHighEntropyCrystal } from "./highentropy";
 import { distillNodeName, buildAtomKey } from "./name_distill.ts";
@@ -3336,15 +3336,19 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const memBefore = { hasActive: !!activeTask, activeType: activeTask?.taskType || '', stackLen: taskStack.length, stackTypes: taskStack.map(t => t.taskType) };
     if (!activeTask && taskStack.length === 0) {
       dlog("STATE", "memory empty, attempting disk restore", { file: LAST_STATE_PATH });
-      const saved = readJson<{activeTask?: {taskType:string;taskFamily:string;highEntropy:string;activatedIds:string[];ts:string}|null; taskStack?: {taskType:string;taskFamily:string;highEntropy:string;activatedIds:string[];ts:string}[]} | null>(
+      // 2026-09-15 第十三轮：恢复必须读回 rawUserPrompt —— 旧实现硬编码 "" ⇒ 重启后
+      // buildBackwardTaskContext 退化为 [HighEntropy Task]（learningPromptSource=high_entropy），
+      // 反传「任务侧」丢失真实提问（实测 5 条栈项全空、previousTaskChars 全为 HE+过程）。
+      const saved = readJson<{activeTask?: any|null; taskStack?: any[]} | null>(
         LAST_STATE_PATH, null);
       dlog("STATE", "disk read result", { found: !!saved, hasActive: !!(saved as any)?.activeTask, stackLen: ((saved as any)?.taskStack || []).length, activeType: (saved as any)?.activeTask?.taskType || '', stackTypes: ((saved as any)?.taskStack || []).map((t:any) => t.taskType) });
       if (saved) {
         if (saved.activeTask) {
+          const rp = restoreTaskPrompt(saved.activeTask);
           activeTask = {
             taskType: saved.activeTask.taskType || "",
             taskFamily: saved.activeTask.taskFamily || "",
-            rawUserPrompt: "", effectivePrompt: "",
+            rawUserPrompt: rp.rawUserPrompt, effectivePrompt: "",
             highEntropy: saved.activeTask.highEntropy || "",
             activatedIds: saved.activeTask.activatedIds || [],
             selectedEdgeIds: [],
@@ -3354,17 +3358,24 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           };
         }
         if (saved.taskStack) {
-          taskStack = saved.taskStack.map((t:any) => ({
-            taskType: t.taskType || "", taskFamily: t.taskFamily || "",
-            rawUserPrompt: "", effectivePrompt: "",
-            highEntropy: t.highEntropy || "",
-            activatedIds: t.activatedIds || [],
-            selectedEdgeIds: [],
-            routeUncertain: false, moeMaxScore: 0,
-            ts: t.ts || "",
-            processLog: Array.isArray(t.processLog) ? t.processLog : [],
-          }));
+          taskStack = saved.taskStack.map((t:any) => {
+            const rp = restoreTaskPrompt(t);
+            return {
+              taskType: t.taskType || "", taskFamily: t.taskFamily || "",
+              rawUserPrompt: rp.rawUserPrompt, effectivePrompt: "",
+              highEntropy: t.highEntropy || "",
+              activatedIds: t.activatedIds || [],
+              selectedEdgeIds: [],
+              routeUncertain: false, moeMaxScore: 0,
+              ts: t.ts || "",
+              processLog: Array.isArray(t.processLog) ? t.processLog : [],
+            };
+          });
         }
+        // 恢复后原文完整性可观测：rawPromptRestored=带原文的条目数 / rawPromptEmpty=旧档或无原文
+        const _restoredTasks = [activeTask, ...taskStack].filter(Boolean) as TaskEntry[];
+        const _rawRestored = _restoredTasks.filter((t) => (t.rawUserPrompt || "").length > 0).length;
+        recordMonitorEvent({ type: "trace", action: "task_prompt_restored", restoredTasks: _restoredTasks.length, rawPromptRestored: _rawRestored, rawPromptEmpty: _restoredTasks.length - _rawRestored, rawPromptChars: _restoredTasks.reduce((a, t) => a + (t.rawUserPrompt || "").length, 0) });
         dlog("STATE", "restored taskStack from disk", { activeTask: !!activeTask, stackDepth: taskStack.length });
         recordMonitorEvent({ type: "trace", action: "task_stack_restored", activeTask: !!activeTask, stackDepth: taskStack.length, activeType: activeTask?.taskType || '', stackTypes: taskStack.map(t => t.taskType), memBefore });
       } else {
@@ -4305,14 +4316,18 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     try {
       ensureDir(path.dirname(LAST_STATE_PATH));
       const allTasks = activeTask ? [activeTask, ...taskStack] : taskStack;
+      // 落盘契约收敛到 serializeTaskForState（单一事实来源）：rawUserPrompt 一并持久化，
+      // 否则重启后反传「任务侧」永久退化为 HE 摘要（见 lifecycle_context.ts 顶部说明）。
+      const _persistOpts = { maxProcessEntries: MAX_TASK_PROCESS_ENTRIES, maxProcessEntryChars: MAX_PROCESS_ENTRY_CHARS, highEntropyCap: 2400 };
       const toPersist = {
-        activeTask: activeTask ? { taskType: activeTask.taskType, taskFamily: activeTask.taskFamily, highEntropy: activeTask.highEntropy.slice(0, 2400), activatedIds: activeTask.activatedIds, ts: activeTask.ts, processLog: (activeTask.processLog || []).slice(-MAX_TASK_PROCESS_ENTRIES).map(e => e.slice(0, MAX_PROCESS_ENTRY_CHARS)) } : null,
-        taskStack: taskStack.map(t => ({ taskType: t.taskType, taskFamily: t.taskFamily, highEntropy: t.highEntropy.slice(0, 2400), activatedIds: t.activatedIds, ts: t.ts, processLog: (t.processLog || []).slice(-MAX_TASK_PROCESS_ENTRIES).map(e => e.slice(0, MAX_PROCESS_ENTRY_CHARS)) })),
+        activeTask: activeTask ? serializeTaskForState(activeTask, _persistOpts) : null,
+        taskStack: taskStack.map(t => serializeTaskForState(t, _persistOpts)),
         at: new Date().toISOString(),
       };
       dlog("STATE", "persisting to disk", { file: LAST_STATE_PATH, activeType: toPersist.activeTask?.taskType || 'null', stackTypes: toPersist.taskStack.map((t:any) => t.taskType), totalCount: allTasks.length });
       writeJson(LAST_STATE_PATH, toPersist);
-      recordMonitorEvent({ type: "trace", action: "task_stack_persisted", activeTask: !!activeTask, stackDepth: taskStack.length, activeType: activeTask?.taskType || '', stackTypes: taskStack.map(t => t.taskType) });
+      const _pAll = [toPersist.activeTask, ...toPersist.taskStack].filter(Boolean) as any[];
+      recordMonitorEvent({ type: "trace", action: "task_stack_persisted", activeTask: !!activeTask, stackDepth: taskStack.length, activeType: activeTask?.taskType || '', stackTypes: taskStack.map(t => t.taskType), rawPromptCount: _pAll.filter((t) => (t.rawUserPrompt || "").length > 0).length, rawPromptChars: _pAll.reduce((a, t) => a + (t.rawUserPrompt || "").length, 0) });
     } catch (e) {
       recordMonitorEvent({ type: "trace", action: "task_stack_persist_failed", error: preview(e instanceof Error ? e.message : String(e), 220) });
     }
@@ -4356,7 +4371,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // 判官职责本就属于反传内部的 LLM（goal guard + keep/drop/merge + node_actions），
       // 外层再套硬编码预判只会丢学习信号。此处只保留可观测，不做判断。
       {
-        recordMonitorEvent({ type: "trace", action: "semantic_backward_entered", taskFamily: capturedTF, hasHighEntropy: !!capturedHighEntropy, promptChars: backwardTaskContext.previousTaskForBackward.length });
+        // learningPromptSource 是「任务侧素材是否退化」的判定信号：raw_prompt=任务原文入反传；
+        // high_entropy=原文缺失、退化为 HE 摘要（第十三轮修复前重启后必为 high_entropy）。
+        recordMonitorEvent({ type: "trace", action: "semantic_backward_entered", taskFamily: capturedTF, hasHighEntropy: !!capturedHighEntropy, promptChars: backwardTaskContext.previousTaskForBackward.length, learningPromptSource: backwardTaskContext.learningPromptSource, rawPromptChars: backwardTaskContext.rawPromptChars, placeholderRetryPrompt: backwardTaskContext.placeholderRetryPrompt, matchedTaskTs: matched.ts, matchedPromptChars: (matched.rawUserPrompt || "").length });
         // Inject current assistant's HighEntropy (经验总结) into feedback context
         // 2026-09-03: 反馈轮 content 全量(不 slice); AI 思考默认排除(INCLUDE_THINKING=true 可选)
         const assistantAnalysis = _capturedHE || stripThinkingText(_capturedText || "");

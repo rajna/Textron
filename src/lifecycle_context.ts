@@ -1,3 +1,92 @@
+/**
+ * 任务栈落盘契约（2026-09-15 第十三轮 n8 修复）
+ * ------------------------------------------------------------------
+ * 真因：`toPersist` 只写 taskType/taskFamily/highEntropy/activatedIds/ts/processLog，
+ * 恢复侧又把 rawUserPrompt 硬编码为 "" ⇒ 重启后**每条回溯任务都丢失真实提问**，
+ * `buildBackwardTaskContext` 因 rawPrompt 为空 + isPlaceholderRetryPrompt("")=true
+ * 而退化到 `[HighEntropy Task] ${HE}`（learningPromptSource="high_entropy"）。
+ * 后果：反传 LLM 的「任务侧」只剩 HE 摘要（实测 previousTaskChars=1141/5340 全为
+ * HE+过程日志，任务原文 0c），无法判断「当初被要求做什么」⇒ 融合只能对着结果自说自话
+ * （rationale 泛化、只能从错域任务编造）。这与「reward=上游反馈的量化、HE=事后总结」
+ * 的不变式冲突：任务原文属**上游输入**，不可由事后总结替代。
+ * 本模块是该持久化对的**单一事实来源**：序列化只此一处、反序列化只此一处。
+ */
+export const TASK_RAW_PROMPT_PERSIST_CAP = 4000;
+
+export interface PersistedTask {
+  taskType: string;
+  taskFamily: string;
+  highEntropy: string;
+  activatedIds: string[];
+  ts: string;
+  processLog: string[];
+  /** 任务原文（用户/上游 agent 实际发来的 prompt）。超 cap 显式截断并标记，禁静默 slice。 */
+  rawUserPrompt?: string;
+  /** 截断前的原始长度，供审计判断是否发生截断 */
+  rawUserPromptChars?: number;
+  rawUserPromptTruncated?: boolean;
+}
+
+export interface SerializeTaskOptions {
+  /** processLog 保留条数（滚动丢最旧） */
+  maxProcessEntries?: number;
+  /** processLog 单条上限 */
+  maxProcessEntryChars?: number;
+  /** highEntropy 落盘上限 */
+  highEntropyCap?: number;
+  /** rawUserPrompt 落盘上限 */
+  rawPromptCap?: number;
+}
+
+/** 任务 → 落盘结构（含任务原文）。所有上限显式传入，禁调用点写死。 */
+export function serializeTaskForState(
+  t: {
+    taskType: string;
+    taskFamily: string;
+    highEntropy: string;
+    activatedIds: string[];
+    ts: string;
+    processLog?: string[];
+    rawUserPrompt?: string;
+  },
+  opts: SerializeTaskOptions = {},
+): PersistedTask {
+  const maxProcessEntries = opts.maxProcessEntries ?? 24;
+  const maxProcessEntryChars = opts.maxProcessEntryChars ?? 20000;
+  const heCap = opts.highEntropyCap ?? 2400;
+  const rawCap = opts.rawPromptCap ?? TASK_RAW_PROMPT_PERSIST_CAP;
+  const raw = String(t.rawUserPrompt || "");
+  return {
+    taskType: t.taskType || "",
+    taskFamily: t.taskFamily || "",
+    highEntropy: String(t.highEntropy || "").slice(0, heCap),
+    activatedIds: [...(t.activatedIds || [])],
+    ts: t.ts || "",
+    processLog: (t.processLog || [])
+      .slice(-maxProcessEntries)
+      .map((e) => String(e || "").slice(0, maxProcessEntryChars)),
+    rawUserPrompt: raw.length > rawCap ? raw.slice(0, rawCap) : raw,
+    rawUserPromptChars: raw.length,
+    rawUserPromptTruncated: raw.length > rawCap,
+  };
+}
+
+/** 落盘结构 → 任务原文。旧档（无该字段）返回空串，退化为 HE 路径而非抛错。 */
+export function restoreTaskPrompt(p: unknown): {
+  rawUserPrompt: string;
+  rawUserPromptChars: number;
+  rawUserPromptTruncated: boolean;
+} {
+  const src = (p || {}) as { rawUserPrompt?: unknown; rawUserPromptChars?: unknown; rawUserPromptTruncated?: unknown };
+  const raw = typeof src.rawUserPrompt === "string" ? src.rawUserPrompt : "";
+  const chars = Number(src.rawUserPromptChars);
+  return {
+    rawUserPrompt: raw,
+    rawUserPromptChars: Number.isFinite(chars) && chars > 0 ? chars : raw.length,
+    rawUserPromptTruncated: !!src.rawUserPromptTruncated,
+  };
+}
+
 export interface BackwardTaskContextInput {
   rawPrompt: string;
   effectivePrompt: string;

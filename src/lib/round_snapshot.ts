@@ -61,9 +61,46 @@ export function lastUserMessageText(messages: any[]): string {
   return "";
 }
 
-/** 从 agent_end event.messages 重建工具链(▶tool in / ◀out 成对), 等价于 tool_call+tool_result 增量缓冲 */
-export function rebuildToolsFromMessages(messages: any[], maxEntries = 24): string[] {
+// ── 2026-09-15 n8 第十四轮：轨迹「工具侧原文保真」（消除三处静默 slice）──
+// 原实现：input `.slice(0,180)` / output `.slice(0,640)` / `maxEntries=24` 超限 `shift()` 静默丢。
+// 后果实证（本轮窗口 10 回合 40 条工具调用）：**22/40 条 input 恰为 180c** —— guard 下发 n6
+// 第6/10条新要求的 coms_send、worker 的 edit trade.py、/api/step 的 body(session_id+决策 JSON)
+// 全被砍成摘要 ⇒ 执行层证据（报价 vs 成交价、success:false、越界）事后不可复核，
+// 「反传拿什么判 reward」「轨迹是否完整」失去唯一可核对的物证。
+// 现约定（与 0405809 轨迹 userPrompt/answer 同构，单一事实来源）：
+//   ① 单条不静默截断 —— 超 cap 才截，且尾部显式标注 `…[+Nc/Nc]`（被截量可读）；
+//   ② 条目溢出不再静默 shift —— 记 droppedOldest 并在首行插入 `⛔dropped_oldest:N` 标记；
+//   ③ 返回 stats（截断/丢弃计数、原始字符总量），随轨迹行落盘供审计与门禁。
+export const TOOL_INPUT_CAP = 4000;
+export const TOOL_OUTPUT_CAP = 8000;
+export const TOOL_MAX_ENTRIES = 200;
+
+export interface ToolsFidelityStats {
+  /** 真实工具条目数（不含 dropped 标记行） */
+  entries: number;
+  inputTruncated: number;
+  outputTruncated: number;
+  droppedOldest: number;
+  /** 截断前的原始 input/output 字符总量 */
+  inputChars: number;
+  outputChars: number;
+}
+
+/** 单条裁剪：超 cap 才截，且显式标注被截字符数（禁静默 slice） */
+export function clipWithMark(s: string, cap: number): string {
+  return s.length > cap ? `${s.slice(0, cap)}…[+${s.length - cap}c/${s.length}c]` : s;
+}
+
+/** 从 agent_end event.messages 重建工具链(▶tool in / ◀out 成对) + 保真统计（推荐入口） */
+export function rebuildToolsFromMessagesDetailed(
+  messages: any[],
+  opts: { maxEntries?: number; inputCap?: number; outputCap?: number } = {},
+): { lines: string[]; stats: ToolsFidelityStats } {
+  const maxEntries = opts.maxEntries ?? TOOL_MAX_ENTRIES;
+  const inputCap = opts.inputCap ?? TOOL_INPUT_CAP;
+  const outputCap = opts.outputCap ?? TOOL_OUTPUT_CAP;
   const tools: string[] = [];
+  const stats: ToolsFidelityStats = { entries: 0, inputTruncated: 0, outputTruncated: 0, droppedOldest: 0, inputChars: 0, outputChars: 0 };
   try {
     for (const m of messages) {
       if (!m || typeof m !== "object") continue;
@@ -71,27 +108,49 @@ export function rebuildToolsFromMessages(messages: any[], maxEntries = 24): stri
         for (const p of m.content) {
           if (p && typeof p === "object" && (p as any).type === "toolCall") {
             const nm = String((p as any).name || "?");
-            const inp = JSON.stringify((p as any).input ?? (p as any).arguments ?? {}).replace(/\s+/g, " ").slice(0, 180);
-            tools.push(`▶${nm} in:${inp}`);
+            let raw: string;
+            try { raw = JSON.stringify((p as any).input ?? (p as any).arguments ?? {}); } catch { raw = String((p as any).input ?? ""); }
+            raw = raw.replace(/\s+/g, " ");
+            stats.inputChars += raw.length;
+            if (raw.length > inputCap) stats.inputTruncated++;
+            tools.push(`▶${nm} in:${clipWithMark(raw, inputCap)}`);
           }
         }
       } else if (m.role === "toolResult") {
         const flat = extractToolResultText(m.content).replace(/\s+/g, " ").trim();
+        stats.outputChars += flat.length;
+        if (flat.length > outputCap) stats.outputTruncated++;
+        const out = clipWithMark(flat, outputCap);
         const last = tools.length ? tools[tools.length - 1] : "";
         if (last.startsWith("▶") && !last.includes("→ out:")) {
-          tools[tools.length - 1] = `${last} → out:${flat.slice(0, 640)}`;
+          tools[tools.length - 1] = `${last} → out:${out}`;
         } else {
-          tools.push(`◀out:${flat.slice(0, 640)}`);
+          tools.push(`◀out:${out}`);
         }
       }
-      if (tools.length > maxEntries) tools.shift();
+      if (tools.length > maxEntries) {
+        tools.shift();
+        stats.droppedOldest++;
+      }
     }
   } catch { /* 提取失败返回空 */ }
-  return tools;
+  stats.entries = tools.length;
+  if (stats.droppedOldest > 0) tools.unshift(`⛔dropped_oldest:${stats.droppedOldest}`);
+  return { lines: tools, stats };
 }
 
-/** 从 messages 提取 AI 思考链(thinking/reasoning_content), 单数据源替代 message_update 拼装 */
-export function rebuildThinkingFromMessages(messages: any[], maxChars = 1400): string {
+/** 从 agent_end event.messages 重建工具链(▶tool in / ◀out 成对), 等价于 tool_call+tool_result 增量缓冲 */
+export function rebuildToolsFromMessages(messages: any[], maxEntries = TOOL_MAX_ENTRIES): string[] {
+  return rebuildToolsFromMessagesDetailed(messages, { maxEntries }).lines;
+}
+
+export interface ThinkingFidelityStats { chars: number; truncated: boolean; }
+
+/** 从 messages 提取 AI 思考链 + 保真统计（尾部保留 maxChars，但截断可观测） */
+export function rebuildThinkingFromMessagesDetailed(
+  messages: any[],
+  maxChars = 1400,
+): { text: string; stats: ThinkingFidelityStats } {
   const thoughts: string[] = [];
   for (const m of messages) {
     if (!m || m.role !== "assistant") continue;
@@ -106,7 +165,14 @@ export function rebuildThinkingFromMessages(messages: any[], maxChars = 1400): s
       }
     }
   }
-  return thoughts.map((t) => t.replace(/\s+/g, " ")).join(" ⏎ ").slice(-maxChars);
+  const joined = thoughts.map((t) => t.replace(/\s+/g, " ")).join(" ⏎ ");
+  const truncated = joined.length > maxChars;
+  return { text: truncated ? joined.slice(-maxChars) : joined, stats: { chars: joined.length, truncated } };
+}
+
+/** 从 messages 提取 AI 思考链(thinking/reasoning_content), 单数据源替代 message_update 拼装 */
+export function rebuildThinkingFromMessages(messages: any[], maxChars = 1400): string {
+  return rebuildThinkingFromMessagesDetailed(messages, maxChars).text;
 }
 
 /** 整轮快照: 从 agent_end event.messages 一次提取全部轨迹/执行上下文要素 */

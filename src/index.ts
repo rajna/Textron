@@ -43,9 +43,11 @@ import { DEFAULT_COMPILED_CONTEXT_MAX_CHARS, NODE_CONTENT_MAX_CHARS, applyConten
 import { ensureDir, readJson, writeJson, ts, dlog, clamp, completeContent,
          parseLayerNodeId, seedRandom, formatNodesForLLM, previewText } from "./lib/utils";
 import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInstruction } from "./lib/entropy";
-import { lastUserMessageText, rebuildToolsFromMessages, rebuildThinkingFromMessages } from "./lib/round_snapshot";
+import { lastUserMessageText, rebuildToolsFromMessages, rebuildToolsFromMessagesDetailed, rebuildThinkingFromMessages,
+         rebuildThinkingFromMessagesDetailed } from "./lib/round_snapshot";
+import type { ToolsFidelityStats, ThinkingFidelityStats } from "./lib/round_snapshot";
 import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNodeFunction, writeNodeFunction,
-         validateKnowledgeCrystal, intraLayerOrthogonalityCheck,
+         validateKnowledgeCrystal, intraLayerOrthogonalityCheck, NODE_FN_BLOCK_MAX,
          isNgramFragmentContent, isNgramFragmentName, contextSimilarity, prepareContextLine } from "./lib/node_io";
 import { normalizeMergeFragment, mergeDistinctContentFragments,
          mergeNodeContent, mergeContent } from "./lib/merge";
@@ -2544,7 +2546,24 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         contentAppended = true;
       }
     }
-    writeNodeFunction(fp, symbol, code);
+    // 2026-09-15 n8 第十四轮：块落盘若触发每节点上限淘汰（NODE_FN_BLOCK_MAX=2），**不再静默**——
+    // 记 error 级 fn_block_evicted（含被淘汰 symbol、是否已在 content 里悬空引用）。
+    // 实证：本轮 6 次 highentropy_function_persisted 仅 3 块存活，其余 3 块（guard_dispatch_constraint_passthrough /
+    // resistance_reject_exposure_trim / relay_agent_message_with_idempotency）消失时监控侧无任何事件。
+    writeNodeFunction(fp, symbol, code, {
+      onEvicted: (evicted) => {
+        try {
+          const content = readNodeContent(fp) || "";
+          recordMonitorEvent({
+            type: "error", action: "fn_block_evicted",
+            taskFamily, nodeId: target.key, symbol,
+            evicted, evictedCount: evicted.length, maxBlocks: NODE_FN_BLOCK_MAX,
+            codeChars: code.length,
+            dangling: evicted.filter((s) => content.includes(`[fn:${s}]`)),
+          });
+        } catch { /* 观测失败不影响落盘 */ }
+      },
+    });
     recordMonitorEvent({ type: "trace", action: "highentropy_function_persisted", taskFamily, nodeId: target.key, symbol, contentAppended, codeChars: code.length });
     return { symbol, nodeId: target.key, contentAppended };
   }
@@ -4038,7 +4057,12 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     //    正确回合模型: 每条用户消息=一次完整 run(before_agent_start→agent_end), 中间多 turn/tool 都在这。
     //    提取逻辑见 lib/round_snapshot.ts(模块化, 不入 index.ts 主体)。
     const roundUserText = lastUserMessageText(runMessages);
-    const roundTools = rebuildToolsFromMessages(runMessages);
+    // 2026-09-15 n8 第十四轮：工具链改为「原文保真 + 显式截断标记」（input 180c/output 640c/24 条静默丢
+    // 已消除；详见 lib/round_snapshot.ts 顶部约定）。stats 随轨迹行落盘，供审计「信息是否被 slice」。
+    const roundToolsDetail = rebuildToolsFromMessagesDetailed(runMessages);
+    const roundTools = roundToolsDetail.lines;
+    const toolsFidelity: ToolsFidelityStats = roundToolsDetail.stats;
+    let thinkingFidelity: ThinkingFidelityStats | null = null;
     // 主源优先: messages 提取为空时才用增量 hook 缓冲(兼容旧流式路径)
     const turnTools = roundTools.length ? roundTools : currentTurnTools;
     const roundUserPrompt = roundUserText || currentRawUserPrompt;
@@ -4127,7 +4151,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // 轨迹可视化: 提取思考链(thinking/reasoning)——DeepSeek harness 的"思考"步
     // 2026-09-05: 单数据源——thinking 直接从 runMessages 提取(见 lib/round_snapshot.ts), 不需增量拼装
     try {
-      const thoughts = rebuildThinkingFromMessages(runMessages, 40000);
+      const thoughtsDetail = rebuildThinkingFromMessagesDetailed(runMessages, 40000);
+      const thoughts = thoughtsDetail.text;
+      thinkingFidelity = thoughtsDetail.stats;
       if (thoughts) {
         const thoughtList = thoughts.split(" ⏎ ");
         currentTurnThinking = thoughts.slice(-1400);
@@ -4307,8 +4333,26 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         // 2026-09-15 n8 第十一轮：落盘不再掐断——原 tools 上限 2400c 会把 9009B 的 /api/prompt
         // 响应砍剩 27%，这是「轨迹收集不完全」的直接原因。落盘以「完整采集」为准，
         // 长度控制交给条目数上限(currentTurnTools ≤ 40)。
+        // 2026-09-15 n8 第十四轮：轨迹落盘不再掐断（第三处静默 slice 已消除）——
+        //   ① tools 单条超 cap 显式标 `…[+Nc/Nc]`，条目溢出记 dropped_oldest 而非静默 shift；
+        //   ② thinking 尾部保留 8000 且附全量字符数与截断标志（损失可观测）；
+        //   ③ toolsFidelity/thinkingFidelity 统计一并落盘，构成「信息未被 slice」的可核对物证。
         thinking: (currentTurnThinking || "").slice(0, 8000),
+        thinkingFullChars: thinkingFidelity?.chars ?? 0,
+        thinkingTruncated: thinkingFidelity?.truncated ?? false,
         tools: turnTools.join(" ⏎ "),
+        toolsChars: turnTools.join(" ⏎ ").length,
+        toolsFidelity,
+      });
+    } catch { /* 忽略 */ }
+    // 保真度可观测：任一静默损失（单条截断/条目溢出）均显式落事件，供下一轮验收直接断言
+    try {
+      recordMonitorEvent({
+        type: "trace", action: "trajectory_tools_fidelity",
+        taskFamily: currentTaskFamily || "",
+        ...toolsFidelity,
+        thinkingChars: thinkingFidelity?.chars ?? 0,
+        thinkingTruncated: thinkingFidelity?.truncated ?? false,
       });
     } catch { /* 忽略 */ }
 

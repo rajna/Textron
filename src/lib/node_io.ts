@@ -84,7 +84,7 @@ export function readNodeFunction(filePath: string): { symbol: string; code: stri
  * 现语义：同 symbol 覆盖（版本内更新）；不同 symbol 并存；超过 NODE_FN_BLOCK_MAX 时
  * 按 code 长度淘汰最短者（信息量最小），等长淘汰最早写入者。
  */
-export function writeNodeFunction(filePath: string, symbol: string, code: string, opts?: { maxBlocks?: number }): boolean {
+export function writeNodeFunction(filePath: string, symbol: string, code: string, opts?: { maxBlocks?: number; onEvicted?: (symbols: string[]) => void }): boolean {
   try {
     const body = String(code || "").trim();
     // 防御深：非法 symbol 不落块（与 readNodeFunctions 同一不变式，防写"看似落盘、永不命中"的假达标块）
@@ -93,12 +93,14 @@ export function writeNodeFunction(filePath: string, symbol: string, code: string
     let blocks = readNodeFunctions(filePath).filter((b) => b.symbol !== symbol);
     if (body) blocks.push({ symbol, code: body });
     const maxBlocks = Math.max(1, opts?.maxBlocks ?? NODE_FN_BLOCK_MAX);
+    let evicted: string[] = [];
     if (blocks.length > maxBlocks) {
       const ranked = blocks
         .map((b, i) => ({ b, i, len: b.code.length }))
         .sort((a, z) => (a.len - z.len) || (a.i - z.i));
       const drop = new Set(ranked.slice(0, blocks.length - maxBlocks).map((x) => x.b.symbol));
       blocks = blocks.filter((b) => !drop.has(b.symbol));
+      evicted = [...drop];
     }
     const cleaned = html.replace(FUNCTION_BLOCK_RE_G, "").replace(/\n{3,}/g, "\n\n");
     const rendered = blocks
@@ -106,6 +108,12 @@ export function writeNodeFunction(filePath: string, symbol: string, code: string
       .join("\n");
     const next = rendered ? cleaned.replace(/\s*$/, "\n") + rendered + "\n" : cleaned;
     fs.writeFileSync(filePath, next, "utf-8");
+    // 2026-09-15 n8 第十四轮：上限淘汰不再静默 —— 每节点 ≤ NODE_FN_BLOCK_MAX 块是**注入预算**设计
+    // （compile 每块注入一个 ⟨fn:σ⟩），但「淘汰最短者」若无声发生，就是函数产物蒸发的主因之一：
+    // 本轮实测 6 次 highentropy_function_persisted 仅 3 块存活（guard_dispatch_constraint_passthrough /
+    // resistance_reject_exposure_trim / relay_agent_message_with_idempotency 静默消失，而 content 仍挂 [fn:σ]）。
+    // 现在由调用方决定落地事件；lib 层不自带监控依赖（保持单一职责）。
+    if (evicted.length) { try { opts?.onEvicted?.(evicted); } catch { /* 回调不得影响写入 */ } }
     return true;
   } catch { return false; }
 }

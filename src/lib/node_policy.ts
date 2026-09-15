@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeJson, completeContent, previewText } from "./utils";
-import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName, validateKnowledgeCrystal, intraLayerOrthogonalityCheck, readNodeFunction, writeNodeFunction } from "./node_io";
+import { readNodeContent, readNodeName, writeNodeHtml, compressNodeName, validateKnowledgeCrystal, intraLayerOrthogonalityCheck, readNodeFunction, readNodeFunctions, writeNodeFunction } from "./node_io";
 import { mergeNodeContent, mergeContent } from "./merge";
 import { findSimilarKnowledgeNode, jaccard, nameTokens, tokenSimilarity } from "./similarity";
 import { NODE_CONTENT_MAX_CHARS } from "../content_limits.ts";
@@ -288,8 +288,14 @@ export function compactMergeEmptiedNodes(
             // 保留 DEST 自己的块(空壳→无块)，源文件随后被 unlink ⇒ 一次 compact/merge 蒸发一批函数产物
             // (实测第三轮 4 个真块只剩 1 个历史垃圾块，而 content 仍挂 [fn:σ] = 引用链由部分断变全断)。
             // 修法: 从 SOURCE 读块并显式搬到 DEST，与 ngram 影子文件同批处理。
-            const srcFn = readNodeFunction(src);
-            if (srcFn) writeNodeFunction(dst, srcFn.symbol, srcFn.code);
+            // 2026-09-15 n8 第十四轮补修：原实现用 `readNodeFunction`(**单数**) 只搬首块 ⇒ 多块源其余块
+            // 仍蒸发（本轮实测 6 次 highentropy_function_persisted 仅 3 块存活；L0::node_1 携带
+            // verify_agent_state_isolation + resistance_reject_exposure_trim 两块，移动后两者皆不在宿主）。
+            // 现改为搬**全部**块，且上限淘汰不再静默（onEvicted → stderr 供审计）。
+            const srcFns = readNodeFunctions(src);
+            for (const b of srcFns) writeNodeFunction(dst, b.symbol, b.code, {
+              onEvicted: (ev) => onLog(`Textron: fn block evicted on move ${src}→${dst} evicted=[${ev.join(",")}]`),
+            });
             moveSidecar(src, dst);
             fs.unlinkSync(src);
           }

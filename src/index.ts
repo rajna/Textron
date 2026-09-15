@@ -1679,6 +1679,15 @@ export default function (pi: ExtensionAPI) {
     const model = (ctx as any).model || _textronModel;
     if (!model?.id || !model?.baseUrl) return { reward: 0, rationale: "no model" };
 
+    // 2026-09-15 n8 第十一轮根因修复（十轮反传全败的真因）：本函数内嵌的 normalize() 复制自
+    // applySemanticNodeUpdates()，沿用了后者的形参名 `onLog`；但本函数作用域里没有该绑定
+    // （本作用域的真名是 `log`）。于是只要 LLM 按 FUSION 契约返回 `drop` 字段（提示词强制要求，
+    // 几乎必返）或返回 delete action，normalize 就在 L1890/L1911 抛 ReferenceError；该异常被
+    // 候选循环的 catch{} 静默吞掉，最终统一伪装成 "no JSON object in semantic backward
+    // response"。九轮修复因此全部打偏到「语法层」（json 修复层/流式拼接/CJK bigram），而 raw 一直
+    // 合法（selfParse=ok）。c6538c0 的 stage 化 diag 一次即定位：candErrs=normalize#1(1560c):onLog is not defined。
+    const onLog = log;
+
     const baseUrl = String(model.baseUrl).replace(/\/+$/, "");
     const chatEndpoint = joinApiEndpoint(baseUrl, "/chat/completions");
     const responsesEndpoint = joinApiEndpoint(baseUrl, "/responses");

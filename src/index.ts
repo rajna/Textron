@@ -31,6 +31,9 @@ import {
 } from "./ngram_distill";
 import { buildTextronPromptInjection } from "./prompt_injection";
 import { buildBackwardTaskContext, serializeTaskForState, restoreTaskPrompt } from "./lifecycle_context";
+// 任务侧域闸（n8 第十五轮）：与 rule 0 对称的另一半 —— 离域任务的内容零写入。
+// 裁决逻辑与规则文本均从模块导入，禁止在此内联复刻（单一事实来源）。
+import { evaluateTaskDomainGate, taskDomainGateRule } from "./domain_gate";
 import { chooseTaskFamilyRoute } from "./learning_policy";
 import { assistantMessageText, extractHighEntropy, extractLatestHighEntropyFromMessages, parseHighEntropyCrystal } from "./highentropy";
 import { distillNodeName, buildAtomKey } from "./name_distill.ts";
@@ -1853,6 +1856,13 @@ export default function (pi: ExtensionAPI) {
         offGoalCandidates: offGoalNodes.map(n => ({ id: n.key, goalSim: n.goalSim })),
       });
     }
+    // ── 任务侧域闸（TASK-SIDE DOMAIN GATE）── 规则文本从 domain_gate 导入（单一事实来源）。
+    // 真因：原 goal guard 是**单向**的 —— 只判「网络里已有节点是否离目标域」（rule 0 清道夫方向），
+    // 从不判「本轮任务本身是否属目标域」。而 pinnedTaskFamily=stock_alpha 使 guard/sender 等
+    // **工程会话**也被路由进交易网络（route_policy_decision.reason="pinned_manual"，实证 9 条
+    // agent_end_task_pushed 中 4 条非交易域）⇒ 工程知识写进 L0/L1，淘汰后 content 仍悬空引用
+    // （实测 L0::node_0 悬空 17 个 [fn:σ]）⇒ 节点趋向紊乱、路由锚点被稀释。
+    const taskDomainGate = taskDomainGateRule(netGoal);
     const goalRule = netGoal ? `0. 🎯 NETWORK GOAL (HIGHEST PRIORITY — overrides rules 1-9 whenever they conflict). This network exists ONLY to accumulate knowledge for: "${netGoal}". Every node MUST serve this goal. Any node whose content belongs to a DIFFERENT domain (engineering / tooling / API / config / CLI / meta-workflow / session-log / audit report) is OFF-GOAL CONTAMINATION and MUST be cleansed:\n   (a) CLEANSING CHANNEL = node_updates: OVERWRITE the off-goal node's name AND content with goal-domain knowledge distilled from the packet below. This is the ONLY sanctioned way to remove off-goal knowledge (delete is forbidden by rule 1).\n   (a2) MANDATORY: if the MUST-CLEANSE candidate list below is NON-EMPTY, your node_updates MUST overwrite at least ONE of those listed nodes (with name AND content). Returning an empty node_updates while off-goal nodes exist is a FAILED response and will be treated as such (the system will fall back to a deterministic cleanse).\n   (b) NEVER merge off-goal content INTO a goal-domain node (nor into another off-goal node) — that produces keyword-soup nodes and corrupts Name-substring routing. merge is allowed ONLY when BOTH nodes serve the goal.\n   (c) Priority when capacity is tight: cleanse off-goal node (node_updates) > merge two goal-domain nodes > add_nodes.\n   (d) If this packet cannot supply enough goal-domain knowledge to fill an off-goal node, leave it as-is but list it in node_actions as {"action":"keep","rationale":"off_goal_deferred"}.\n   (e) Goal-domain knowledge has absolute admission priority: a goal node may overwrite an off-goal node even if similarity <15% (they are different domains, so low similarity is EXPECTED and is NOT a reason to skip the cleanse).\n   (f) Rule 6's "domain" judgement is ALWAYS the NETWORK GOAL below — if L0/L1 holds only off-goal (e.g. engineering) content, that counts as "no domain anchor" and must be cleansed/established per rules 0+6.\n` : "";
     const goalUserBlock = netGoal
       ? `\n\n🎯 NETWORK GOAL (admission & cleansing gate): ${netGoal}\nMUST-CLEANSE CANDIDATES — existing nodes ranked by LOWEST semantic relevance to the goal (lowest first; L0 prioritized; ${allExistingNodes.length} nodes scanned, showing ${offGoalNodes.length}). Per rule 0: if off-goal → node_updates overwrite with goal-domain knowledge; if already goal-domain but redundant → merge into its most relevant goal node; if it genuinely serves the goal → keep with rationale.\n${offGoalNodes.length ? offGoalNodes.map(n => `  ${n.key} [goal_sim=${n.goalSim}] ${n.name}\n    content: ${String(n.content || "").replace(/\s+/g, " ").trim().slice(0, 320)}`).join("\n") : "(network has no existing nodes yet — build goal-domain nodes via add_nodes)"}`
@@ -1862,7 +1872,7 @@ export default function (pi: ExtensionAPI) {
       { role: "system", content: `You are Textron semantic backward. Output ONLY raw JSON, no markdown. Format: ${schemaHint}.
 
 RULES:
-${goalRule}1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
+${taskDomainGate}${goalRule}1. Prefer node_updates over add_nodes. add_nodes ONLY for truly new concepts. NEVER propose delete — use merge(source→target) to deduplicate; the system auto-removes source after merging.
 2. REWARD -1..1: Quantify the UPSTREAM FEEDBACK ITSELF — the user's explicit criticism/correction/approval, or objective assertion outcomes. The HighEntropy packet below is a POST-hoc summary (temporally AFTER the feedback): it is training material for node content ONLY and must NOT drive your reward judgment. Judge reward from the feedback's own polarity/strength and the previous task's completion status — NOT from how well the summary is written. Negative feedback (criticism/"错了"/"做错了"/unfulfilled promise) → reward≤0. Positive only when the feedback confirms a verifiable completed result. Off-topic → reward=-1, empty updates.
 3. FAILURE→"avoid X→prefer Y". SUCCESS→encode WHY.
 4. Content 无字数上限（写全，但禁止复制旧内容）. name MUST be a compressed symbolic anchor (like the integral sign ∫ or the term "Transformer"). Think: what ≤48c symbol captures the ESSENCE and can serve as a building block for future combinations? Use domain-specific concise nouns (e.g. "满月极性反转" not "2025-01-24 DOWN UP json_mode"). NEVER use file paths, variable names, or full sentences as names. No templates/session summaries.
@@ -1894,10 +1904,29 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
     function clampReward(v: unknown) { return clamp(Number(v) || 0, -1, 1); }
     function normalize(obj: any) {
-      const out: { reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
+      const out: { reward: number; rationale?: string; off_domain?: boolean; off_domain_reason?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
         reward: clampReward(obj?.reward),
       };
       if (obj?.rationale) out.rationale = String(obj.rationale).slice(0, 120);
+      // ── 任务侧域闸（裁决点在 domain_gate.ts，与测试共用同一份逻辑）──
+      // off_domain=true ⇒ 本轮任务不属网络目标域 ⇒ 内容面**全部丢弃**（node_updates/add_nodes/
+      // merge 语义/Function 硬落盘），但 reward 保留 ⇒ autoBackward 仍更新边权（本轮前向确实用了
+      // 本网络，边权是该事实的合法学习信号；被禁的是「把离域知识固化进节点容量」）。
+      // 早退还顺带关掉 goalCleanseFallback —— 否则会用离域任务的 Technique 覆盖候选节点（同源污染的另一条通道）。
+      const gate = evaluateTaskDomainGate(obj);
+      if (gate.offDomain) {
+        out.off_domain = true;
+        out.off_domain_reason = gate.reason;
+        recordMonitorEvent({
+          type: "trace", action: "semantic_backward_off_domain",
+          taskFamily: path.basename(net.path),
+          reason: gate.reason,
+          strippedUpdates: gate.strippedUpdates, strippedAdds: gate.strippedAdds,
+          llmReward: Number(obj?.reward) || 0,
+          goal: netGoal || null,
+        });
+        return out;
+      }
       if (obj?.node_updates && typeof obj.node_updates === "object") {
         out.node_updates = {};
         for (const [k, v] of Object.entries(obj.node_updates)) {
@@ -3124,7 +3153,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
     // HighEntropy fallback: if no node update happened, synthesize from previous assistant
     let highEntropyFallbackNode = "";
-    if (bwResult.nodesUpdated === 0 && previousAssistantHighEntropy) {
+    // 域闸轮禁止 fallback：这条通道用本轮 HE 合成 add_node，是离域污染最肥的入口之一
+    // （本轮窗口实测 highentropy_fallback_add_candidate 3 次，均发生在任务离域时）。
+    if (!result.off_domain && bwResult.nodesUpdated === 0 && previousAssistantHighEntropy) {
       const candidate = buildHighEntropyAddCandidate(previousAssistantHighEntropy, activatedIds);
       if (candidate) {
         // Re-run autoBackward with just this fallback add_node
@@ -3151,7 +3182,11 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // agent_pending 还会重放同一轨迹反传，污染收益口径 —— n8 验证轮实证）。
     let fnPersist: ReturnType<typeof persistHighEntropyFunction>;
     try {
-      fnPersist = persistHighEntropyFunction(net, extractFunctionBlock(previousAssistantHighEntropy), result.node_updates, taskFamily);
+      // 域闸轮同样禁止 Function 硬落盘：<Function> 块是「可执行产物」，一旦落盘就占节点函数槽
+      // 并触发 NODE_FN_BLOCK_MAX=2 淘汰（本轮 4 次 fn_block_evicted 全部淘汰了交易域块）。
+      fnPersist = result.off_domain
+        ? undefined
+        : persistHighEntropyFunction(net, extractFunctionBlock(previousAssistantHighEntropy), result.node_updates, taskFamily);
     } catch (e) {
       recordMonitorEvent({ type: "trace", action: "highentropy_function_persist_failed", taskFamily, error: (e as Error).message });
     }

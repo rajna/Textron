@@ -80,7 +80,32 @@
 
 ---
 
-# ✦ 最近更新（2026-09-15 02:10）：n8 第九轮 —— JSON 恢复层 + SSE 无缝拼接 + 失败完整raw落盘（8 连败根因）
+# ✦ 最近更新（2026-09-15 16:4x）：**删除手写词表闸** + 网络自进化三机制（manual coding）
+
+> 触发：用户质询「谁定义的 textron 网络？有这种限制（域闸）？」并明确「不是让你手动编码，是不让你**手动写这些规则**」——即反对词表/黑名单式硬规则，要求网络**依轨迹自动学习收敛**。
+> 状态：✅ 已改 `src/index.ts` + `src/lib/node_io.ts` + `src/lib/compile.ts`。**需重启三件套（含 default 会话自身）才生效**（jiti 在进程启动时加载）。
+
+## 一、删掉的两处手写词表（规则 → 机制）
+1. `index.ts` `persistHighEntropyFunction` 的 **域闸 `ENGGEN_RE`**（第12轮 guard 加的）——删。三条否证：①与领域无关：交易函数注释里出现「反传」「node_0」即被静默拒写（实测 8 例 2 例假阳性）；②不可训练：网络无法从词表学到任何东西，行为只随人改词表变化；③合法闸门已存在且数据驱动（轨迹级 `semantic_backward_skipped_no_domain_evidence` + LLM 语义判据）。
+2. `index.ts` `goalCleanseTargets` 的 **`ENGINEERING_RE` / `DOMAIN_RE`** ——删。两条词表互相打架（越像真领域知识越可能命中 DOMAIN_RE 被豁免，越像工程语料越因 goalSim 低被选中），且 TF-IDF goalSim 判别力本就弱（真交易节点 0.0087 vs 工程 ~0.01）⇒ 词面相似度不足以判「谁是好知识」。**LLM 是唯一语义判据**。
+
+## 二、新增的三条自进化机制（结构性不变量，零词表/零绝对阈值）
+1. **写入前置比较（相对判据）** `applySemanticNodeUpdates`：覆写不再无条件生效、也不再由候选名单决定。用网络自身 goal 与**剥离 `<function>` 块后正文**的 `lexicalRelevance` 比较新旧：新明显更低（<旧×0.85）⇒ **拒写**（旧内容保留，`_node_history` 有副本可回滚，事件 `node_write_refused_keep_better`）；略低 ⇒ **降级为融合**（旧要点不丢）。且 `forceOverwrite` 不再由程序侧名单驱动（`const cleanseTargets = new Set<string>()`）——「程序侧强制覆写」正是抹掉好知识的直接通道。
+2. **function 块多槽** `node_io.writeNodeFunction`：按 symbol **upsert**（同 symbol 覆盖、不同 symbol 并存、超 `NODE_FN_BLOCK_MAX=2` 按 code 长度淘汰最短者，等长淘汰最早）；`readNodeFunctions` 复数读 + `writeNodeHtml` 保留全部块 + `compile` 注入该节点**全部** symbol（原实现单槽替换 ⇒ symA 被 symB 静默抹掉、content 里 `[fn:symA]` 悬空）。
+3. **写入前版本化**（第12轮 guard 已落 `_node_history/`）→ 与 1 合起来使「任何抹去」可追溯可回滚。
+
+## 三、验证（合成测试，非运行期）
+- `test_selfevolve`（jiti 载入真实模块）**8/8**：多 symbol 并存／同 symbol upsert／超限淘汰最短／content 不被 function 写入破坏／`writeNodeHtml` 保留多块／真实 goal 下 `lexicalRelevance` 交易 **0.0273** vs 工程 **0.0000**（零词表可分离）／工程覆写交易 ⇒ **拒写**／交易覆写工程 ⇒ **允许替换**（污染可自清）。
+- `compile` 注入 2 个 symbol ✅（原实现只注入首个）。
+- `src/index.ts` 经 jiti（= pi 运行期同一加载器）整载成功 ⇒ 语法/绑定无破。
+
+## 四、运行期预期与残留
+- 下轮（重启三件套后）应看到：`node_write_refused_keep_better` 出现（旧知识受保护）、`highentropy_function_domain_gated` **绝迹**（词表闸已删）、`_node_history/` 持续增长、节点 `⟨fn:σ⟩` 可出现 2 个。
+- 残留风险（下批）：`semanticBackwardLLM` prompt 里仍写 "MUST-CLEANSE CANDIDATES …（排名靠 goalSim 低）"，而该排名会把**真交易节点（0.0087）排在工程节点（0.0116）之前** ⇒ 靠机制保护（拒写），但措辞仍可能诱导 LLM 去改真节点，应改为不带排名断言的「候选仅供参考」。另：**default 会话自身（pid 25298）是 stock_alpha 的最大污染者**（第11轮已证：共享状态文件写入者归因 default），其 HighEntropy 全是工程元知识——它同样需要重启/隔离。
+
+---
+
+
 
 > 触发：guard n8 本轮交易验证（2 次推进均空仓记平-2，苛刻评分+1）。两次反传 4 模式×2 轮 **8 连败** 全部 "no JSON object"。
 > 状态：✅ 已改 `7b17f2d`（src/index.ts + test_json_repair.ts）。**需 /reload 生效**。

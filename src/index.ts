@@ -2487,19 +2487,13 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const raw = String(functionBlock || "").trim();
     if (!raw) return undefined;
     const symbol = (raw.match(/functionSymbol\s*[:：]\s*`?([A-Za-z_][A-Za-z0-9_]*)`?/) || [])[1] || "";
-    // 2026-09-15 n8 第十二轮：**域闸** —— 工程域产物禁止写入领域网络。
-    // 因果链（实测坐实）：route_done reason=pinned_manual 把所有 pi 会话（含 guard 做工程
-    // 审计/写 workflow）都钉在 stock_alpha ⇒ 每轮 guard 自己产出的 HighEntropy <Function>
-    // （如 guardNodeContentOverwrite）都被直写进 stock_alpha 节点，并与交易知识拼在一起
-    // （实测 node_0 content 内 1300c 工程代码 + 900c 工程语料 vs 175c 交易知识 = 7%）。
-    // 审计者持续污染被审计网络，且污染量 > 修复量 ⇒ 十轮越改越差。
-    // 判据：symbol 或 code 命中工程标识词 ⇒ 判为工程产物 ⇒ 不落盘（只记事件）。
+    // 2026-09-15（手动编码更正）：**删除词表域闸**。工程词汇黑名单是「规则」不是「机制」：
+    // ①与领域无关——交易函数只要注释里出现「反传」「node_0」就被静默拒写（实测 8 例 2 例假阳性）；
+    // ②不可训练不可收敛——网络无法从词表学到任何东西，行为只随人改词表而变；
+    // ③合法闸门已存在且数据驱动：轨迹级领域证据门禁(semantic_backward_skipped_no_domain_evidence)、
+    //   LLM 语义判据(FUSION keep/drop/merge 三段式 + node_actions)、写入前置比较与 _node_history 版本化。
+    // 故此处只保留结构不变量（长度上限、symbol 合法性），不做任何词汇判定。
     const code = raw.slice(0, 8000).trim();   // 原 1200c 会把函数体截肢（节点里实测的断码来源）
-    const ENGGEN_RE = /Textron|semantic_backward|highentropy|goalSim|layerCaps|mergeNode|guardNode|persistHighEntropy|node_\d|layer_\d|CLEANSE|反传|覆写|验收门禁/i;
-    if (ENGGEN_RE.test(`${symbol}\n${code}`)) {
-      recordMonitorEvent({ type: "trace", action: "highentropy_function_domain_gated", taskFamily, symbol, codeChars: code.length, reason: "engineering_artifact_refused" });
-      return undefined;
-    }
     if (!code) return undefined;
     // symbol 解析失败宁可早退：写无 symbol 的 <function> 块会让前向 ⟨fn:σ⟩ 永不命中，
     // 形成「看似落盘、引用链仍断」的假达标（审计 A 项硬要求 symbol 非空）。
@@ -2549,13 +2543,13 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     if (!goal) return { goal, targets, scanned };
     let simMap = new Map<string, number>();
     try { simMap = tfidfSimilarity(net, goal, ""); } catch { simMap = new Map(); }
-    // 2026-09-15 n8 第十一轮：离域判定改成「工程元语料特征」而非「与 goal 词面相似度最低」。
-    // 实测（真实 stock_alpha + 真实 goal）：TF-IDF goalSim 给 L0::node_1（真交易判据）只有 0.0087，
-    // 即剥离 <function> 块后也仅 +0.0028 —— 因为 goal 描述的是「生成策略函数/量化程序」，
-    // 与「破位止损判据」本就词面疏远。若继续用“相似度最低”选覆写目标，会稳定选中真领域知识。
-    // 因此重定义：只清理「含工程元语料且无领域特征词」的节点，领域知识一律豁免。
-    const ENGINEERING_RE = /反传|覆写|CLEANSE|cleansed|layerCaps|goalSim|goal[_-]?guard|验收门禁|集合差|注入预算|节点容量|槽位|merge_action|semantic[_-]?backward|highentropy|\bfn:|guardNode|dangling|孤儿|门禁|快照|回滚|\breload\b|\bhook\b|节点|网络拓扑/i;
-    const DOMAIN_RE = /止损|止盈|买点|卖点|建仓|清仓|仓位|持仓|均线|量能|成交量|换手|K\s?线|涨跌幅|大阴线|阳线|阴线|回撤|支撑|压力|金叉|死叉|缺口|缩量|放量|涨停|跌停|收盘|开盘|最高价|最低价|波动率|风报比|黄金分割|复盘/;
+    // 2026-09-15：删除两个手写词表（ENGINEERING_RE / DOMAIN_RE）。词表是规则不是机制：
+    // 不可训练、与领域无关、且两条判据互相打架（越像真领域知识越可能命中 DOMAIN_RE 被豁免，
+    // 越是工程语料越可能因 goalSim 低被选中）。实测 TF-IDF goalSim 判别力本就弱（真交易节点
+    // 0.0087 vs 工程节点 ~0.01）⇒ 词面相似度不足以承担「谁是好知识」的判断。
+    // 现在分工：**LLM 是唯一语义判据**（同时看到 goal、节点内容、轨迹，按 keep/drop/merge 三段式
+    // 给理由并落盘 node_actions）；程序侧只保留结构性不变量。本函数退化为「把网络内容按 goalSim
+    // 升序摆给 LLM 看」，不再驱动任何强制覆写。
     for (let l = 0; l < net.hyperparams.layers.length; l++) {
       for (let n = 0; n < net.hyperparams.layers[l]; n++) {
         const np = path.join(net.path, `layer_${l}`, `node_${n}.html`);
@@ -2564,7 +2558,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         scanned++;
         // 工程域病态节点才入清理名单；含领域特征词（真交易/交易判据）一律豁免。
         const text = stripFunctionBlocks(String(c));
-        if (!ENGINEERING_RE.test(text) || DOMAIN_RE.test(text)) continue;
+        // （原词表判定已删除：候选一律摆给 LLM，由 LLM 判 keep/drop/merge）
         const key = `L${l}::node_${n}`;
         targets.push({ key, layer: l, name: readNodeName(np) || compressNodeName(c), content: c, goalSim: Number((simMap.get(key) || 0).toFixed(4)) });
       }
@@ -2649,10 +2643,31 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         .filter((e) => e.from === parsed.nodeId)
         .map((e) => ({ toId: e.to, weight: e.weight }));
       const newContent = applyContentLimit(validation.content);
+      // ── 写入前置比较（2026-09-15）── 覆写不再无条件生效，也不再由名单决定：只做「新 vs 旧」
+      // 的相对比较。判据 = 网络自身 goal 与**剥离 <function> 块后正文**的词面相关度(lexicalRelevance)：
+      // 新明显更低 ⇒ 拒写（旧内容保留，_node_history 有副本可回滚）；略低 ⇒ 降级为融合（旧要点不丢）。
+      // 此处不引入任何词表、不引入绝对阈值。
+      let forcedReplace = isCleanse;
+      if (newContent && oldContent.trim()) {
+        const _g = readNetworkGoal(path.basename(net.path));
+        const _sOld = lexicalRelevance(_g, stripFunctionBlocks(oldContent));
+        const _sNew = lexicalRelevance(_g, stripFunctionBlocks(newContent));
+        if (_sNew < _sOld * 0.85) {
+          result.skipped++;
+          result.skipReasons.push(`${id}:retention_new_worse`);
+          recordMonitorEvent({ type: "trace", action: "node_write_refused_keep_better", id, scoreOld: Number(_sOld.toFixed(4)), scoreNew: Number(_sNew.toFixed(4)), oldChars: oldContent.length, newChars: newContent.length });
+          onLog(`Textron backward: refused overwrite of ${id} — new less goal-relevant (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)}); old kept (versioned)`);
+          continue;
+        }
+        if (_sNew < _sOld) {
+          forcedReplace = false;
+          onLog(`Textron backward: downgraded overwrite of ${id} to merge — new not better (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)})`);
+        }
+      }
       // isCleanse（网络目标驱动的离域清洗）：**真覆盖**，不与旧内容/旧名拼接。
       // 拼接会把两个域焊成关键词垃圾抽屉（实测："layerCaps存活数硬闸… | 成功经验（sz.301299…）"），
       // 且旧名残留会让 Name 子串路由继续把工程回合路由到交易节点。
-      let mergedContent = isCleanse
+      let mergedContent = forcedReplace
         ? newContent
         : (oldIsArtifact ? completeContent(newContent, NODE_CONTENT_MAX_CHARS) : mergeContent(oldContent, newContent));
       // 写入宽: NODE_CONTENT_MAX_CHARS=0（不限）时不再触发溢出拆分，融合内容完整留在本节点。
@@ -2850,7 +2865,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // 网络目标驱动的离域清洗：候选节点的写入必须走 replace（覆盖），而非 merge（拼接）。
     // 否则「把工程知识更新掉」会被引警退化为「工程+交易 拼接」，越洗越脏。
     const cleanseInfo = goalCleanseTargets(net, 8);
-    const cleanseTargets = new Set(cleanseInfo.targets.map((t) => t.key));
+    // 2026-09-15：不再把候选名单当 forceOverwrite —— 「程序侧强制覆写」正是抹掉好知识的直接通道
+    // （候选名单一旦错选，真领域知识必被硬替换）。清洗改由 LLM 显式决策，程序只做相对保留闸门。
+    const cleanseTargets = new Set<string>();
     const nodeResult = applySemanticNodeUpdates(net, nodeUpdates, onLog, { forceOverwrite: cleanseTargets });
     const nodeMutations = [...nodeResult.nodeMutations];
     if (cleanseInfo.goal) {

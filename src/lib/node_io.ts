@@ -29,6 +29,11 @@ export function readNodeName(filePath: string): string {
 }
 
 const FUNCTION_BLOCK_RE = /<function(?:\s+symbol="([^"]*)")?>\s*([\s\S]*?)\s*<\/function>/i;
+// 多槽读取用（同一节点可持久化多个 symbol 块）。
+const FUNCTION_BLOCK_RE_G = /<function(?:\s+symbol="([^"]*)")?>\s*([\s\S]*?)\s*<\/function>/gi;
+
+/** 单节点 function 块上限（超出按 code 长度淘汰最短者；等长淘汰最早写入）。 */
+export const NODE_FN_BLOCK_MAX = 2;
 
 /**
  * 合法 functionSymbol = ASCII 标识符。
@@ -41,17 +46,30 @@ export function isValidFnSymbol(sym: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(sym || "").trim());
 }
 
-/** 读取节点持久化的 <Function> 块（可执行产物，独立于 content 的 1000 字上限）。 */
-export function readNodeFunction(filePath: string): { symbol: string; code: string } | null {
+/**
+ * 读取节点持久化的**全部** <Function> 块（多槽）。
+ * 2026-09-15 手动编码（抹除四因之④容量挤压）：原实现单槽全量替换 ⇒ 第二个 symbol 落盘时
+ * 第一个静默消失（节点 content 仍留 [fn:σ] 引用 ⇒ 悬空引用）。改为按 symbol 返回全部块。
+ */
+export function readNodeFunctions(filePath: string): { symbol: string; code: string }[] {
   try {
     const html = fs.readFileSync(filePath, "utf-8");
-    const m = html.match(FUNCTION_BLOCK_RE);
-    if (!m) return null;
-    const code = String(m[2] || "").trim();
-    const symbol = String(m[1] || "").trim();
-    if (!code || !isValidFnSymbol(symbol)) return null;
-    return { symbol, code };
-  } catch { return null; }
+    const out: { symbol: string; code: string }[] = [];
+    const seen = new Set<string>();
+    for (const m of html.matchAll(FUNCTION_BLOCK_RE_G)) {
+      const code = String(m[2] || "").trim();
+      const symbol = String(m[1] || "").trim();
+      if (!code || !isValidFnSymbol(symbol) || seen.has(symbol)) continue;
+      seen.add(symbol);
+      out.push({ symbol, code });
+    }
+    return out;
+  } catch { return []; }
+}
+
+/** 读取节点持久化的首个 <Function> 块（保留旧签名，兼容既有调用点）。 */
+export function readNodeFunction(filePath: string): { symbol: string; code: string } | null {
+  return readNodeFunctions(filePath)[0] || null;
 }
 
 /**
@@ -59,15 +77,34 @@ export function readNodeFunction(filePath: string): { symbol: string; code: stri
  * 用途：反传结束后把本轮 HighEntropy.Function 硬落盘——LLM 若未按引用链规则
  * 把 functionSymbol 写进 content，函数产物仍可在网络里持久化（可执行知识不丢）。
  */
-export function writeNodeFunction(filePath: string, symbol: string, code: string): boolean {
+/**
+ * 多槽写入：按 symbol **upsert** 而不是单槽替换。
+ * 2026-09-15 手动编码：原实现 `html.replace(RE,"")` + 末位追加单块 ⇒ 最后写入者胜
+ * （实测 symA 落盘 → symB 落盘 ⇒ symA 静默消失，而 content 里 [fn:symA] 仍悬空）。
+ * 现语义：同 symbol 覆盖（版本内更新）；不同 symbol 并存；超过 NODE_FN_BLOCK_MAX 时
+ * 按 code 长度淘汰最短者（信息量最小），等长淘汰最早写入者。
+ */
+export function writeNodeFunction(filePath: string, symbol: string, code: string, opts?: { maxBlocks?: number }): boolean {
   try {
     const body = String(code || "").trim();
-    // 防御深：非法 symbol 不落块（与 readNodeFunction 同一不变式，防写"看似落盘、永不命中"的假达标块）
+    // 防御深：非法 symbol 不落块（与 readNodeFunctions 同一不变式，防写"看似落盘、永不命中"的假达标块）
     if (body && !isValidFnSymbol(symbol)) return false;
     const html = fs.readFileSync(filePath, "utf-8");
-    const block = body ? `<function${symbol ? ` symbol="${symbol.replace(/"/g, "&quot;")}"` : ""}>\n${body}\n</function>` : "";
-    let next = html.replace(FUNCTION_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n");
-    if (block) next = next.replace(/\s*$/, "\n") + `\n${block}\n`;
+    let blocks = readNodeFunctions(filePath).filter((b) => b.symbol !== symbol);
+    if (body) blocks.push({ symbol, code: body });
+    const maxBlocks = Math.max(1, opts?.maxBlocks ?? NODE_FN_BLOCK_MAX);
+    if (blocks.length > maxBlocks) {
+      const ranked = blocks
+        .map((b, i) => ({ b, i, len: b.code.length }))
+        .sort((a, z) => (a.len - z.len) || (a.i - z.i));
+      const drop = new Set(ranked.slice(0, blocks.length - maxBlocks).map((x) => x.b.symbol));
+      blocks = blocks.filter((b) => !drop.has(b.symbol));
+    }
+    const cleaned = html.replace(FUNCTION_BLOCK_RE_G, "").replace(/\n{3,}/g, "\n\n");
+    const rendered = blocks
+      .map((b) => `<function symbol="${b.symbol.replace(/"/g, "&quot;")}">\n${b.code}\n</function>`)
+      .join("\n");
+    const next = rendered ? cleaned.replace(/\s*$/, "\n") + rendered + "\n" : cleaned;
     fs.writeFileSync(filePath, next, "utf-8");
     return true;
   } catch { return false; }
@@ -89,12 +126,14 @@ export function writeNodeHtml(filePath: string, layer: number, nodeId: string, c
   } catch { /* 备份失败不影响写入 */ }
   const storedContent = applyContentLimit(String(content || ""));
   const nodeName = (name || compressNodeName(storedContent)).slice(0, 64);
-  const preservedFn = readNodeFunction(filePath);
+  const preservedFns = readNodeFunctions(filePath);
   const edgesHtml = outEdges
     .map((e) => `  <link rel="out" href="../layer_${layer + 1}/${e.toId}.html" data-weight="${e.weight.toFixed(4)}">`)
     .join("\n");
-  const fnHtml = preservedFn
-    ? `\n<function symbol="${preservedFn.symbol.replace(/"/g, "&quot;")}">\n${preservedFn.code}\n</function>`
+  const fnHtml = preservedFns.length
+    ? "\n" + preservedFns
+        .map((b) => `<function symbol="${b.symbol.replace(/"/g, "&quot;")}">\n${b.code}\n</function>`)
+        .join("\n")
     : "";
   fs.writeFileSync(filePath, `<!DOCTYPE html>
 <meta name="layer" content="${layer}">

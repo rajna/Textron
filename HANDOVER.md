@@ -6,6 +6,49 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 16:05）：n8 第十一轮 —— 反传十轮全败真因 = `onLog` 未绑定 ReferenceError（一处绑定修复）；三件套状态隔离 ✅
+
+> 触发：guard n8 第十一轮（sender 2 次推进 59→60→61，均「不建仓继续观察」，零成交，账户 ¥102,493/+2.49% 不变，flat/unattributed）。
+> 状态：✅ 已改 `571205a`（src/index.ts，+9 行）。**需 n9 重启三件套生效**（本次重启由 default 侧 n9 执行）。
+
+## 一、真因（第十轮假设被证伪）：`semanticBackwardLLM` 作用域内 `onLog` 未绑定
+- 第十轮假设「`normalize` 兜底段 `previousCrystal.technique` 抛 TypeError」**证伪** —— 加 `previousCrystal?.` 防御后本轮仍 **4 模式 ×2 轮全败**（15×`semantic_backward_llm_attempt_failed`）。
+- c6538c0 的 stage 化 diag **一次定位**（这是它唯一使命，且完成）：
+  `candErrs=normalize#1(1560c):onLog is not defined` + `selfParse=ok(keys=reward,rationale,node_updates,add_nodes,node_actions)` ⇒ **raw 完全合法，病灶在 normalize**。
+- 机理：`semanticBackwardLLM()` 内嵌的 `normalize()`（L1861）复制自 `applySemanticNodeUpdates()`，沿用了后者的**形参名** `onLog`；但该函数作用域里没有此绑定（真名 `log`，L314）⇒ 只要 LLM 按 FUSION 契约返回 `drop` 字段（提示词强制要求，**实测 raw 3/3 含 "drop"**）或 `delete` action，即在 L1890/L1911 抛 `ReferenceError: onLog is not defined`。
+- 该异常被候选循环的 `} catch {}` 静默吞掉 ⇒ 本轮 13 次 `semantic_backward_extract_failed` 统一伪装成 `no JSON object`。**九轮修复（流式换行/CJK bigram/JSON repair）全部打在语法层，而 raw 一直是合法的。**
+- 修复：`semanticBackwardLLM` 体内显式 `const onLog = log;` —— 一处绑定覆盖全部 4 个调用点（L1890/L1911/L2087/L2111）。
+- 验证：自研绑定域检查器（`/tmp/onlog_scope_check.ts`，按 2 空格函数声明 + 内嵌作用域判定）**PRE = 4 UNBOUND → POST = 0 UNBOUND（21/21 BOUND）**；jiti 转译加载 `LOAD_OK`。
+- 教训（可复用）：**「同轴全灭 + 错误消息统一」必然意味着异常被吞，错误消息本身不是证据**；正确动作是让失败断言在 throw 前发出并携带 stage 化 diag（c6538c0），而不是继续加固解析层。**另：`catch {}` + 复制粘贴形参名 = 十轮不可见 bug**，复制内嵌函数时必须核对自由变量绑定（TS 能抓到，但 jiti 运行期不查类型）。
+
+## 二、三件套状态隔离 ✅ 验收通过（`TEXTRON_STATE_FILE` 按 cname 隔离）
+- **文件级**：`_last_state.sender.json`(15:52:52)、`_last_state.worker.json`(15:52:43) 新建；guard 进程 env 直读 `TEXTRON_STATE_FILE=/Users/rama/.textron/_last_state.guard.json`。
+- **共享文件冻结**：`~/.textron/_last_state.json` mtime 停在 **15:49:34**（重启前），本轮三件套**零写入**（该文件现在只被无隔离的手动会话如 default agent pid 25298 使用）。
+- **不再混栈**：sender `activeTask=A股交易推进, stack=[]`；worker `activeTask=A股委托执行, stack=[A股涨跌预测]` —— 全为自身任务。对照第十轮共享文件里 guard 栈混入 4 个他 agent 任务。
+- **配对恢复**：`pairing_judge_done{matchIdx≥0, isFeedback:true}` ×4（第十轮为 `matchIdx=-1` + `isFeedback=false`）；`semantic_backward_skipped_not_feedback` = **0**（第十轮 8 次）；残余 `agent_end_backward_skipped{no_pending_match}` ×2 仅出现在 guard 自己的回执回合（属预期）。
+- **高熵包不再被空回合覆盖**：guard 写入自身文件，sender 的落盘包不再被抹。（但空值并未消失 —— 见第三节，来源已换成文本判据误杀。）
+
+## 三、新发现（本轮最高价值，未修）：highEntropy 空值的残余机制 = `isTemporalSummary` 误杀
+- 本轮 5/5 高熵包被拒：`highentropy_missing_at_agent_end{hasTag:true, reason:"temporal_summary"}` ⇒ `semantic_backward{hasHighEntropy:false}`（8 次反传中 7 次无素材）⇒ 即便 `onLog` 修好，融合仍缺高熵输入。
+- 机理（实测）：`src/highentropy.ts:212` `if (isTemporalSummary(technique)) return invalid("temporal_summary")`，其中 `isTemporalSummary`（L67）第一条正则含 `/最近|上次|这次|今天|.../`。交易 Technique 里**天然出现「最近收盘价/最近收盘日」**（直接抄自 UI prompt 固定措辞「成交价默认参考最近收盘价」），以及「上次交易分数」——**恰好全是白名单反馈话术** ⇒ 被整包判为「时间性摘要」丢弃。
+- 判据：被拒包在 `Technique` 内命中 `/最近/` 或 `/\d+次/`；同源问题目标节点（L1::node_0）也因同类文本判据被误杀。
+- 修法方向（下一轮）：`isTemporalSummary` 只应匹配**指代会话时间而非行情时间**的表述（如 `^上次我们|上轮|刚才讨论`），不应裸匹配「最近」；或要求「最近/上次」出现在句首且伴随 `我们/讨论/会话` 才判 temporal。验收：sender/worker 的 `highentropy_missing_at_agent_end` 归零，`semantic_backward.hasHighEntropy=true`。
+
+## 四、遗留未修（按优先级）
+1. **goalSim 稀释**（第十轮附带发现 2，仍未修）：L0::node_1（真交易语料）goalSim=**0.0087** 恒定、L0::node_0=0.0116 ⇒ 双双进 MUST-CLEANSE（`semantic_backward_goal_cleanse`×3 / `_fallback`×11）。`goal_guard.nodesScanned=3` 而磁盘实有 7 节点（L0×2/L1×2/L2×2/L3×1）⇒ 第十轮的 F1「目录驱动」只修了前向 L0 池，`goal_guard` 候选池仍是声明槽位驱动。
+   *本轮未发生实际覆写*：`nodesUpdated=0`，L0 节点文件 mtime 仍为 14:45/15:45（ngram）与 01:10/01:13（html），无写入 ⇒ 反传全败的净效果是「不学习」（尚未造成破坏）。
+2. **`semantic_backward_llm_attempt_failed` 存在 1/15 缺 diag**（07:54:30.210 `chat_nothinking`：只有 `partsChars/head`，无 `selfParse/candErrs`）⇒ c6538c0 的 diag 未覆盖 extract 的另一分支（该分支的 `onLog(...)` 调用点正是未绑定站点之一，修复后应一并恢复可观测）。
+3. 存量：`test_lift_jump` 2 fail、`test_cap_hard` ENOENT（与本次无关）。
+
+## 五、验收断言（重启后首轮反传 —— 本轮应验 1、2 项）
+- **A（核心）**：`semantic_backward{status:"ok"|"done"}` 且 `nodesUpdated>0`（十轮以来首次）；`highentropy_function_persisted ≥ 1`；`semantic_backward_extract_failed` **归零**（若仍出现，看 candErrs 是否为新 stage 病灶）。
+- **B（隔离）**：`_last_state.{guard,sender,worker}.json` 三文件齐备且共享文件继续冻结；`pairing_judge_done.matchIdx ≥ 0`。
+- **C（素材）**：`semantic_backward.hasHighEntropy=true`（需先修第三节 `isTemporalSummary`，否则必然仍为 false）。
+- **D（前向/归因）**：`context_user_message_injected ≥ 1`（本轮 8 ✅）；零成交轮记 `flat/unattributed`，禁止按 ±10 归因网络。
+
+---
+
+
 # ✦ 最近更新（2026-09-15 15:50）：n8 第十轮 —— 反传失败可归因（九轮误判终止）+ 三件套状态隔离（配对错乱根因）
 
 > 触发：guard n8 本轮验收（sender 2 次推进：空仓 -2 / 限价越界未成交 -2，账户 ¥102,493 不变）+ 用户质询「为什么反传、任务轨迹记录配对都做不对」。

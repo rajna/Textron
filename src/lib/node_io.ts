@@ -204,6 +204,19 @@ export function isNgramFragmentContent(content: string): boolean {
   return false;
 }
 
+/** 节点「名」判据（与 content 判据分离）。
+ *  2026-09-15 n8 第十二轮 guard 实证：normalize() 对 node_updates/add_nodes 的 name 也套用了
+ *  isNgramFragmentContent —— 而它的第一条判据是「< 18 字符 = 碎片」。中文节点名按 prompt 约定只有
+ *  3~6 个关键词（实测典型 11~17 字），于是**合法中文名被稳定误判为 ngram 碎片**，整条更新
+ *  `if (content && name && ...)` 静默丢弃（parsedNodeUpdateKeys=[]）。
+ *  名与内容的职责不同：内容需防机器碎片，名字本就是关键词拼贴，只应拒「纯 ASCII/标点拼贴」。
+ */
+export function isNgramFragmentName(name: string): boolean {
+  const s = String(name || "").replace(/\s+/g, " ").trim();
+  if (!s) return true;
+  return /^[a-zA-Z0-9_\-\s\|\.\,\;\:\!\?\+\-\*\/\=\(\)\[\]\{\}\<\>\@\#\$\%\^\&]{4,80}$/.test(s) && s.length < 45;
+}
+
 export function contextSimilarity(a: string, b: string): number {
   const ta = new Set(String(a || "").toLowerCase().split(/\s+/).filter(w => w.length > 1));
   const tb = new Set(String(b || "").toLowerCase().split(/\s+/).filter(w => w.length > 1));

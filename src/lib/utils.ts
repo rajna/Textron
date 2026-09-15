@@ -26,6 +26,12 @@ export function clamp(v: number, min: number, max: number): number { return Math
 
 export function completeContent(text: string, maxLen: number): string {
   const s = String(text || "").replace(/\s+/g, " ").trim();
+  // 2026-09-15 n8 第十二轮 guard 实证（写入路径全断的真因）：maxLen<=0 的语义是「不限制」
+  // （见 content_limits.ts: "0 = 不限制" / applyContentLimit），但本函数旧实现把它当作截断上限
+  // 0 ⇒ 任何非空 content 走到这里都返回 "" ⇒ 反传 LLM 的 node_updates/add_nodes 全部被
+  // normalize() 的 `if (content && name)` 静默丢弃（parsedNodeUpdateKeys=[]、nodesUpdated=0）。
+  // 实证：4d9de9b(00:40 起 NODE_CONTENT_MAX_CHARS=0) 之后 2/2 条 raw 全丢，之前 800/954 条被接受。
+  if (!maxLen || maxLen <= 0) return s;
   if (s.length <= maxLen) return s;
   const cut = s.lastIndexOf(" ", maxLen);
   return cut > maxLen * 0.6 ? s.slice(0, cut) : s.slice(0, maxLen);

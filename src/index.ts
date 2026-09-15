@@ -46,7 +46,7 @@ import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInst
 import { lastUserMessageText, rebuildToolsFromMessages, rebuildThinkingFromMessages } from "./lib/round_snapshot";
 import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNodeFunction, writeNodeFunction,
          validateKnowledgeCrystal, intraLayerOrthogonalityCheck,
-         isNgramFragmentContent, contextSimilarity, prepareContextLine } from "./lib/node_io";
+         isNgramFragmentContent, isNgramFragmentName, contextSimilarity, prepareContextLine } from "./lib/node_io";
 import { normalizeMergeFragment, mergeDistinctContentFragments,
          mergeNodeContent, mergeContent } from "./lib/merge";
 import { tfidfTokens, buildTfidfIndex, cosineSim, tfidfSimilarity, stripFunctionBlocks,
@@ -1902,7 +1902,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             const name = completeContent(String(vv.name || compressNodeName(content)).trim(), 64);
             const drop = String(vv.drop || "").trim();
             if (drop) onLog(`Textron fusion: ${k} drop(证伪)=${drop.slice(0, 200)}`);
-            if (content && name && !isNgramFragmentContent(content) && !isNgramFragmentContent(name)) out.node_updates[k] = { name, content };
+            if (content && name && !isNgramFragmentContent(content) && !isNgramFragmentName(name)) out.node_updates[k] = { name, content };
           }
         }
       }
@@ -1913,7 +1913,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           const content = completeContent(String(n?.content || n?.context || n?.name || "").trim(), NODE_CONTENT_MAX_CHARS);
           const name = completeContent(String(n?.name || compressNodeName(content)).trim(), 64);
           // 容量约束(2026-09-14): layer 必须是现有层；新建层逃生口已移除（rule 9 硬约束）
-          if (Number.isInteger(layer) && layer >= 0 && layer < net.hyperparams.layers.length && content && name && !isNgramFragmentContent(content) && !isNgramFragmentContent(name)) out.add_nodes.push({ layer, name, content });
+          if (Number.isInteger(layer) && layer >= 0 && layer < net.hyperparams.layers.length && content && name && !isNgramFragmentContent(content) && !isNgramFragmentName(name)) out.add_nodes.push({ layer, name, content });
         }
       }
       if (Array.isArray(obj?.node_actions)) {

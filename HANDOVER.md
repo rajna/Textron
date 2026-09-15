@@ -6,6 +6,71 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 19:40）：n8 **第十三轮** —— 反传首次真正打通（`nodesMerged=1` / Function 多槽共存 / 拒写生效）；本轮修 **merge 造双胞胎副本**（`00dc022`）+ **任务原文不落盘致反传「任务侧」退化为 HE 摘要**（`7b6862b`）；另提交上一轮遗留的轨迹全量未提交工作（`0405809`）
+
+> 触发：guard n8 第十三轮（三件套 19:33:08~13 重启 ⇒ 首次运行期加载 `2f8344e`+`7987145`；`src/index.ts` mtime 17:55 < 19:33 ⇒ 未提交的轨迹全量改动亦被本轮 bundle 覆盖）。sender 完成 1 次推进：**持有 sz.301299**、`step_index 66→67`、`tradeQuantity=0`（零成交，flat/unattributed）、分数 -2。
+> 状态：✅ `0405809`（轨迹全量，运行期已验证）、`00dc022`（merge 溢出判据）、`7b6862b`（任务原文持久化）。**后两者需 n9 重启生效**。
+
+## 一、验收：第十二轮待验证改动 —— 全部生效（本轮窗口 = `_events.jsonl` 第 93475 行之后，11:30:52Z+）
+
+| 上轮改动 | 判据 | 本轮实测 | 结论 |
+|---|---|---|---|
+| `2f8344e` ①`completeContent(maxLen<=0)` 原样返回 | `node_updates` 不再静默丢弃 | `semantic_backward_apply` 两次：`nodesUpdated=1`、`nodesAdded=2`、`nodesMerged=1`；无 `parsedNodeUpdateKeys=[]` 空转 | ✅ **十二轮以来首次真正写入** |
+| `2f8344e` ②`isNgramFragmentName`（中文名不再误杀） | 中文节点名落盘 | 新节点名 `缺口下沿遇阻即减仓·反抽日成交量逐日递减·…`（19 字中文）、L1 节点名 `缩量反抽量能递减·缺口下沿压制·弱修复判据` | ✅ |
+| `7987145` 删 `no_domain_evidence` 预闸门 | 反传不再被静默跳过 | `semantic_backward_skipped_no_domain_evidence` **0** 次；`semantic_backward_entered`×2 → `semantic_backward_llm_start`×2 → `_llm_raw_response`×2 → `_done{status:"ok"}`×2；`_extract_failed`=0、`llm_attempt_failed`=0、`backward_failed`=0 | ✅ |
+| 十一轮遗留 `isTemporalSummary` 误杀 | `highentropy_missing_at_agent_end` 归零 | 全窗口仅 1 次且 `hasTag:false`（=该回合确实无 HE tag，非误杀）；交易回合 `hasHighEntropy=true` | ✅ |
+
+### 第十二轮「五、验收断言 A/B/C/D」逐条
+| 断言 | 结果 | 证据（字面） |
+|---|---|---|
+| **A** 反传 ok/done 且 `nodesUpdated>0`、`highentropy_function_persisted≥1`、`extract_failed=0` | ✅ | `runId 1789472077822-fz5u8k` reward=0.3 / `1789472106036-m61x9a` reward=-0.3，均 `status:"done"`；`highentropy_function_persisted{nodeId:"L0::node_0", symbol:"breakdown_shrink_rebound_sizer", codeChars:1197}`；`extract_failed=0` |
+| **B** 三件套状态隔离 + 共享文件冻结 + `matchIdx≥0` | ✅ | `_last_state.{guard,sender,worker}.json` mtime 19:33:59 / 19:35:18 / 19:35:06；共享 `_last_state.json` mtime **19:30:53 全程冻结**；`pairing_judge_done.matchIdx` = 3 / 5(isFeedback) / 0(isFeedback) / 0(isFeedback)，`pendingCount` 4~6 |
+| **C** `semantic_backward.hasHighEntropy=true` | ✅ | 两次反传 `hasHighEntropy:true`；`highentropy_captured` 4 次（1370c/1621c/1517c/1602c） |
+| **D** `context_user_message_injected≥1` + 零成交轮记 flat | ✅ | 5×`context_user_message_injected`、`before_agent_start_done.contextCount` = 1/2；本轮零成交（`tradeQuantity=0`、持仓未变、总资产 102343 变动全属市价）——网络侧未按 ±10 归因 |
+
+## 二、本轮运行期首次出现的「正向事实」（供下一轮对照，勿再当缺陷修）
+
+1. **`nodesMerged=1` 首次非零**（两次反传各 1）：`nodeMutations` 出现 `{type:"merge", source:"L0::node_1", target:"L0::node_0", host:"L0::node_0"}` —— 第五轮定位的 `liftMergeNodes` 前置 `empty_content` 阻塞（目标空壳）已不再命中（本轮目标有内容 5268c）。
+2. **function 块多槽共存 + 稳态存活**：`layer_0/node_0.html` = `turn_based_step_driver`(1202) + `breakdown_shrink_rebound_sizer`(1199)；`layer_0/node_1.html` = `verify_agent_state_isolation`(1191) + `serve_raw_trajectory_page`(911)。**全网闭合真块 4 个**（第五轮时仅 1 个脏块、第四轮时 0 个）⇒ 单槽覆盖（P2）与块蒸发（N8）根治。
+3. **写入前置比较（拒写）首次命中**：`node_write_refused_keep_better{id:"L0::node_0", scoreOld:0.0524, scoreNew:0.0346, oldChars:5268, newChars:803}` ⇒ 好知识被保护，反传只能「原地改写」的旧通道确实关上了。
+4. **`_node_history/` 版本化持续可用**：`node_1.20260915T113445.html`(2738B/9c) 精确捕获「merge 清空源」瞬间，是本轮双胞胎真因的关键证据（= 先清空源，再把同一份 `mergedRaw` 写回该槽）。
+5. **轨迹全量（`0405809`，运行期已验证）**：`userPromptChars` 1102/4649/335/983 全量、`userPromptTruncated=false`；`answerChars` 2204/2194/1756/2592；`highEntropy` 载荷本体（name/task/technique/functionBlock）4 行齐备；`respondsTo` 配对链 `mu2lhlld → mu2lgzu0`（任务→反馈可 join）；`matchedTaskTs/matchedTaskType/matchedTaskHEChars` 记录配对依据；`tools` 外层 `slice(0,2400)` 已去（实测 6942c、`[object Object]` 计数 **0**）；`/raw` 页 8766/8767/8768 均 200。
+
+## 三、本轮根因与修复（两项，各自独立可断言）
+
+### R1（已修 `00dc022`）：merge「溢出判据」在『写入不限制』下退化为『非空即溢出』⇒ 每次 merge 复制一份宿主副本
+`NODE_CONTENT_MAX_CHARS=0` 的语义是**写入不限制**（`content_limits.ts` / `applyContentLimit` / `completeContent` 三处一致），但 `src/lib/lift_merge.ts` 内联判据
+`mergedRaw.length > NODE_CONTENT_MAX_CHARS` 在 limit=0 时退化为 `length > 0` ⇒ 「内容非空」= 「溢出」⇒ 立即 `allocSlot(hostLayer)`（**merge 自己刚腾出的空壳**）把宿主合并结果**全量复制**成伴随节点。
+- 产物证据：`layer_0/node_0.html` 与 `node_1.html` 正文**逐字相同**（809c 同文，MD5 仅因 function 块不同）；`_node_history/node_1.20260915T113445.html` 内容 9c（clear 后、overflow 写入前）。
+- 结构性后果：同层 Jaccard=1.0（`intraLayerOrthogonalityCheck` 形同虚设）、前向 topK 注入重复内容、L0 满容（`layerCaps[0]=2`）后 `add_nodes(L0)` 一律 `over_cap`；**「抽象融合」每成功一次就往网络里灌一份自己的副本** —— 这正是 n8 第⑤项「节点趋于噪音」的直接机制。
+- 修复：判据收敛为单一事实来源 `overflowContent(mergedRaw, limit)`（无上限⇒无溢出；有上限⇒只返回超出部分）+ 同文防御不变式（伴随节点 == 宿主 ⇒ 拒写 + 日志 `overflow suppressed`）。
+- 验证：`jiti test_lift_overflow_dup.ts` **15/15**（四模式真值表 limit=0/-1/未超限/超限、端到端双胞胎断言、旧判据对照、源码静态断言）；回归 `test_lift_merge 42/42`、`test_lift_jump 18/18`、`test_fn_block_survival 9/9`；tsc 22→20 零新增。
+- **注意**：磁盘上已存在的双胞胎节点**不得手工清理**（硬性约束 2）；由后续 merge/compact 自然归并。
+
+### R2（已修 `7b6862b`）：任务栈落盘丢 `rawUserPrompt` ⇒ 反传「任务侧」重启后永久退化为 HE 摘要
+`toPersist` 只写 taskType/taskFamily/highEntropy/activatedIds/ts/processLog，恢复侧（`index.ts` L3347/L3359）又把 `rawUserPrompt` 硬编码 `""` ⇒ 重启后**每条回溯任务丢失真实提问**；`buildBackwardTaskContext` 因 `rawPrompt=""` 且 `isPlaceholderRetryPrompt("")=true` 走 `learningFromHighEntropy` 分支，`previousTaskForBackward` 退化为 `[HighEntropy Task] ${HE}`（`learningPromptSource="high_entropy"`）。
+- 量化证据：`_last_state.worker.json` 5 条栈项 `rawUserPrompt` 全缺；两次反传 `previousTaskChars=1141/5340` 全为 HE(431c/1621c)+过程日志，任务原文 **0c**；`rationale` 泛化（"用户按策略回执正常推进"）——属「上游输入被事后总结替代」，违背「reward=上游反馈的量化、HE=事后总结」不变式。
+- 修复：`src/lifecycle_context.ts` 新增落盘/恢复**单一事实来源** `serializeTaskForState` / `restoreTaskPrompt`（原文上限 `TASK_RAW_PROMPT_PERSIST_CAP=4000`，超限显式 `rawUserPromptTruncated + rawUserPromptChars`，禁静默 slice；旧档无字段⇒空串不抛）；`index.ts` 落盘/恢复两处改走该对函数；新增可观测 `task_prompt_restored`、`task_stack_persisted.rawPromptCount`、`semantic_backward_entered.learningPromptSource/rawPromptChars/matchedPromptChars`。
+- 验证：`jiti test_task_persist_roundtrip.ts` **15/15**；`jiti LOAD_OK`；tsc 22→20（顺带消除 2 条既有 `TS2339 processLog`）零新增。
+
+## 四、本轮新发现（未修，按杠杆排序 —— 下一轮只挑一项）
+
+1. **`agent_end_backward_skipped{reason:"no_pending_match"}` 3 次、其中 `hasHighEntropy=true` 2 次** ⇒ 本轮自产高熵包（1370c/1602c/2592c）直接丢弃，约 **2/4 LLM 杠杆空转**（第三轮起的老问题，仍未修）。判定：pending 匹配失败时**应把该回合自身 task/answer 入栈或补一次 self-backward**，而非丢弃；但**不得让 HE 驱动 reward**（沿用「reward=上游反馈量化」不变式），self-backward 须显式标 `reward=null/unattributed`。
+2. **轨迹工具侧仍被 slice（②未完全达标）**：`rebuildToolsFromMessages` 单条 **input 180c / output 640c**、`maxEntries=24`（超出 `tools.shift()` 静默丢最旧）、`rebuildThinkingFromMessages maxChars=1400`、轨迹行 `thinking.slice(0,8000)`。本轮 `/api/step` 的 `trade_result/portfolio` 只能以 640c 摘要进轨迹 ⇒ 「报价 vs 成交价、`success:false`、越界」这类执行层证据不可复核（第五轮归因纪律正需要它）。修法：按 `RAW_CAP + truncated` 约定改为全量 + 显式标记（与 `0405809` 的 userPrompt/answer 同构）。
+3. **`agent_end` 事件无 writer pid / extension 源 hash**：多进程共享 `_events.jsonl` 与网络目录时，无法区分「未重启旧进程的写入」与本轮回归（第十轮已因此吃过口径污染）。建议在 `hook/trace` 事件统一附带 `pid` 与 `md5(src/index.ts)`。
+4. **工程域元知识仍在 stock_alpha 网络中**：`layer_0/node_0.html` 正文里保留 `571205a(~16:0x) ⇒ 本轮可验收（判据 nodesUpdated>0 / highentropy_function_persisted≥1…`（guard 会话 HE 被吸收），且该句在合并处被**字符级截断**（`量237万 571205a(` 直接相连）；`layer_0/node_1` 在 19:34 前整块是 `异步调度指令的「过期判定」三步法`（工程语料）。⇒ default/guard 会话仍是 `stock_alpha` 的污染源，且 **merge 拼接无句界保护**（有内容被截断/首尾互吃）。
+5. **`<`/`>` 在写入链路中可能被吞**：node_0 正文 `all(b=gap_lower*0.97`、`broke_prior_low=price=gap_lower*0.97` 反复重复，疑为代码中的 `<`/`>` 比较符被某处 HTML 化处理剥离（待下一轮用 `_node_history` 对照原始 raw 判定）。
+6. 存量：`goal_guard` 候选池仍为声明槽位驱动（`layerCaps`/`layers` 与磁盘 L2/L3 空壳漂移：`layers=[2,2,0,0]` 而磁盘存在 `layer_2/node_0|1`、`layer_3/node_0`）；`usedEffectivePrompt` 恒 `false`；P3 引用悬空仍在（node_0 挂 `[fn:serve_raw_trajectory_page]`，块在 node_1；node_1 挂 `[fn:turn_based_step_driver]`，块在 node_0 —— 4 引用中 2 悬空）。
+
+## 五、验收断言（n9 重启三件套后首轮；R1/R2 各一条独立信号，可单变量归因）
+
+- **R1（merge 不再造副本）**：任一 `semantic_backward_apply.nodesMerged≥1` 之后，`layer_0/node_{host}.html` 与同层其他节点正文**不逐字相同**；`overflow suppressed` 日志仅在旧代码场景出现。
+- **R2（任务侧素材）**：`semantic_backward_entered.learningPromptSource == "raw_prompt"` 且 `rawPromptChars > 0`（修复前恒 `high_entropy`/0）；`task_prompt_restored.rawPromptRestored ≥ 1`；`previousTaskChars` 应显著上升（HE + 任务原文而非仅 HE）。
+- **A′**：`semantic_backward{status:"done"}` 且 `nodesUpdated>0`；`highentropy_function_persisted≥1`；`extract_failed=0`。
+- **B′**：`_last_state.json`（共享）mtime 继续冻结；`pairing_judge_done.matchIdx≥0` 且 `isFeedback=true`。
+- **D′**：`context_user_message_injected≥1`；零成交轮一律 `flat/unattributed`，禁按 ±10 归因。
+- 若 R1 未生效而 R2 生效（或反之），各自断言可独立读出 ⇒ 归因不成问题；**禁止同时再叠加第三处改动**。
+
 # ✦ 最近更新（2026-09-15 16:35）：n8 第十二轮 —— **反传「写入路径」全断真因 = `completeContent(0)==""` + 节点名被内容判据误杀**（已修 `2f8344e`）；重启后 `rawUserPrompt` 丢失导致反传被 `no_domain_evidence` 静默跳过（未修）
 
 > 触发：guard n8 第十二轮（三件套 16:16:34~41 重启 ⇒ 首次运行期加载 `571205a`+`eab4b87`+`aafad84`+`85b03f7`）。sender 第 1/2 次推进 step 61→62→63，均「不建仓继续观察」，零成交 ¥102,493（flat/unattributed）。
@@ -559,6 +624,13 @@ tool_result/thinking → currentTurnTools/Thinking 缓冲
 | 8 | sender 输出结构化 `trade_feedback`（统一 -5..5 与 10/-10/-2 语义）+ 等复盘事件再触发 backward | ⏳ |
 | 9 | **`/reload` 后验证 tool_result 通道修复**：跑一轮交易 → 断言任务 processLog 含 `[exec]` 条目(带 trade_result 摘要)、pairing judge 任务列表带 recent 上下文且 matchIdx≥0、backward reward≠0；轨迹页可见 💭思考/🔧工具链 section | ⏳ src 已改未 reload |
 | 10 | **`/reload` 后验证 content 结构化提取修复**：任意 turn 的 tools 字段含真实工具输出文本(trade_result/portfolio JSON)而非 `[object Object]`；可用 grep 轨迹 tools 字段计数 `[object Object]` 归零断言 | ⏳ src 已改未 reload |
+| 11 | **R1 运行期验收**（`00dc022`）：merge 后同层不得出现与宿主逐字相同的副本节点；`_node_history` 可见「clear→(无 overflow)」序列 | ⏳ 待 n9 重启 |
+| 12 | **R2 运行期验收**（`7b6862b`）：`semantic_backward_entered.learningPromptSource=="raw_prompt"` 且 `rawPromptChars>0`、`task_prompt_restored.rawPromptRestored≥1` | ⏳ 待 n9 重启 |
+| 13 | **`no_pending_match` 丢 HE**（本轮 3 次，其中 HE≠空 2 次）：pending 无匹配时应入栈/补 self-backward（reward 须标 `unattributed`，禁由 HE 驱动 reward） | ⏳ 未修（最高杠杆） |
+| 14 | **轨迹工具侧仍 slice**：`rebuildToolsFromMessages` input 180c / output 640c / `maxEntries=24` shift；`thinking` 1400c / 8000c。改 `RAW_CAP + truncated` 同构 | ⏳ 未修 |
+| 15 | **事件缺 writer pid / extension md5**：多进程共享 `_events.jsonl` 时无法区分未重启旧进程写入（第十轮口径污染） | ⏳ 未修 |
+| 16 | **工程语料污染 stock_alpha**：`layer_0/node_0` 正文残留 guard 会话 HE（`571205a(~16:0x)…`）且 merge 拼接无句界保护（半句截断/首尾互吃） | ⏳ 未修 |
+| 17 | **`<`/`>` 疑被吞**：node_0 正文 `all(b=gap_lower*0.97` / `broke_prior_low=price=…` 反复重复，待与 `_node_history` 原始 raw 对照判定 | ⏳ 待证 |
 
 ---
 

@@ -38,15 +38,15 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n6 (prompt)
 
-1. 通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成1次交易推进」，不要指定股票和日期 简单通知就完成任务了。
+1. default-> guard:通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成1次交易推进」，不要指定股票和日期 简单通知就完成任务了。
 2. 验证：sender 调 GET http://127.0.0.1:7860/api/health 确认 UI 服务在线；
 3. 执行：sender 调 POST http://127.0.0.1:7860/api/enter进入交易游戏4. 取：sender 调 GET http://127.0.0.1:7860/api/prompt?session_id={session_id}，取 data.prompt 决策提示词(含当前价/涨跌幅/持仓组合)
 5. 发：sender 调 coms_send 把 data.prompt 发至 worker
-6. 执行：worker 依据 prompt 产出决策 JSON {decision∈买入·卖出·持有·不建仓继续观察·不建仓更换股票, tradePrice, tradeQuantity, confidence∈高·中·低, reasoning}；worker 做决策时不能用任何手段获取后续股票数据
+6. 执行：worker 依据 prompt 产出决策 JSON {decision∈买入·卖出·持有·不建仓继续观察·不建仓更换股票, tradePrice, tradeQuantity, confidence∈高·中·低, reasoning}；worker 做决策时不能用任何手段获取后续股票数据，可以使用的工具：/Users/rama/textron-agent/workflows/trade.py
 7. 发：worker 调 coms_send 把决策 JSON 发回 sender
 8. 执行：sender 调 POST http://127.0.0.1:7860/api/step，body {session_id,decision,tradePrice,tradeQuantity,confidence}，取返回 step.trade_result 与 step.portfolio(总资产/浮盈亏/收益率)
 9. 反馈：sender根据交易返回状态给worker 打分 账户盈利10分，亏损-10，不亏不赚-2，输出格式：<反馈>：上次交易分数{具体分数}，和账户情况，简要说明分数原因 100字，发给worker 复盘
-10. 复盘：worker 依据盈亏反馈复盘反思，反思结束 调 coms_send 通知 sender 
+10. 复盘：worker 依据盈亏反馈复盘反思，把反思内容和/Users/rama/textron-agent/workflows/trade.py中的交易策略,进行元分析，形成更抽象 更凝练，更成熟，更风报比高的交易策略，然后更新trade.py的函数体，保证输入输出不变即可反思结束 调 coms_send 通知 sender 
 11. 判定：sender 计数 /api/step 执行次数，未满1次 则回第4步；满1次则下一步(注意这里的次数是从0开始计数，不是看 stock trade里step数，stock trade里step数因为有存档 可能已经发生很多步了)
 
 ### n7 (end)

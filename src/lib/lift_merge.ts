@@ -59,6 +59,25 @@ export function liftMergeResultLayer(srcLayer: number, tgtLayer: number): number
   return Math.min(srcLayer, tgtLayer);                            // 异层取抽象 + L0 封顶
 }
 
+/**
+ * 溢出片段计算（单一事实来源：test_lift_overflow_dup 直接断言本函数在 limit=0 / limit>0 两种模式）。
+ *
+ * 2026-09-15 n8 第十三轮 guard 实证（"merge 造双胞胎节点"真因）：
+ * `NODE_CONTENT_MAX_CHARS <= 0` 是**写入不限制**语义（content_limits.ts 三处一致），
+ * 而旧内联判据 `mergedRaw.length > NODE_CONTENT_MAX_CHARS` 在 limit=0 时退化为
+ * `length > 0`，即「内容非空」= 「溢出」⇒ **每次 merge 都把宿主内容全量复制一份到伴随节点**。
+ * 实测产物：L0::node_0 与 L0::node_1 正文逐字相同（809c 同文，MD5 仅因 function 块不同），
+ * 同层 Jaccard=1.0，前向 topK 注入重复内容，L0 满容（layerCaps[0]=2）后 add 一律 over_cap。
+ * 即「抽象融合」每成功一次就往网络里灌一份自己的副本（n8 第⑤项：趋于噪音的直接机制）。
+ * 正确语义：写入无上限 ⇒ 永不溢出；有上限 ⇒ 只返回超出部分。
+ */
+export function overflowContent(mergedRaw: string, limit: number = NODE_CONTENT_MAX_CHARS): string {
+  const s = String(mergedRaw || "");
+  if (!limit || limit <= 0) return "";   // 不限制 = 无溢出（不是「非空即溢出」）
+  if (s.length <= limit) return "";
+  return completeContent(s.slice(limit), limit);
+}
+
 function nodePath(netPath: string, layer: number, nodeId: string): string {
   return path.join(netPath, `layer_${layer}`, `${nodeId}.html`);
 }
@@ -144,8 +163,14 @@ export function liftMergeNodes(
 
   // 溢出 >1000c: 落伴随节点(同结果层)。硬闸(2026-09-14): 槽位分配延后到源节点清空之后 —
   // merge 自身腾出的空壳优先复用; 仍无空壳且层满 → 溢出截断, 宁截断不超容。
-  let overflowNodeId: string | null = null;
-  const overflowRaw = mergedRaw.length > NODE_CONTENT_MAX_CHARS ? completeContent(mergedRaw.slice(NODE_CONTENT_MAX_CHARS), NODE_CONTENT_MAX_CHARS) : "";
+  //
+  // 溢出片段：判据收敛到 overflowContent（单一事实来源，真因见该函数注释）。
+  // 防御不变式：伴随节点绝不得与宿主同文（任何未来路径再把"非空"误判为"溢出"都会被在此拦下）。
+  let overflowRaw = overflowContent(mergedRaw);
+  if (overflowRaw.trim() && overflowRaw.trim() === merged.trim()) {
+    log(`Textron lift-merge: overflow suppressed (identical to host content, ${overflowRaw.length}c)`);
+    overflowRaw = "";
+  }
 
   // ── 写宿主内容(边稍后由 materialize + commitNodeHtmlEdges 统一重建) ──
   const hostPath = nodePath(net.path, hostLayerActual, hostId);
@@ -207,6 +232,7 @@ export function liftMergeNodes(
   }
 
   // ── 溢出伴随节点(槽位分配在源清空后: 优先复用 merge 腾出的空壳; 硬闸下宁截断不超容) ──
+  let overflowNodeId: string | null = null;
   if (overflowRaw.trim()) {
     const slot = allocSlot(net, hostLayerActual);
     if (slot) {

@@ -260,6 +260,7 @@ export default function (pi: ExtensionAPI) {
   let taskStack: TaskEntry[] = [];  // FIFO, max MAX_TASK_STACK
   let lastBackwardState: Record<string, unknown> | null = null;
   let _backwardPendingMatch: TaskEntry | null = null;  // backward deferred to agent_end
+  let _lastTurnId: string | null = null;   // 轨迹配对链：上一轮 turnId（任务→行动→反馈）
   let _backwardPendingCtx: any = null;
   // 2026-08-19: 异步 backward 串行队列 —— 防并发写网络文件(节点/边/权重)
   let _backwardChain: Promise<void> = Promise.resolve();
@@ -1021,6 +1022,13 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    // 轨迹原文全量页 — 原封不动显示所有对话内容(不截断/不加工), 供事后人工筛选轨迹块
+    if (urlPath === "/raw") {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(getRawHTML());
+      return;
+    }
+
     // Serve live monitor HTML
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
     res.end(getMonitorHTML());
@@ -1155,6 +1163,17 @@ export default function (pi: ExtensionAPI) {
       return fs.readFileSync(trajPath, "utf-8");
     } catch {
       return "<h1>Textron Trajectory</h1><p>trajectory.html not found</p>";
+    }
+  }
+
+  // 轨迹原文全量页(/raw): 复用 /api/trajectories 分页, 前端 textContent 原封不动渲染全部字段
+  function getRawHTML(): string {
+    try {
+      const realDir = fs.realpathSync(__dirname);
+      const rawPath = path.join(realDir, "raw.html");
+      return fs.readFileSync(rawPath, "utf-8");
+    } catch {
+      return "<h1>Textron Raw</h1><p>raw.html not found</p>";
     }
   }
 
@@ -4040,18 +4059,58 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       const visibleText = (value: unknown) => String(value || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
       const trajectoryAnswer = visibleText(finalAssistantText) ? finalAssistantText : currentAssistantBuffer;
       if (visibleText(trajectoryAnswer) || roundUserPrompt) {
+        // ── 2026-09-15：轨迹行改为「原文完整 + 显式配对 + 学到内容本体」──
+        // 原实现：userPrompt 截 4000c / answer 截 8000c（静默）、HighEntropy 只存一个布尔
+        // ⇒ 事后无法复核、无法手动重放、无法证明「学到了什么」。
+        // 现约定：①原文不静默截断（超 RAW_CAP 才截且置 truncated 标记）②respondsTo 形成
+        // 任务→行动→反馈 的配对链（按 ts/turnId 序 join 即可取三元组）③highEntropy 存**载荷本体**。
+        const RAW_CAP = 60000;
+        const clip = (v: unknown) => {
+          const t = String(v || "");
+          return t.length > RAW_CAP ? { text: t.slice(0, RAW_CAP), truncated: true, chars: t.length } : { text: t, truncated: false, chars: t.length };
+        };
+        const rawUser = clip(roundUserPrompt);
+        const rawAnswer = clip(trajectoryAnswer);
+        let hePayload: Record<string, unknown> | undefined;
+        try {
+          const crystal = parseHighEntropyCrystal(currentAssistantHighEntropy ? `<HighEntropy>${currentAssistantHighEntropy}</HighEntropy>` : "");
+          const fnBlock = extractFunctionBlock(currentAssistantHighEntropy);
+          if (crystal?.ok || fnBlock) {
+            hePayload = {
+              name: crystal?.ok ? crystal.name : "",
+              taskType: crystal?.ok ? crystal.taskType : "",
+              isTask: crystal?.ok ? crystal.isTask : null,
+              task: crystal?.ok ? crystal.task : "",
+              technique: crystal?.ok ? crystal.technique : "",
+              functionBlock: fnBlock || "",
+              rawChars: String(currentAssistantHighEntropy || "").length,
+            };
+          }
+        } catch { /* 解析失败不影响落盘 */ }
         appendTrajectoryLine({
           kind: "turn",
           turnId,
           ts: new Date().toISOString(),
+          respondsTo: _lastTurnId || null,           // 配对链：上一轮 turnId（任务→行动→反馈 按序 join）
           taskFamily: currentTaskFamily || "",
-          userPrompt: String(roundUserPrompt || "").slice(0, 4000),
-          answer: String(trajectoryAnswer || "").slice(0, 8000),
-          hasHighEntropy: /<HighEntropy>/i.test(String(trajectoryAnswer || "")),
+          userPrompt: rawUser.text,
+          userPromptChars: rawUser.chars,
+          userPromptTruncated: rawUser.truncated,
+          answer: rawAnswer.text,
+          answerChars: rawAnswer.chars,
+          answerTruncated: rawAnswer.truncated,
+          hasHighEntropy: !!hePayload,
+          ...(hePayload ? { highEntropy: hePayload } : {}),
+          // hook 把哪条 pending 任务配成了本轮的「任务」（配对可追溯，不再只有结果没有依据）
+          matchedTaskTs: (_backwardPendingMatch as any)?.ts ?? null,
+          matchedTaskType: (_backwardPendingMatch as any)?.taskType ?? "",
+          matchedTaskFamily: (_backwardPendingMatch as any)?.taskFamily ?? "",
+          matchedTaskHEChars: String((_backwardPendingMatch as any)?.highEntropy || "").length,
           activatedIds: (currentActivatedIds || []).slice(0, 30),
           backward: { ran: false },
           ...(_lastL0Diag ? { forward_diag: _lastL0Diag } : {}),
         });
+        _lastTurnId = turnId;
       }
     } catch { /* 轨迹记录失败不影响主流程 */ }
     // 轨迹可视化: 提取思考链(thinking/reasoning)——DeepSeek harness 的"思考"步

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Textron Raw · 轨迹原文全量</title>
+<style>
+:root{
+  --bg:#1c2334;
+  --panel:rgba(13,18,32,.9);
+  --card:rgba(255,255,255,.045);
+  --card-hi:rgba(255,255,255,.09);
+  --border:rgba(255,255,255,.09);
+  --border-hi:rgba(255,255,255,.18);
+  --text:#f2f5fc;
+  --muted:#9aa6c4;
+  --faint:#68739a;
+  --lime:#d7f463;
+  --pink:#ff7eb6;
+  --yellow:#ffd166;
+  --blue:#8fb8ff;
+  --mint:#7ee2c3;
+  --red:#ff8a9d;
+  --mono:SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;font-family:var(--sans);color:var(--text);font-size:13px;background:var(--bg)}
+header{position:sticky;top:0;z-index:10;background:var(--panel);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+header h1{font-size:14px;margin:0 12px 0 0;color:var(--lime);white-space:nowrap}
+header select,header input,header button{
+  background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;
+  padding:5px 8px;font-size:12px;font-family:var(--sans);outline:none
+}
+header select:focus,header input:focus{border-color:var(--border-hi)}
+header input{width:180px;font-family:var(--mono)}
+header button{cursor:pointer}
+header button:hover{background:var(--card-hi)}
+header .stat{color:var(--muted);font-size:11px;margin-left:auto;font-family:var(--mono)}
+#list{padding:12px 16px 80px;max-width:1280px;margin:0 auto}
+.item{background:var(--card);border:1px solid var(--border);border-radius:10px;margin-bottom:12px;overflow:hidden}
+.item-hd{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.03);cursor:pointer;user-select:none}
+.item-hd .no{color:var(--faint);font-family:var(--mono);font-size:11px;min-width:34px}
+.item-hd .ts{color:var(--blue);font-family:var(--mono);font-size:11px}
+.item-hd .fam{color:var(--mint);font-size:11px;border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.item-hd .phase{color:var(--yellow);font-size:11px;border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.item-hd .kind{color:var(--violet,#c59bff);font-size:11px;border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.item-hd .tid{color:var(--faint);font-family:var(--mono);font-size:10px}
+.item-hd .flag{font-size:10px;border-radius:4px;padding:1px 6px;border:1px solid var(--border)}
+.flag.he{color:var(--lime)}
+.flag.trunc{color:var(--red)}
+.flag.bw{color:var(--pink)}
+.item-hd .copy{margin-left:auto;cursor:pointer;color:var(--muted);font-size:11px;border:1px solid var(--border);border-radius:5px;padding:2px 8px;background:transparent}
+.item-hd .copy:hover{color:var(--text);background:var(--card-hi)}
+.blk{border-bottom:1px solid var(--border)}
+.blk:last-child{border-bottom:none}
+.blk-hd{display:flex;align-items:center;gap:8px;padding:4px 10px;cursor:pointer;user-select:none;color:var(--muted);font-size:11px;font-family:var(--mono)}
+.blk-hd:hover{background:rgba(255,255,255,.03)}
+.blk-hd .caret{display:inline-block;transition:transform .12s}
+.blk.closed .caret{transform:rotate(-90deg)}
+.blk-hd .chars{color:var(--faint)}
+.blk-hd .bcopy{margin-left:auto;cursor:pointer;color:var(--faint);font-size:10px;border:1px solid var(--border);border-radius:4px;padding:1px 6px;background:transparent}
+.blk-hd .bcopy:hover{color:var(--text)}
+.blk pre{margin:0;padding:8px 12px 12px;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12px;line-height:1.55;color:var(--text)}
+.blk.closed pre{display:none}
+.blk.user pre{color:#eef3ff}
+.blk.answer pre{color:#fff}
+.blk.think pre{color:var(--muted)}
+.blk.tools pre{color:var(--amber,#ffbf73)}
+#more{display:block;margin:16px auto;padding:8px 24px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:13px}
+#more:hover{background:var(--card-hi)}
+#status{text-align:center;color:var(--faint);font-family:var(--mono);font-size:11px;padding:6px}
+#status.err{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Textron Raw · 轨迹原文</h1>
+  <select id="src"><option value="">主文件 _trajectories.jsonl</option></select>
+  <select id="fam"><option value="">全部 taskFamily</option></select>
+  <select id="kindSel">
+    <option value="turn">仅对话 (turn)</option>
+    <option value="">turn + backward</option>
+    <option value="backward">仅反传 (backward)</option>
+  </select>
+  <input id="q" placeholder="本地过滤关键词…">
+  <button id="expandAll">全部展开</button>
+  <button id="collapseAll">全部收起</button>
+  <button id="reload">重载</button>
+  <span class="stat" id="stat"></span>
+</header>
+<div id="list"></div>
+<button id="more" style="display:none">加载更早 ↓</button>
+<div id="status"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { page: 1, pageSize: 50, months: [], total: 0, loaded: 0, rows: [] };
+
+// ── 初始化数据源列表 ──
+async function initSources() {
+  try {
+    const r = await fetch("/api/trajectories?months=1");
+    const d = await r.json();
+    state.months = d.months || [];
+    for (const m of state.months) {
+      const o = document.createElement("option");
+      o.value = "archive:" + m;
+      o.textContent = "归档 " + m;
+      $("src").appendChild(o);
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
+// ── 拉取一页（原封不动，API 不截断） ──
+async function loadPage(reset) {
+  if (reset) { state.page = 1; state.loaded = 0; state.rows = []; $("list").innerHTML = ""; }
+  $("status").textContent = "加载中…"; $("status").className = "";
+  const src = $("src").value;
+  const arch = src.startsWith("archive:") ? "&archive=" + encodeURIComponent(src.slice(8)) : "";
+  const url = `/api/trajectories?page=${state.page}&pageSize=${state.pageSize}${arch}`;
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.ok && d.ok !== undefined) throw new Error(d.error || "api error");
+    state.total = d.total || 0;
+    state.loaded += (d.items || []).length;
+    state.rows.push(...(d.items || []));
+    renderRows(d.items || []);
+    $("more").style.display = state.loaded < state.total ? "block" : "none";
+    $("more").textContent = `加载更早 ↓ (${state.loaded}/${state.total})`;
+    $("status").textContent = "";
+    applyFilter();
+  } catch (e) {
+    $("status").textContent = "加载失败: " + (e.message || e);
+    $("status").className = "err";
+  }
+}
+
+// ── 渲染 ──
+const META = new Set(["ts", "turnId", "kind", "taskFamily"]);
+const LABEL = { userPrompt: "USER", answer: "AI 回答", thinking: "思考", tools: "工具链", highEntropy: "HighEntropy", systemPrompt: "System", nodeInput: "Backward 输入", parsed: "Backward 结果" };
+const OPEN = new Set(["userPrompt", "answer"]);   // 默认展开
+const ORDER = ["userPrompt", "answer", "thinking", "tools", "highEntropy", "systemPrompt", "nodeInput", "parsed"];
+
+function esc(s) { return String(s); }
+
+function renderRows(items) {
+  const frag = document.createDocumentFragment();
+  let no = state.rows.length - items.length;
+  for (const it of items) {
+    no++;
+    const div = document.createElement("div");
+    div.className = "item";
+    div.dataset.idx = no - 1;
+
+    // 头部
+    const hd = document.createElement("div");
+    hd.className = "item-hd";
+    const flags = [];
+    if (it.hasHighEntropy) flags.push('<span class="flag he">HE</span>');
+    if (it.userPromptTruncated || it.answerTruncated) flags.push('<span class="flag trunc">TRUNC</span>');
+    if (it.respondsTo) flags.push('<span class="flag">↩' + esc(it.respondsTo).slice(0, 10) + "</span>");
+    if (it.backward && it.backward.ran) flags.push('<span class="flag bw">bw:' + esc(it.backward.status || it.backward.reward ?? "") + "</span>");
+    hd.innerHTML =
+      '<span class="no">#' + no + '</span>' +
+      '<span class="ts">' + esc(it.ts || "") + '</span>' +
+      '<span class="kind">' + esc(it.kind || "?") + '</span>' +
+      '<span class="fam">' + esc(it.taskFamily || "-") + '</span>' +
+      (it.task_phase ? '<span class="phase">' + esc(it.task_phase) + "</span>" : "") +
+      flags.join("") +
+      '<span class="tid">' + esc(it.turnId || "") + '</span>' +
+      '<button class="copy">复制整条 JSON</button>';
+    hd.querySelector(".copy").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      copyText(JSON.stringify(it, null, 2), ev.target);
+    });
+    div.appendChild(hd);
+
+    // 字段块：按固定顺序 + 兜底遍历其余字段
+    const seen = new Set();
+    const fields = [];
+    for (const k of ORDER) if (it[k] !== undefined && it[k] !== null && it[k] !== "" && !META.has(k)) { fields.push(k); seen.add(k); }
+    for (const k of Object.keys(it)) if (!META.has(k) && !seen.has(k)) fields.push(k);
+    for (const k of fields) {
+      const v = it[k];
+      const text = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+      if (!text || !text.trim()) continue;
+      const blk = document.createElement("div");
+      blk.className = "blk " + cssClass(k) + (OPEN.has(k) ? "" : " closed");
+      const bhd = document.createElement("div");
+      bhd.className = "blk-hd";
+      bhd.innerHTML = '<span class="caret">▼</span><b>' + (LABEL[k] || k) + '</b><span class="chars">' + text.length + "c</span>" +
+        '<button class="bcopy">复制</button>';
+      const pre = document.createElement("pre");
+      pre.textContent = text;            // textContent = 原封不动
+      bhd.querySelector(".bcopy").addEventListener("click", (ev) => { ev.stopPropagation(); copyText(text, ev.target); });
+      bhd.addEventListener("click", () => blk.classList.toggle("closed"));
+      blk.appendChild(bhd); blk.appendChild(pre);
+      div.appendChild(blk);
+    }
+    hd.addEventListener("click", () => {
+      const close = div.querySelectorAll(".blk:not(.closed)").length > 0;
+      div.querySelectorAll(".blk").forEach((b) => b.classList.toggle("closed", close));
+    });
+    frag.appendChild(div);
+  }
+  $("list").appendChild(frag);
+  updateStat();
+}
+
+function cssClass(k) {
+  if (k === "userPrompt") return "user";
+  if (k === "answer") return "answer";
+  if (k === "thinking") return "think";
+  if (k === "tools") return "tools";
+  return "";
+}
+
+// ── 本地过滤（taskFamily / kind / 关键词） ──
+function applyFilter() {
+  const fam = $("fam").value;
+  const kind = $("kindSel").value;
+  const q = $("q").value.trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll("#list .item").forEach((el) => {
+    const it = state.rows[+el.dataset.idx];
+    if (!it) return;
+    let ok = true;
+    if (fam && it.taskFamily !== fam) ok = false;
+    if (kind && it.kind !== kind) ok = false;
+    if (q && ok) ok = JSON.stringify(it).toLowerCase().includes(q);
+    el.style.display = ok ? "" : "none";
+    if (ok) shown++;
+  });
+  updateStat(shown);
+}
+
+function updateStat(shown) {
+  const n = shown !== undefined ? shown : document.querySelectorAll('#list .item:not([style*="none"])').length;
+  $("stat").textContent = `显示 ${n} 条 / 已载 ${state.rows.length} / 总 ${state.total}`;
+}
+
+// ── 复制 ──
+function copyText(text, btn) {
+  const done = () => { if (btn) { const t = btn.textContent; btn.textContent = "已复制✓"; setTimeout(() => (btn.textContent = t), 900); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallback());
+  } else fallback();
+  function fallback() {
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch {}
+    document.body.removeChild(ta);
+  }
+}
+
+// ── 事件 ──
+$("more").addEventListener("click", () => { state.page++; loadPage(false); });
+$("reload").addEventListener("click", () => loadPage(true));
+$("src").addEventListener("change", () => loadPage(true));
+$("fam").addEventListener("change", applyFilter);
+$("kindSel").addEventListener("change", applyFilter);
+$("q").addEventListener("input", applyFilter);
+$("expandAll").addEventListener("click", () => document.querySelectorAll("#list .blk").forEach((b) => b.classList.remove("closed")));
+$("collapseAll").addEventListener("click", () => document.querySelectorAll("#list .blk").forEach((b) => b.classList.add("closed")));
+
+// 家族下拉：从已加载数据动态补
+const famSeen = new Set();
+const famObs = new MutationObserver(() => {
+  document.querySelectorAll("#list .fam").forEach((el) => {
+    const v = el.textContent;
+    if (v && v !== "-" && !famSeen.has(v)) {
+      famSeen.add(v);
+      const o = document.createElement("option"); o.value = v; o.textContent = v;
+      $("fam").appendChild(o);
+    }
+  });
+});
+famObs.observe($("list"), { childList: true, subtree: true });
+
+initSources().then(() => loadPage(true));
+</script>
+</body>
+</html>

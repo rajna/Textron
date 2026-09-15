@@ -38,7 +38,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n6 (prompt)
 
-1. 通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成2次交易推进」，不要指定股票和日期 简单通知就完成任务了。
+1. 通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成1次交易推进」，不要指定股票和日期 简单通知就完成任务了。
 2. 验证：sender 调 GET http://127.0.0.1:7860/api/health 确认 UI 服务在线；
 3. 执行：sender 调 POST http://127.0.0.1:7860/api/enter进入交易游戏4. 取：sender 调 GET http://127.0.0.1:7860/api/prompt?session_id={session_id}，取 data.prompt 决策提示词(含当前价/涨跌幅/持仓组合)
 5. 发：sender 调 coms_send 把 data.prompt 发至 worker
@@ -47,7 +47,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 8. 执行：sender 调 POST http://127.0.0.1:7860/api/step，body {session_id,decision,tradePrice,tradeQuantity,confidence}，取返回 step.trade_result 与 step.portfolio(总资产/浮盈亏/收益率)
 9. 反馈：sender根据交易返回状态给worker 打分 账户盈利10分，亏损-10，不亏不赚-2，输出格式：<反馈>：上次交易分数{具体分数}，和账户情况，简要说明分数原因 100字，发给worker 复盘
 10. 复盘：worker 依据盈亏反馈复盘反思，反思结束 调 coms_send 通知 sender 
-11. 判定：sender 计数 /api/step 执行次数，未满2次 则回第4步；满2次则下一步(注意这里的次数是从0开始计数，不是看 stock trade里step数，stock trade里step数因为有存档 可能已经发生很多步了)
+11. 判定：sender 计数 /api/step 执行次数，未满1次 则回第4步；满1次则下一步(注意这里的次数是从0开始计数，不是看 stock trade里step数，stock trade里step数因为有存档 可能已经发生很多步了)
 
 ### n7 (end)
 
@@ -55,7 +55,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n8 (prompt)
 
-sender coms通知guard完成所有交易推进次数，guard 接到通知后要做的：1 guard不用分析 交易情况，guard关注点是textron，2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 验证没效果可以回滚代码或 分析下面步骤后 一起修改代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用，信息不要被slice 前向注入 反馈奖励 ai反思的HighEntropy Function2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ，已有节点的抽象融合 比如l1的节点抽象融合进入l0等，融合的质量5 stock_alpha网络是否有提高账户收益了的趋势6 根据分析找出根本原因 1 错误发生在A方面，改进是否可以通过B方面， 2 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 提出最有潜力的一个改进 等用户qu er
+sender coms通知guard完成所有交易推进次数，guard 接到通知后要做的：1 guard不用分析 交易情况，guard关注点是textron，2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 真个系统变得更差了 要直接回滚代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用，信息不要被slice 前向注入节点信息2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ，已有节点的抽象融合 比如l1的节点抽象融合进入l0等，融合的质量6 根据分析找出根本原因 3 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 实施最有潜力的一个改进 ，改代码前先提交代码到git  修改代码 后 把改进写入textron agent 的交接文档
 
 ### n9 (prompt)
 

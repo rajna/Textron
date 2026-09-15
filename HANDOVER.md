@@ -6,71 +6,98 @@
 
 ---
 
-# ✦ 最近更新（2026-09-16 02:45）：n8 **第十六轮** —— `75847ed`（任务侧域闸）/ `b337ed3`（空包修复）首次运行期验收：**E4 ✅（`selected ⊆ context` 7/7，含重启后首轮 18:21:39Z）、轨迹侧保真 ✅（129 `tool_call` 恰 180c = 0）、反传链 ✅（5 entered→5 llm_done、跨层提升 1、真融合 1、拒写 5）**；但 **E1 ✗（窗口 0 次 `semantic_backward_off_domain`）、E2 ✗（工程域符号 `turn_based_step_driver` 写入 `L0::node_0` 并顶掉 `classify_reply_failure`）、E3 ✗（悬空 `[fn:σ]` 17→27）**。根因 **R6 = 反传「任务侧」取材错位**（配对命中 pending 池旧条目，其 `rawUserPrompt` 为空 ⇒ `high_entropy ∧ rawPromptChars=0`）；本轮实施 **任务侧原文补齐 `patchTaskRawPrompt`（`a121d67`）**。
+# ✦ 最近更新（2026-09-16 03:05）：n8 **第十七轮** —— **`75847ed`（任务侧域闸）按登记判据回滚**：`semantic_backward_off_domain` 连续三轮恒 **0**，且窗口内 12 次 `semantic_backward_llm_raw_response` 中 `off_domain` 字段出现率 **0/12** ⇒ 该闸**结构性不可触发**（判据维度错位：问「本轮任务是否属域」，而任务标签恒在域内）。本轮**删闸 + 把判据面迁到「`<Function>` 块的机制域」**（只 gate 两条程序化写入通道：Function 硬落盘 + HE fallback add），并实施函数侧域闸 `evaluateFunctionDomainGate`/`functionDomainGateRule`。
 
-> 触发：guard n8 第十六轮。三件套 02:21 重启 ⇒ 首次运行期加载 `75847ed` + `b337ed3`（`domain_gate.ts` 以实体文件 `cp` 到 `~/.pi/agent/extensions/textron/`；`index/lifecycle_context/highentropy/content_limits` 为符号链接，自动同步）。
-> 窗口 = `_events.jsonl` **L97063–L97477**（420 事件 / 7 propagate / 7 pairing / 5 反传 / 5 `task_pushed`）；基线 = 重启后首条 `hook` `18:21:02.841Z`。
-> n6 结果：sender 完成 **2/2**（自计 `/api/step` 从 0 起算），`session_id=4cf529337f29`、`active_stock=sz.301299`；① `卖出 300股 @55.35`（成交 55.71，总资产 103,485→103,593）② `持有 0股`（零成交；末值 ¥103,467 / +3.47%）；存档 `step_index` 70→**72**、`current_date=2025-04-25`；worker 两轮迭代 `trade.py` 540→636→664 行（`b215aa9`，ABI/枚举未变）。
-> 第十五轮一行摘要：实施 `75847ed`（新增 `src/domain_gate.ts` + `index.ts` 反传写入侧早退；语义边界＝**只禁内容面、不禁学习面**）+ 破例改共享层 `~/.pi/agent/extensions/local-coms.ts`（末条 assistant 无 `text` 块 ⇒ 静默空包；改为「仅非空时覆盖」+ `empty_assistant_text` 显式报错；备份 `.bak-emptyreply-20260915-222627`，回滚即 `cp` 回，**默认保留**）。其余遗留项本轮已逐条复核（见下表）。
+> 触发：guard n8 第十七轮。三件套 02:49 重启 ⇒ **首次运行期加载 `a121d67`**（第十六轮补丁）。
+> 窗口 = `_events.jsonl` **L97841–L98225**（384 事件 / 8 propagate / 6 `agent_end_task_pushed` / 6 反传 LLM / 5 `semantic_backward_entered` / 3 `highentropy_function_persisted` / 2 `fallback_add_candidate`）；基线 = 重启后首条 `before_agent_start` `18:48:13.177Z`。
+> n6 结果：sender 完成 **2/2**（自计 `/api/step` 从 0 起算）；① `买入 200股 @54.93`（D+1 04-28；总资产 103,467→102,922，单步 **−0.53%**）② `持有 0股`（−0.005%）；`session_id=4cf529337f29`、`active_stock=sz.301299`、`step_index` 70→**72**、`current_date=2025-04-25`；worker 两轮迭代 `trade.py` 664→**885 行**（`7412286`，ABI/枚举未变）；本轮 0 超时 / 0 空包。
+> 第十六轮一行摘要：实施 `a121d67`（`patchTaskRawPrompt` 取材回落 matched→active_task→current_round_prompt）；**本轮实测 `taskPromptPatch` 5/5 = `matched`、`taskPromptPatchedRawChars` 5/5 = 0** ⇒ 该分支**未被触发**（matched 自带原文）⇒ 症状消失但补丁路径仍未获运行期验证。
+> 第十五轮一行摘要：实施 `75847ed`（反传写入侧整轮早退；语义边界＝**只禁内容面、不禁学习面**）+ 破例改共享层 `local-coms.ts`（空包修复，备份 `.bak-emptyreply-20260915-222627`，**默认保留**）。
 
-## 一、第十五轮两项改动的运行期验收（逐条字面）
+## 一、第十六轮改动 + 登记判据的运行期验收（逐条字面）
 
-| 上轮改动 | 判据 | 本轮实测（字面） | 结论 |
+| 上轮改动 / 登记判据 | 判据 | 本轮实测（字面） | 结论 |
 |---|---|---|---|
-| `75847ed` 域闸触发（E1） | 窗口出现 `semantic_backward_off_domain`，同轮无 persisted/fallback_add | **0 次** off_domain 事件；同窗口 `highentropy_fallback_add_candidate` **4**、`highentropy_function_persisted` **5** ⇒ 域闸**从未触发**（非「触发后漏写」） | ❌ |
-| `75847ed` 域闸有效（E2） | 非交易 `taskType` 回合后不新增工程域 symbol | `多agent交易工作流编排`(18:21:54Z) / `A股交易推进编排`(18:35:55Z) 两回合后 `turn_based_step_driver` 写入 `L0::node_0`（`fn_block_evicted` 顶掉 `classify_reply_failure`）；**磁盘闭合块 9 个中工程/编排域 6 个**（`archive_receipt_insights_once`/`assert_refactor_equivalence`/`audit_decision_enum_semantics`/`minimize_workflow_handoff_fix`/`turn_based_step_driver`/`guard_and_relay_trade_decision`），交易域仅 3（`daily_settle_exposure_gate`/`momentum_veto_pi_gate_decision`/`pi_star_gate_delta_decision`） | ❌ |
-| `b337ed3` 空包修复 | 无静默空包；n6 无 10 分钟超时 | 窗口 0 命中 `empty_assistant_text`；n6 全程无超时重发 | ✅ |
-| `db33ba8` 轨迹工具侧保真（沿用） | `inputPreview` 不再恰 180c | 129 条 `tool_call` **恰 180c = 0**、max 300c；6 次 `trajectory_tools_fidelity`（`entries` 最大 39、`inputChars` 12,434 / `outputChars` 55,524、`inputTruncated` 合计 2、`outputTruncated` 1、`droppedOldest` 0） | ✅ |
-| 悬空 `[fn:σ]`（E3） | ≤ 17 | **27**（`[fn:σ]` 引用 33 个符号 / 磁盘闭合块 9）⇒ 淘汰只记录不清理引用，且工程域块顶掉域内块 | ❌ |
-| 重启瞬态（E4） | 重启后首个 `propagate_done` 满足 `selected ⊆ context` | **7/7 成立**（含重启后首轮 18:21:39Z）⇒ 上轮「重启瞬态」解释未被证伪，本轮无违反 | ✅ |
+| `a121d67` 任务侧原文补齐（E1'） | `taskPromptPatch ∈ {active_task, current_round_prompt}` 且这些轮 `learningPromptSource=="raw_prompt" ∧ rawPromptChars>0` | **`learningPromptSource=="raw_prompt"` 5/5、`rawPromptChars` 931/1062/1366/1799/1851 全 >0**（对照上轮 2 轮为 `high_entropy ∧ 0`）；但 **`taskPromptPatch` 5/5 = `matched` ∧ `taskPromptPatchedRawChars` 5/5 = 0** ⇒ 补齐分支**未被触发**（matched 自身带原文） | 症状 ✅ / 补丁路径 ⏳未验证 |
+| `75847ed` 域闸触发（E2'） | 窗口出现 `semantic_backward_off_domain` | **0 次**；且 12 次 `semantic_backward_llm_raw_response` 中 `off_domain` 字段出现率 **0/12**（LLM 从未输出该字段）⇒ 非「触发后漏写」 | ❌ **登记判据命中 ⇒ 回滚** |
+| `75847ed` 域闸有效（E2 / E3'） | 离域内容不新增工程域 symbol；交易域 symbol 仍可 persisted | 新增工程域块 `sender_step_loop_orchestrate` **硬落盘** `L0::node_0`（`fn_block_evicted` 顶掉交易域块 `pi_star_gate_delta_decision`）；闭合块 **7** 个中工程/编排域 **4**（`archive_receipt_insights_once`/`audit_decision_enum_semantics`/`minimize_workflow_handoff_fix`/`sender_step_loop_orchestrate`），交易域 3（`daily_settle_exposure_gate`/`momentum_veto_pi_gate_decision`/`veto_graded_partial_fill`）；交易域 `momentum_veto_pi_gate_decision` 正常 persisted 1 次 | ❌ |
+| 悬空 `[fn:σ]`（E4'） | ≤ 27 | **33**（上轮 27；本轮新增 dangling `turn_based_step_driver`、`pi_star_gate_delta_decision`）⇒ 淘汰仍只记录不清理引用 | ❌ |
+| `selected ⊆ context`（E5'） | 重启后每轮成立 | **8/8 成立**（含重启后首轮 `18:48:14.434Z`；`contextCount` 2–4） | ✅ |
+| `b337ed3` 空包修复（沿用） | 无静默空包；n6 无超时 | 窗口 0 命中 `empty_assistant_text`；n6 全程无超时重发 | ✅ |
+| `db33ba8` 轨迹工具侧保真（沿用） | `inputPreview` 不再恰 180c | 84 条 `tool_call` **恰 180c = 0**、max 300c；6 次 `trajectory_tools_fidelity`（`entries` 1–27、`droppedOldest` 全 0、`thinkingTruncated` 全 false） | ✅ |
+| 反传链健康（沿用） | entered→llm_done 无掉链、有真融合 | 6/6 `semantic_backward_llm_done{status:ok}`；4 次 `semantic_backward_apply`；**真融合 1**（`nodesMerged=1`+`nodesUpdated=1`）；`merge_action_lifted` ×2（`L3::node_0→L0::node_0 delta=3`、`L3::node_0→L1::node_1 delta=2`）；`node_write_refused_keep_better` ×4 | ✅ |
+
 
 ## 二、本轮正向事实（当基线，勿再当缺陷修）
 
-- **轨迹未 slice 稳态**：129 `tool_call` 恰 180c = 0 / max 300c；`trajectory_tools_fidelity` 逐轮可读（`inputTruncated` 0/0/1/0/1/0、`outputTruncated` 0/1/0/0/0/0、`droppedOldest` 全 0）。
-- **反传写入链健康**：5/5 `semantic_backward_entered` → 5 `semantic_backward_llm_done`；`merge_action_lifted{L3::node_1→L1::node_1, delta=2}`；**1 次真融合**（`semantic_backward_apply{nodesMerged:1, nodesUpdated:1}`，`L1::node_1` name「301299缩量反抽51.66支点26%持仓」→「…否决分级·证据强度·缺口显著性」）；`node_write_refused_keep_better` **5** 次（`L0::node_0 scoreOld .0482 > scoreNew .0064–.0383`、`L1::node_1 .0345 > .0138`）。
-- **任务原文在本会话 state 里齐全**：`_last_state.guard.json` activeTask `rawChars=1607`、`sender` `1366`、`worker` `1062`；`task_prompt_restored` 4 次 ⇒ 佐证 R6 是「取材错位」而非「没存/没恢复」。
-- **注入门禁**：7 次 `propagate_done` 均 `contextCount=1`（`L0::node_0`/`node_1`），无 0 注入。
-- **估值口径结清（关闭第十节待核对项）**：同一 `(session=4cf529337f29, 2025-04-25)` 下 `/api/prompt` 总资产 **¥103,467.00** ≡ sender 第 2 次报数；上轮记录的 +¥702 差异属**不同交易日/不同取样时刻**（04-23 收盘 vs 成交价），非口径缺陷。
+- **`a121d67` 目标症状已消失（但非“补丁生效”）**：`learningPromptSource=="raw_prompt"` **5/5**，`rawPromptChars` 931/1062/1366/1799/1851 全部 >0；`task_stack_persisted` 6 次均带 `rawPromptCount/rawPromptChars`（9882 / 3844 / 4171 / 4119 / 4319 / 16882），`task_prompt_restored` 3 次（sender 6 条中 `rawPromptEmpty` **1**）。⇒ 上轮 `rawPromptChars=0` 的真因是**pending 旧条目未落盘 `rawUserPrompt`**，由 `7b6862b` + 本轮重启恢复消除，**不是** `patchTaskRawPrompt` 把它补上的（该分支 5/5 未走）。
+- **轨迹未 slice 稳态**：84 `tool_call` 恰 180c = 0 / max 300c；`trajectory_tools_fidelity` 逐轮可读（`inputTruncated` 0/1/0/0/0/0、`outputTruncated` 0/2/0/0/2/2、`droppedOldest` 全 0、`thinkingTruncated` 全 false）。
+- **反传写入链健康**：6/6 `semantic_backward_llm_done{ok}`；**1 次真融合**（`nodesMerged=1` + `nodesUpdated=1`，`L2::node_1` name「收缩箱体上沿追多反例」→「…squeeze 禁扩张 admit 闸门·减仓不受限」）；`merge_action_lifted` ×2；`node_write_refused_keep_better` ×4（`L0::node_0 .0443 > .0284/.0082/.0196`、`L3::node_0 .0283 > .0133`）。
+- **注入门禁**：8 次 `propagate_done` 均 `selected ⊆ context` 且 `contextCount` 2–4，无 0 注入。
+- **规则内化能力（对下一轮有利）**：LLM 在 `rationale` 中主动引用域内/域外判定（如 18:54:39 `rationale="任务域内但无用户反馈极性…"`）⇒ 说明“函数/内容属域”这类问法对它不陌生，只是上轮问的是**任务**域。
 
-## 三、本轮根因（R6，单变量）：反传「任务侧」取材错位 —— 判据输入侧
 
-- **判据面**：反传任务侧取自 `_backwardPendingMatch`（pairing judge 命中的 pending 池条目），而**不是**「本轮任务」。池内旧条目 `rawUserPrompt` 为空（旧档/未持久化）时，`buildBackwardTaskContext` 因 `isPlaceholderRetryPrompt("")=true ∧ hasHighEntropy` 走 `[HighEntropy Task]` 分支 ⇒ `learningPromptSource=high_entropy ∧ rawPromptChars=0`。
-- **字面证据（2/5 反传命中）**：guard 回合 `matchedTaskTs=11:34:37Z`、sender 回合 `matchedTaskTs=08:20:10Z`（**均早于本轮数小时**，其中 11:34:37Z 已不在本会话栈内），二者 `rawPromptChars=0 ∧ placeholderRetryPrompt=true ∧ matchedPromptChars=0`；而**同一会话** `_last_state.*.json` 的 activeTask 原文为 1607c / 1366c ⇒ **不是缺数据，是取错了 `matched`**。
-- **后果链**：①**域闸（`75847ed`）的判据输入恰是「本轮任务是什么」**，该输入在这两个回合退化为 HE 摘要（含交易语汇）⇒ LLM 无从判离域 ⇒ 恒判在域内 ⇒ 唯一新增工程域符号 `turn_based_step_driver`（内容＝「服务重启后 session 重建 / 轮次计数以 `/api/step` 次数为准」= workflow orchestration）写入 `L0::node_0`；②融合对象错位（拿本轮知识对 8 小时前的任务自说自话）。
-- **与 R5 的关系**：R5 = goal guard 单向 + 全局 pin（「谁在判」错）；R6 = 判据输入错位（「拿什么判」错）。只修 R5 时域闸被 R6 废掉 ⇒ **两半互补，缺一不可**。
-- **不变式**（沿用 lifecycle_context 头注释）：**任务原文属上游输入，不可由事后总结替代**。
+## 三、本轮根因（R7，单变量）：域闸**判据维度错位** —— 任务域 ≠ 内容域
 
-## 四、本轮实施的改进（git `a121d67`；**需 n9 重启三件套生效**）
+- **判据面**：`evaluateTaskDomainGate` 只读反传 LLM 输出的 `off_domain`，而规则 -1 的问法是「whether **THIS ROUND'S TASK** itself belongs to that goal domain」⇒ 问的是**任务标签的域**。
+- **字面证据三角（互不矛盾，合起来证明“闸门结构性不可能触发”）**：
+  1. **任务侧全在域内**：窗口 6 条 `agent_end_task_pushed.taskType` = `多agent交易游戏调度` / `A股限价撮合决策` / `A股交易准入闸门修复` / `A股持仓准入判定` / `A股闸门阈值标定复盘` / `多智能体交易游戏派发记账`，`taskFamily=stock_alpha` ⇒ LLM 判 in-domain 是**正确的**（并非偷懒）。
+  2. **内容侧确实离域**：同轮 HE 的 `<Function>` 块 `sender_step_loop_orchestrate`（内容：计数口径必须与观测状态解耦 / `POST /api/step` / session 重建）**硬落盘** `L0::node_0`，把交易域块 `pi_star_gate_delta_decision` 顶出（`fn_block_evicted{dangling}`）。
+  3. **LLM 输出零字段**：12/12 `semantic_backward_llm_raw_response` 无 `off_domain`；规则自己写的 "Default is IN-domain … do NOT set off_domain" 在“任务真在域内”时**永远**命中缺省分支。
+- **后果**：闸门成为**死代码 + 复杂度**（每轮 system prompt 多注入 ~1.6KB ABSOLUTE 规则占用 LLM 注意力，12 次反传收益 0），且**不可能**拦住真正的污染 —— 污染走的是**程序化写入通道**（`persistHighEntropyFunction` / `buildHighEntropyAddCandidate`），这两条通道**没有自己的内容判据**，却去依靠一个永远为 false 的任务标签。
+- **与 R5/R6 的关系**：R5 = 「谁在判」错（goal guard 单向 + `pinnedTaskFamily` 全局 pin）；R6 = 「拿什么判」错（任务侧取材）；**R7 = 「判的维度」错**（问任务域，实际要问内容/函数域）。若只修 R5/R6，闸门仍因维度错而恒不触发（实测：R6 的输入已经补齐为 `raw_prompt` 5/5，闸门仍 0/12）。
+- **不变式（新增）**：**程序化写入通道（免 LLM 内容判据的落盘）必须自带「机制域」判据**；不得用「任务域」代表「内容域」。
+- **反向教训（防止把假象当成功）**：判据“输入正常”（`rawPromptChars>0`）≠ 闸门“会工作”（`off_domain` 出现）；验收必须直接数**输出字段/事件**，不得用上游前提推断。
+- **另一条（沿用）**：**任务原文属上游输入，不可由事后总结替代**（lifecycle_context 头注释）。
 
-**任务侧原文补齐（TASK-SIDE PROMPT PATCH）**：
-- `src/lifecycle_context.ts`：新增 `patchTaskRawPrompt({matchedRawPrompt, activeTaskRawPrompt, currentRoundPrompt})` ⇒ 取材回落 **matched → active_task → current_round_prompt → none**；占位符（沿用既有 `isPlaceholderRetryPrompt` 词表：继续/收到/好/OK…）不取材；返回 `patchSource` 供审计。**不改配对身份、不做语义判断**（判官仍属反传 LLM / 域闸）。
-- `src/index.ts`：在 `setTimeout` **之前**捕获并调用（异步期 `activeTask` 会被下一轮覆盖），`buildBackwardTaskContext({rawPrompt: _patch.rawPrompt})`；事件 `semantic_backward_entered` 增 `taskPromptPatch`（matched/active_task/current_round_prompt/none）与 `taskPromptPatchedRawChars`。
-- **验证**：`jiti test_task_prompt_patch.ts` **17/17**（T1 取材优先级 / T2 占位符不取材 / T3 补齐后 `learningPromptSource=raw_prompt` 且旧行为对照可复现 / T4 消费点在 `setTimeout` 之前 + 事件字段 + 旧写法已消除）；回归 9 套件全过（`off_domain_gate 30/30`、`fn_multiblock_move 16`、`fn_block_survival 9`、`lift_overflow_dup 15`、`lift_merge 42`、`lift_jump 18`、`task_persist_roundtrip 15`、`content_limit_zero`、`tools_fidelity`）；`LOAD_OK src/index.ts`。
-- **边界**：只补素材、不替代判据 —— 不违反「LLM 是唯一语义判据」，也不重蹈 `no_domain_evidence`（`7987145`）被删的覆辙（那是**程序侧词表预判**；本改动**不做判断**）。
+
+## 四、本轮实施的改进（git `518c99a`；**需 n9 重启三件套生效**）
+
+**回滚 `75847ed` + 判据面迁移（FUNCTION-SIDE DOMAIN GATE）**——只改**一个变量：域闸的判据维度**（task → function），而非新增第二套机制：
+
+- **① 回滚（登记判据字面命中）**：删 `index.ts` normalize 内的整轮早退块（含 `semantic_backward_off_domain` 事件与 `out.off_domain*` 字段）、删 `evaluateTaskDomainGate` / `taskDomainGateRule` 引用。回滚後 `node_updates/add_nodes/merge/reward` 不再受域闸影响。
+- **② 迁移 —— `src/domain_gate.ts` 重写**：
+  - `evaluateFunctionDomainGate(raw)`：读 LLM 输出的 `function_off_goal === true`（严格 boolean；缺失/false/`"true"` 一律视为在域内 ⇒ **不输出字段时行为 ≡ 回滚前**，改动只能改善不能改差）；`reason 取自 `function_off_goal_reason`（回退 `rationale`，上限 200c）。
+  - `functionDomainGateRule(netGoal)`：问「**`<Function>` 块的机制**是否属目标域」，并**显式禁止用任务标签代替**（"never the round's task label — a round may legitimately be 'trade N times' while the function it produced is pure orchestration plumbing"）；列离域族（engineering / refactor / observability / workflow orchestration / agent relay & idempotency / API-session lifecycle / bookkeeping / UI / config / audit）；**对称给在域内示例**（price/level/position sizing、risk/exposure、entry & exit gating、volatility、volume、K-line pattern、market structure、reusable strategy function）。
+- **③ 只 gate 两条程序化写入通道**（这是“内容面”之真正含义）：
+  - `persistHighEntropyFunction`（`<Function>` 硬落盘；每节点 `NODE_FN_BLOCK_MAX=2` ⇒ 落一个即淘汰一个已有函数槽）；
+  - `buildHighEntropyAddCandidate`（无 node_updates 时的 HE fallback add）。
+  ⇒ **不再整轮早退** ⇒ 结构上不可能误杀真交易轮（E3' 保护面天然成立），也不吞内容面学习信号。
+- **④ 可观测**：触发记 `semantic_backward_function_off_goal`；被拦时额外记 `highentropy_function_skipped{reason:"function_off_goal", functionBlockChars}`（**拦截不静默**）。
+- **⑤ 验证**：`test_function_domain_gate.ts` **34/34**（T1 严格判据 10 例 / T2 reason 回退+200c / T3「旧早退已移除 ∧ 新闸不 `return out` ∧ 双通道守卫 ∧ 事件切换」/ T4 规则先于 rule 0 + 对称问法 + 缺省在域内）；回归 9 套件全过（`task_prompt_patch 17`、`fn_multiblock_move 16`、`fn_block_survival 9`、`lift_merge 42`、`lift_overflow_dup 15`、`lift_jump 18`、`task_persist_roundtrip 15`、`tools_fidelity`、`content_limit_zero`）；`LOAD_OK src/index.ts`；`domain_gate.ts` md5 `97b664ce4632a456399664f643030b8b` 已 `cp` 同步到 `~/.pi/agent/extensions/textron/`（**实体副本**，硬性约束 8；index/lifecycle/… 为符号链接自动同步）。删除 `test_off_domain_gate.ts`（其断言已由新套件的 T3 反向覆盖）。
+- **边界**：本闸仍**由 LLM 判定**（程序侧零词表，不变式不破），不重蹈 `no_domain_evidence`（`7987145`）的覆辙（那是程序侧词表预判）。
+
 
 ## 五、下一轮验收断言（逐条可字面核对）
 
-- **E1'（补齐生效）**：`semantic_backward_entered` 出现 `taskPromptPatch ∈ {active_task, current_round_prompt}`，且**这些轮** `learningPromptSource=="raw_prompt" ∧ rawPromptChars>0`（对照本轮：2 轮为 `high_entropy ∧ 0`）；若 `taskPromptPatch=="none"` 仍出现，说明该会话连 activeTask 原文都为空，改查 `task_stack_persisted.rawPromptCount`。
-- **E2'（域闸开始动作）**：窗口出现 `semantic_backward_off_domain`，其 `strippedUpdates/strippedAdds` 与同轮 LLM 原输出量级一致；该轮**无** `highentropy_function_persisted` / `highentropy_fallback_add_candidate`。
-- **E3'（域内不误杀）**：交易域符号（`pi_star_gate_delta_decision`、`momentum_veto_pi_gate_decision`、`daily_settle_exposure_gate`）仍能正常 persisted（防补齐后把交易轮判成离域）。
-- **E4'（悬空不增）**：悬空 `[fn:σ]` **≤ 27**（本轮基数；若同时实施 P0-2 应下降）。
-- **E5'（`selected ⊆ context`）**：延续 7/7。
+- **F1'（新闸触发）**：窗口出现 `semantic_backward_function_off_goal`，其 `reason` 指向**函数机制**（非任务标签）；且同轮出现 `highentropy_function_skipped{reason:"function_off_goal"}` ⇒ 硬落盘确实被拦（而非只记不拦）。
+- **F2'（不误杀、不吞学习）**：交易域 Function（`gate`/`sizer`/`momentum`/`exposure`/`atr`/`position`/`kelly` 语义）仍能 `highentropy_function_persisted`；且 `semantic_backward_apply` 的 `nodesUpdated/nodesMerged` **不低于**本轮基线（1 真融合 + 4 次 `refused_keep_better`）⇒ 证明“不整轮早退”落地。
+- **F3'（工程域块占比下降）**：磁盘闭合 `<function>` 块中工程/编排域 **≤ 3**（本轮 4/7），且 `L0::node_0` 的 2 个函数槽中**至少 1 槽为交易域**（防再出现 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`）。
+- **F4'（悬空不增）**：悬空 `[fn:σ]` **≤ 33**（本轮基数 27→33）；理想情形下降（需 P0-2 一并实施）。
+- **F5'（`selected ⊆ context` / 注入）**：延续 **8/8**；`contextCount ≥ 1`；轨迹工具侧仍无“恰 180c”。
+- **反证判据（防“改完就宣称成功”）**：若窗口 `semantic_backward_llm_raw_response` 中 `function_off_goal` 字段出现率 **< 30%**，则判本迁移**未生效**（而非失败）—— 因为缺省=在域内，LLM 不答即行为等于回滚前，需转 R7 剩余面（程序侧硬判据缺位，如：只允许与已激活交易域节点共享 `functionSymbol` 的函数落盘）。
 - 不变式（沿用）：`injectedCount ≥ 1` ∧ 拒写时 `scoreOld > scoreNew` ∧ 同层逐字同文计数 = 0 ∧ 零成交轮 `flat/unattributed`。
+
 
 ## 六、下一轮 P0 候选（按杠杆排序，**仍只挑一项**）
 
-1. **配对源根治（R6 剩余面）**：查 `allPendingTasks` 的来源与为何含已出栈的 11:34:37Z 项 —— 让候选集合只含「本会话 + 未消费」任务，或在 `matched.rawUserPrompt` 为空时**改选** activeTask（本轮补齐只治素材，未治「配对身份」）。判据：`semantic_backward_entered.matchedTaskTs` 不再早于窗口起点数小时。
-2. **悬空 `[fn:σ]` 清理（E3 连续两轮未达标）**：`fn_block_evicted` 时同步从 content 剥离 `[fn:σ]`（现只记 `dangling`）；加每轮反传后回扫 `fn_ref_dangling`（**仅记事件，不自动改写节点**；连续两轮仍悬空才移除标记）。**硬性约束 2：存量悬空不得手工清理**。
-3. **域隔离的「配置/注入侧」**（R5 剩余面）：`pinnedTaskFamily` 全局 pin ⇒ 本轮仍 7 次把交易网络注入 guard/sender 会话（`context_user_message_injected`）；选项：pin 改 per-session / 每轮 `autoRouteNetworkDecision` 复核域一致性并记 `route_domain_mismatch`。
-4. **层容量（`maxBlocks=2`）与淘汰顺序**：`L0::node_0` 仅容 2 块，工程域块顶掉刚落的交易域块（`breakdown_shrink_rebound_sizer` 存活 2 分钟即被 `turn_based_step_driver` 挤出）⇒ 可评估「淘汰优先离目标域块」，但**判据仍须由 LLM 给**，不得写词表。
-5. **事件写入者归因**（沿用）：`pid` + `md5(src/index.ts)`。
+1. **配对源根治（R6 剩余面）**：查 `allPendingTasks` 的来源（本轮仍见跨进程/陈旧匹配：`matchedTaskTs` = `18:33:28Z` / `18:35:42Z` / `18:35:55Z`，而窗口基线为 `18:48:13Z`）——让候选集合只含「本会话 + 未消费」任务，或 `matched.rawUserPrompt` 为空时**改选** activeTask（`a121d67` 只治素材，未治「配对身份」）。判据：`semantic_backward_entered.matchedTaskTs` 不再早于窗口起点 10 分钟以上。
+2. **悬空 `[fn:σ]` 清理（连续四轮未达标 4→17→27→33）**：`fn_block_evicted` 时同步从 content 剥离 `[fn:σ]`（现只记 `dangling`）；加每轮反传后回扫 `fn_ref_dangling`（**仅记事件，不自动改写节点**）。**硬性约束 2：存量悬空不得手工清理**。
+3. **函数槽淘汰优先级（本轮新量化）**：`NODE_FN_BLOCK_MAX=2` 下工程域函数顶掉交易域函数已成**重复现象**（`turn_based_step_driver`←`classify_reply_failure`；`sender_step_loop_orchestrate`←`pi_star_gate_delta_decision`）⇒ 优先淘汰 LLM 判为离目标域的函数块（判据仍须由 LLM 给，不得写词表）；或把 `L0::node_0` 的函数槽按域隔离。
+4. **域隔离的「配置/注入侧」**（R5 剩余面）：`pinnedTaskFamily` 全局 pin ⇒ 本轮仍 8 次把交易网络注入 guard/sender 会话（`context_user_message_injected`）；选项：pin 改 per-session / 每轮 `autoRouteNetworkDecision` 复核域一致性并记 `route_domain_mismatch`。
+5. **`no_pending_match` 丢自产 HE ⇒ self-backward（本轮实测 2 次）**：窗口 `agent_end_backward_skipped{reason:"no_pending_match"}` ×2 与 `highentropy_missing_at_agent_end{reason:"raw_operational_trace"}` ×2；`semantic_backward_skipped_not_feedback{pairing_judge_no_match}` ×2（`pendingCount` 3/5，候选 taskType 全工程域）。落盘时 `reward=null/unattributed`，**不得让 HE 驱动 reward**。
+6. **事件写入者归因**（沿用）：`pid` + `md5(src/index.ts)`（本轮 md5 `97b664ce…` 为函数侧域闸版本）。
 
-## 七、n6 运行观察（第十六轮，工作流层）
 
-- **超时/空包**：本轮 0 次超时、0 次空包（`b337ed3` 修复后首个完整 n6 轮）⇒「超时」问题暂判关闭，保留复现观察。
-- **计数口径**：sender 自计 2/2 与存档 `step_index 70→72` 一致（差值恒 2）⇒ 「自计数 + 存档旁证」的对账式可作后续 n6 默认写法。
-- **边界遵守**：worker 全程只与 sender 交互、未直连 guard；sender 唯一一次通知 guard（幂等）⇒ 越权问题未复现。
-- **worker 迭代幅度**：`trade.py` 540→636→664 行（两轮各 ≥24%）；**注意**行数不能当等价性证据，无 ABI 断言时不得据此判「ABI 未变」。
+## 七、n6 运行观察（第十七轮，工作流层）
+
+- **硬性约束 10（禁全盘 find/grep）本轮生效**：guard 下发的指令内置可复制 curl 样例（`session_id`/body 形状齐全）+ 指向 `workflows/API.md`；sender/worker 全程无卡死（对比第十六轮两次 4m50s / 3m40s 阻塞）。⇒ 「**具体化指令 = 把探索成本从子 agent 收回控制方**」是有效治法。
+- **超时/空包**：本轮 0 超时、0 空包（`b337ed3` 修复后第二个完整 n6 轮）⇒ 保留复现观察。
+- **计数口径**：sender 自计 2/2 与存档 `step_index 70→72` 一致（差值恒 2）⇒ 「自计数 + 存档旁证」的对账式已连两轮成立，可作 n6 默认写法。
+- **边界遵守**：worker 全程只与 sender 交互、未直连 guard；sender 唯一一次通知 guard（幂等）⇒ 越权未复现。
+- **worker 迭代幅度**：`trade.py` 664→**885 行**（+221）；**注意**行数不能当等价性证据，无 ABI 断言时不得据此判「ABI 未变」；本轮仍无 ABI 断言 ⇒ 待补。
+- **子 agent 互写碰撞（新观察）**：三件套共享 `_events.jsonl` 且同 `taskFamily` ⇒ sender/worker/guard 的 pending 池会**互配**（guard 首轮 `matchedTaskTs=18:33:28Z` 指向重启前旧任务）——与 P0-1 同源，不是孤立现象。
+
 
 ### 通用纪律（跨 agent 回执，与「事后判别」并列）
 - **事前暴露 —— 关键结构化请求必带 `response_schema`**：空包在 `agent_end` 侧只输 `payload=rawAssistantText` 而不置 error；但若 inbound 带 `response_schema`，`JSON.parse("")` 必失败 ⇒ 立刻变显式 `error="response not valid JSON"`。即：**同一缺陷的暴露度取决于请求是否带 schema**（带 ⇒ 可观测失败；不带 ⇒ 静默 `response:""`，表现为对方「未回/超时」）。故跨 agent 要求 JSON 决策/字段的请求一律携带 schema。
@@ -177,25 +204,30 @@
 | 10 | **`/reload` 后验证 content 结构化提取修复**：任意 turn 的 tools 字段含真实工具输出文本(trade_result/portfolio JSON)而非 `[object Object]`；可用 grep 轨迹 tools 字段计数 `[object Object]` 归零断言 | ⏳ src 已改未 reload |
 | 11 | **R1 运行期验收**（`00dc022`）：merge 后同层不得出现与宿主逐字相同的副本节点；`_node_history` 可见「clear→(无 overflow)」序列 | ⏳ 待 n9 重启 |
 | 12 | **R2 运行期验收**（`7b6862b`）：`semantic_backward_entered.learningPromptSource=="raw_prompt"` 且 `rawPromptChars>0`、`task_prompt_restored.rawPromptRestored≥1` | ⏳ 待 n9 重启 |
-| 13 | **`no_pending_match` 丢 HE**（本轮 3 次，其中 HE≠空 2 次）：pending 无匹配时应入栈/补 self-backward（reward 须标 `unattributed`，禁由 HE 驱动 reward） | ⏳ 未修（最高杠杆） |
+| 13 | **`no_pending_match` 丢 HE**（第十七轮 2 次 `agent_end_backward_skipped{no_pending_match}` + 2 次 `highentropy_missing_at_agent_end{raw_operational_trace}`）：pending 无匹配时应入栈/补 self-backward（reward 须标 `unattributed`，禁由 HE 驱动 reward） | ⏳ 未修（最高杠杆） |
 | 14 | ~~**轨迹工具侧仍 slice**~~（`rebuildToolsFromMessages` input 180c / output 640c / `maxEntries=24` shift）| ✅ 已修 `db33ba8`，第十六轮验收：129 `tool_call` 恰 180c = **0**、`entries` 达 39、`inputChars` 12,434 |
 | 15 | **事件缺 writer pid / extension md5**：多进程共享 `_events.jsonl` 时无法区分未重启旧进程写入（第十轮口径污染） | ⏳ 未修 |
 | 16 | **工程语料污染 stock_alpha**：`layer_0/node_0` 正文残留 guard 会话 HE（`571205a(~16:0x)…`）且 merge 拼接无句界保护（半句截断/首尾互吃） | ⏳ 未修 |
 | 17 | **`<`/`>` 疑被吞**：node_0 正文 `all(b=gap_lower*0.97` / `broke_prior_low=price=…` 反复重复，待与 `_node_history` 原始 raw 对照判定 | ⏳ 待证 |
-| 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含已出栈的 `11:34:37Z` 项；`matched.rawUserPrompt` 为空时应**改选** activeTask（本轮 `a121d67` 只治素材、未治配对身份）。判据：`semantic_backward_entered.matchedTaskTs` 不再早于窗口起点数小时 | ⏳ 未修 |
-| 19 | **悬空 `[fn:σ]` 清理（E3 连续两轮未达标 4→→27）**：`fn_block_evicted` 时同步剥离 content 引用；每轮回扫 `fn_ref_dangling`（仅记事件不自动改写；连续两轮才移除标记）。**存量悬空不得手工清理** | ⏳ 未修 |
-| 20 | **层容量 `maxBlocks=2` 下的淘汰优先级**：实测工程域块 2 分钟即顶掉刚落盘的交易域块（`breakdown_shrink_rebound_sizer` 被 `turn_based_step_driver` 挤出）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
+| 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含陈旧/已出栈项（第十七轮仍见 `matchedTaskTs` = `18:33:28Z`/`18:35:42Z`/`18:35:55Z`，窗口基线 `18:48:13Z`）；`matched.rawUserPrompt` 为空时应**改选** activeTask。判据：`matchedTaskTs` 不再早于窗口起点 10min+ | ⏳ 未修 |
+| 19 | **悬空 `[fn:σ]` 清理（连续四轮未达标 4→17→27→33）**：`fn_block_evicted` 时同步剥离 content 引用；每轮回扫 `fn_ref_dangling`（仅记事件不自动改写）。**存量悬空不得手工清理** | ⏳ 未修 |
+| 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
+| 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
 
 ---
 
 
-**第十六轮新增（2026-09-16 02:45）**：
-- **未生效改动（需 n9 重启三件套）**：`a121d67` 任务侧原文补齐 `patchTaskRawPrompt`（`lifecycle_context.ts` + `index.ts` 消费点；R6 判据输入侧修复）。
-- **回滚判据（可判定，勿凭态度）**：下一窗口 `semantic_backward_off_domain` **≥1 ⇒ 保留 `75847ed`**；若恒为 **0**（即 `a121d67` 后仍不触发）⇒ 该域闸只是**死代码 + 复杂度**，**回滚 `75847ed`**。
-- **已结清**：`b337ed3` 空包修复运行期 ✅（窗口 0 次 `empty_assistant_text`、n6 零超时）；**估值口径待核对项关闭**（同 `(session, 2026-04-25)` 下 `/api/prompt` ¥103,467 ≡ sender 报数）；`workflow_3` n6 超时重发条款**不必补**（本轮未发生）。
-- **成交机制结论修正（第十节，`ca9e95a`）**：成交价＝限价单真实撮合（买 `min(申报, T+1开盘)` / 卖 `max(申报, T+1开盘)`），「成交价≡申报价」**作废**；`L0::node_1` 正文已固化的错误机制（「成交价≡申报价、零摩擦、触及即全额」）**只登记不改**（硬性约束 2），靠 reward/backward 自然覆盖。
-- **P0 候选（按杠杆，仍只挑一项）**：①**配对源根治**（R6 剩余面：`allPendingTasks` 为何含已出栈的 11:34:37Z 项 / `matched.rawUserPrompt` 空时改选 activeTask —— 本轮只治素材未治配对身份）；②**悬空 `[fn:σ]` 清理**（连续两轮未达标，17→27）；③域隔离**配置/注入侧**（pin per-session 或每轮域一致性复核 + `route_domain_mismatch`）；④层容量 `maxBlocks=2` 下的**淘汰优先级**（可评估「优先淘汰离目标域块」，但判据须由 LLM 给）；⑤`no_pending_match` 丢自产 HE ⇒ self-backward（`reward=null/unattributed`，**不得让 HE 驱动 reward**）；⑥事件统一附 `pid` + `md5(src/index.ts)`。
-- **外部干预回灌（硬性约束 10）**：driver 侧 kill 卡死子进程等干预**不入轨迹/事件** ⇒ guard n8 不可见；**任何此类干预必须显式写回本文档**，否则下轮重现（本轮已入库）。
+**第十七轮新增（2026-09-16 03:05）**：
+- **未生效改动（需 n9 重启三件套）**：`75847ed` **已回滚**（任务侧域闸整轮早退删除）+ **函数侧域闸** `evaluateFunctionDomainGate` / `functionDomainGateRule`（`src/domain_gate.ts` 重写；`index.ts` 消费点：只 gate `persistHighEntropyFunction` + `buildHighEntropyAddCandidate` 两条程序化通道）。事件：新增 `semantic_backward_function_off_goal`，删除 `semantic_backward_off_domain`。
+- **回滚判据已结清**：`75847ed` 回滚已执行（字面命中，见第一节表格）；**不再有该闸的回滚悬念**（代码中已无 `off_domain` 残留，测试 T3 可执行校验）。
+- **负面教训（本轮方法论）**：
+  - **“前提正常”≠“机制工作”**：`a121d67` 后 `rawPromptChars` 5/5 >0，但 `taskPromptPatch` 5/5 = `matched` ⇒ 补丁分支未走；“症状消失”应归因到真正起作用的改动（`7b6862b` 持久化 + 重启恢复），不得拿“症状消失”当补丁运行的证据。
+  - **连续三轮恒 0 = 判据维度错，不是实现 bug**：不要在错误维度上继续修实现（本轮直接换维度）。
+- **成交机制结论（第十节，`ca9e95a` 仍为准）**：成交价＝限价单真实撮合（买 `min(申报,T+1开盘)` / 卖 `max(申报,T+1开盘)`）；本轮 n6 再次旁证（申报 `54.93` ⇒ 成交 `54.93`，D+1 开盘同价；上轮 `55.35`⇒`55.71` 反例仍在）。`L0::node_1` 固化的错误机制**只登记不改**（硬性约束 2）。
+- **P0 候选**：见第六节（已按本轮量化重写，含项 3 函数槽淘汰优先级、项 5 `no_pending_match` 丢 HE）。
+- **外部干预回灌（硬性约束 10）**：本轮**无** driver 侧 kill/干预（0 卡死）⇒ 无待回灌项；第十六轮的两次全盘 find 阻塞已入库。
+- **第十六轮一行摘要**：实施 `a121d67`（任务侧原文补齐）；验收结果见第一节（症状 ✅ / 分支 ⏳）。
+
 # 硬性约束（不可违反，否则撤销）
 
 1. **禁止改共享通信层 `local-coms.ts`**（全局 agent 通信，波及所有会话）——修点落在 API 边界

@@ -73,6 +73,12 @@
 - **评分语义的推论**：`零变动 = −2`（非 0）使「持有/空仓在平盘日必然失分」成为**外生失分**，与方向判断无关 ⇒ 不可用加仓博取（本轮最大回撤已 −11.07%）。配套判据：最小有效换手 ≈ `score_cost_pct/(ATR/close)` ≈ 5.8%，低于此的置换在逐日评分下为负期望；`deploy_floor` 三闸门 `edge≥0.05 ∧ p≥0.5 ∧ ¬squeeze(箱体<1.5ATR)`。
 - **规程符合性**：两轮派发均按接收方角色祈使句改写，显式声明 worker 只与 sender 交互、禁直连 guard（上轮越权根因已闭环）；2/2 满额后仅向 guard 发一次通知（幂等）。
 
+### 通用纪律（跨 agent 回执，与「事后判别」并列）
+- **事前暴露 —— 关键结构化请求必带 `response_schema`**：空包在 `agent_end` 侧只输 `payload=rawAssistantText` 而不置 error；但若 inbound 带 `response_schema`，`JSON.parse("")` 必失败 ⇒ 立刻变显式 `error="response not valid JSON"`。即：**同一缺陷的暴露度取决于请求是否带 schema**（带 ⇒ 可观测失败；不带 ⇒ 静默 `response:""`，表现为对方「未回/超时」）。故跨 agent 要求 JSON 决策/字段的请求一律携带 schema。
+- **适用边界（勿滥用）**：`response_schema` 只在**确实要求结构化输出**时携带；否则对方一句合理纯文本回复会被 `JSON.parse` 失败误判为 error。另：error 语义应区分「解析失败」与「无回复」，不可合为一种。
+- **三向判别式（把「超时」消解）**：拿到 envelope 后按三类归因——①`error="empty_assistant_text"`（修复后）或旧版 `response===""` ∧ `error===null` ⇒ **空载荷**；②`error="response not valid JSON"` ⇒ **载荷非空但不合 schema**（模型问题，不是链路）；③**无 envelope** ⇒ 才考虑真超时/未发送。磁盘证据（mtime/行数）只能证明**存活**，证明不了**载荷非空**。
+- **事后判别（前一条纪律）**：查 `local-coms-log` 的 `response_out.error` + 对端末条 assistant 的**块类型**（`thinking`/`toolCall`-only 轮无 `text` 是空包的必要条件）。
+
 ---
 
 # ✦ 上一轮（2026-09-15 21:30）：n8 第十四轮 —— 第十三轮改动运行期验收 ✅（`00dc022`/`7b6862b`）；查出 Function 块 50% 蒸发真因（R4a 单块搬运 / R4b 静默淘汰，已修 `c8b015d`）与轨迹工具侧 180c/640c 静默 slice（已修 `db33ba8`）；新发现 `pinnedTaskFamily=stock_alpha` 致工程/调度域知识 50% 灌入交易网络（→ 第十五轮 R5/域闸）

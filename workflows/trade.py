@@ -102,6 +102,7 @@ trade.py — 交易决策函数（契约注释 / 实现待填写）
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Literal, Optional, Sequence, TypedDict
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -228,6 +229,21 @@ _CFG: Dict[str, float] = {
     "gap_decay_step": 0.01,   # 每衰减一步对 p 的扣减
     "gap_decay_cap": 0.05,    # 衰减总上限
     "score_cost_pct": 0.2,    # 一次「零变动」采样对应的固定失分（占总资产 %），用于最小有效换手判定
+    # ── 第 10 步纠错新增（依据两条实测事实：① D 收盘出决策 → D+1 以 D+1 价格成交，
+    #    tradePrice 只是申报价/锚价，只决定「申报是否落入 D+1 的 [low, high]」；
+    #    ② 评分口径 = 逐日总资产变动，故「方向与仓位一致性」优先于「赔率大小」）─────
+    "mtf_one_pen": 0.05,      # 仅单一大级别空头时的胜率惩罚。原式「月或周任一空头即 −0.12」会把
+    #                           「月线含未完成当期 + 周线已转多」误杀为低胜率 ⇒ 停在半仓不表态区
+    "mom_alpha": 0.05,        # 日线动量确认（近 3 收盘严格递增）的正向补偿：原式只惩罚空头、完全不计多头
+    "sup_zone_atr": 2.0,      # 「贴支撑」判定改用 ATR 倍数。原用 1.2·risk，而 risk 已被 vol_floor 放大
+    #                           ⇒ 止损 trail 上移反而丢掉 pos_adj（止损越近越不算贴支撑，逻辑倒置）
+    "order_slip_atr": 0.30,   # 申报价方向偏移(×ATR)：抵消跳空造成的「申报价越出次日区间」整笔失效
+    "momentum_veto": 1,       # 动量否决分级：Δπ 方向与日线动量冲突时降级/否决换手（硬止损/结构破位仍可越过）
+    # ── 第 11 步（终局）纠错：否决权必须与「证据强度」与「缺口显著性」双向绑定 ─────
+    "veto_sig_mult": 2.0,    # Δπ ≥ 该倍数×触发阈值 ⇒ 仓位缺口已属显著级，动量否决不得整条吞掉方向信号，
+    #                           只能降级为折半执行（实测代价：单周期空头一票否决 kelly 0.281 ≫ π_cur 0.156
+    #                           的方向信号，结算价高于决策日收盘 ⇒ 机会成本）
+    "veto_half": 0.5,         # 折半执行系数：π_exec = π_cur + half·Δπ
 }
 
 
@@ -282,10 +298,32 @@ def _mtf_down(series: Sequence[KLineBar]) -> bool:
     return len(cl) >= 3 and cl[0] > cl[-1]
 
 
+def _mtf_flags(monthly: Sequence[KLineBar], weekly: Sequence[KLineBar]) -> tuple:
+    """大级别空头计数 → (月线空头, 周线空头)。
+
+    原式取 or：只要月线（其最后一根是**未完成**的当期 bar）为空头就扣满 −0.12，
+    会把「月线因当期尚未收官而显空、周线已连续转多」的反弹结构误判为低胜率，
+    使 π* 被 kelly 压到 12% 而当前仓位 32% ⇒ 在上涨段被动输出「减仓」。
+    改为按**空头周期数**分档：两周期一致 -0.12，单周期 -0.05。
+    """
+    return (_mtf_down(monthly), _mtf_down(weekly))
+
+
+def _mom_up(daily: Sequence[KLineBar], n: int = 3) -> bool:
+    """日线短期动量确认：近 n 根收盘严格递增。
+
+    原 p 的构造里只有 mtf_down 的负分项，**没有任何日线正向项**：连续 12 个交易日
+    从 48.41 抬到 55.35 的反弹在胜率上完全不计分 ⇒ p 被单向压低 ⇒ 加仓闸门恒不通过。
+    """
+    cl = [float(b.get("close") or 0.0) for b in daily[-n:]]
+    return len(cl) >= n and all(cl[i] < cl[i + 1] for i in range(len(cl) - 1))
+
+
 def _target_position(close: float, sup_prev: float, res_prev: float,
                      gap_lower: Optional[float], gap_upper: Optional[float],
                      atr: float, mtf_down: bool, shrink: bool, expand: bool,
-                     total_value: float, gap_age: Optional[int] = None) -> Dict[str, float]:
+                     total_value: float, gap_age: Optional[int] = None,
+                     mtf_n: Optional[int] = None, mom_up: bool = False) -> Dict[str, float]:
     """目标仓位函数 π* = f(赔率 b, 胜率 p, 结构性止损距离 r, 风险预算, 机会成本)。
 
     返回 dict: risk(止损距离) / b(赔率) / p(胜率) / edge(单位风险期望) /
@@ -322,12 +360,22 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
     if gap_age is not None and gap_age > 0:
         steps = gap_age // max(1, int(_CFG["gap_decay_days"]))
         gap_decay = min(_CFG["gap_decay_cap"], _CFG["gap_decay_step"] * steps)
-    pos_adj = 0.08 if close <= sup_prev + 1.2 * risk else (0.06 if close > res_prev else 0.0)
+    # 「贴支撑」判定必须与 risk 解耦：risk 被 vol_floor 放大后，用 1.2·risk 作阈值会出现
+    # 「止损 trail 上移（风险变小）⇒ 反而不满足贴支撑 ⇒ 丢掉 +0.08」的倒置。改以 ATR 口径
+    # 度量真实结构距离，使 trail 上移只增容、不减胜率。
+    sup_zone = sup_prev + _CFG["sup_zone_atr"] * atr
+    pos_adj = 0.08 if close <= sup_zone else (0.06 if close > res_prev else 0.0)
+    mom_adj = _CFG["mom_alpha"] if mom_up else 0.0      # 日线动量正向补偿（原式缺失）
     vol_adj = 0.12 if (expand and gap_lower and close >= gap_lower) else (-0.05 if shrink else 0.0)
     # 噪音带惩罚：若结构距离（close−sup_prev）不足 1·ATR，止损实际被摆进当日噪音区，
     # 胜率必须打折——「止损被 floor 拉到更远处」意味着真实风险大于结构距离，不能当白赚
     noise_pen = -0.06 if (atr > 0 and (close - sup_prev) < 1.0 * atr) else 0.0
-    p = _clip(0.5 + (-0.12 if mtf_down else 0.0) + pos_adj + vol_adj + noise_pen - gap_decay,
+    # 大级别惩罚按空头周期数分档；mtf_n=None 时回退旧语义，保证历史回放可复现
+    if mtf_n is None:
+        mtf_pen = -0.12 if mtf_down else 0.0
+    else:
+        mtf_pen = -0.12 if mtf_n >= 2 else (-_CFG["mtf_one_pen"] if mtf_n == 1 else 0.0)
+    p = _clip(0.5 + mtf_pen + pos_adj + mom_adj + vol_adj + noise_pen - gap_decay,
               0.30, 0.70)
     # 箱体收缩：站于箱体之内且箱体高度不足 range_squeeze·ATR ⇒ 方向未定，禁止加仓
     box = res_prev - sup_prev
@@ -354,7 +402,8 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
     return {"risk": risk, "target_price": target, "b": b, "p": p, "edge": edge,
             "kelly": kelly, "pi_risk_cap": pi_risk_cap, "pi_star": pi_star,
             "binding": binding, "stop": stop, "trail_ok": trail_ok,
-            "gap_decay": gap_decay, "squeeze": squeeze, "floor_on": floor_on}
+            "gap_decay": gap_decay, "squeeze": squeeze, "floor_on": floor_on,
+            "mom_adj": mom_adj, "mtf_pen": mtf_pen}
 
 
 def decide(ctx: TradeContext) -> TradeDecision:
@@ -372,6 +421,20 @@ def decide(ctx: TradeContext) -> TradeDecision:
                     故低 p 下禁止加仓；收缩期方向未定，等突破确认（突破→p 升 + 止损 trail 双通道释放容量）
         决策 = sign(π* − π_now)：Δπ ≥ max(buy_band, 一手步长, 最小有效换手) 补仓；
                                   Δπ ≤ −max(sell_band, 最小有效换手) 减仓；|Δπ| 低于阈值才持有。
+        方向一致性（第 10 步纠错）：逐日结算下失分来自「仓位与次日方向不一致」，故
+                    (a) p 的日线动量项 mom_adj（近3收盘递增 +0.05）与 mtf_pen 按空头周期数分档，
+                        修正「只惩罚空头、不计多头」的单向偏置；
+                    (b) 「贴支撑」判定改用 sup_prev + 2.0·ATR（与 risk 解耦）；
+                    (c) 动量否决分级（第 11 步终局修正）：否决权不再「单/双周期空头共用一票」，
+                        而是与证据强度、缺口显著性双向绑定：mtf_n≥2 且 Δπ<2·带宽 → 全否决；
+                        mtf_n==1 → 折半执行（保留 kelly 的方向权）；mtf_n≥2 但 Δπ≥2·带宽（显著级）
+                        → 降级为折半。折半执行的股数同时受「最小有效换手下界（向上取整，
+                        避免取整后跌破阈值使换手沦为负期望）」与「π* 对应持股上界」约束。
+                    (d) 减仓量 = 当前持股 − π* 折算的目标持股（向上取整到整百），
+                        不再用 Δπ·总值 折算（向下取整会停在半仓不表态区）。
+        申报（申报价 ≠ 成交价）：D 收盘出决策 → D+1 以 D+1 价格成交，tradePrice 只决定
+                    「申报是否落入 D+1 的 [low, high]」。故按动量方向偏移 0.3·ATR 并以 ±9.5% 限幅，
+                    降低跳空导致的整笔失效概率；仓位折算仍锚定最近收盘价。
         最小有效换手 = (score_cost_pct/100) / (ATR/close)：覆盖一次「零变动」固定失分所需的最小仓位变动，
                     防止小额换手在逐日评分下成为负期望动作
         风控：close < 前3日低点 或 浮亏 ≤ −8% 且月/周空头 或 edge ≤ 0 → 清仓。
@@ -412,10 +475,25 @@ def decide(ctx: TradeContext) -> TradeDecision:
     vols = [float(b.get("volume") or 0.0) for b in daily[-3:]]
     shrink = vols[0] > vols[1] > vols[2] > 0
     expand = vols[2] > vols[1] * 1.2 > 0
-    mtf_down = _mtf_down(monthly) or _mtf_down(weekly)
+    m_down, w_down = _mtf_flags(monthly, weekly)
+    mtf_n = int(m_down) + int(w_down)
+    mtf_down = bool(mtf_n)                     # 保留 or 语义，仅用于破位/硬止损分支
+    mom_up = _mom_up(daily, 3)                 # 日线动量确认：原策略完全缺失的正向项
 
     tp = _target_position(close, sup_prev, res_prev, gap_lower, gap_upper,
-                          atr, mtf_down, shrink, expand, total_value, gap_age)
+                          atr, mtf_down, shrink, expand, total_value, gap_age,
+                          mtf_n=mtf_n, mom_up=mom_up)
+
+    def _order_px(side: int) -> float:
+        """申报价：side +1 买入 / −1 卖出。
+
+        成交价恒为 D+1 的价格，申报价只决定申报能否落入 D+1 的 [low, high]（越界即整笔失效）。
+        有明确短期动量时沿动量方向偏移 0.3·ATR 以吸收跳空；反向交易不追价（贴锚价，避免边缘越界）。
+        """
+        drift = _CFG["order_slip_atr"] * atr if ((side > 0 and mom_up) or (side < 0 and mtf_down and not mom_up)) else 0.0
+        lim = 0.095 * close
+        return round(_clip(close + side * drift, close - lim, close + lim), 2)
+
     pi_star = tp["pi_star"]
     pi_cur = (mv / total_value) if qty_held > 0 else 0.0
     delta = pi_star - pi_cur
@@ -427,6 +505,17 @@ def decide(ctx: TradeContext) -> TradeDecision:
     min_eff_delta = ((_CFG["score_cost_pct"] / 100.0) / (atr / close)) if (atr > 0 and close > 0) else 0.0
     eff_buy_band = max(_CFG["buy_band"], min_pi_step, min_eff_delta)
     eff_sell_band = max(_CFG["sell_band"], min_eff_delta)
+    # 换手冷却（仅当调用方通过 ctx["memory"] 传入状态时生效，缺省无副作用）：
+    # 成交发生在 D+1、而价格锚取自 D 收盘 ⇒ 连续「卖→买」对倒会同时吃双向滑点与
+    # 两次零变动固定失分。故刚减仓后若要回补，要求 Δπ 达到 1.5× 触发阈值。
+    _mem = ctx.get("memory") or {}
+    cooldown_mult = 1.5 if str(_mem.get("last_decision") or "") == DECISION_SELL else 1.0
+    eff_buy_band *= cooldown_mult
+    # 加仓侧动量否决**分级**（第 11 步）：否决权与「空头周期数」及「缺口显著性」双向绑定，
+    # 解决上一版「单周期空头与双周期空头共用一票否决」导致 kelly 方向信号被整条吞掉的矛盾。
+    add_scale = 1.0
+    if _CFG["momentum_veto"] and mtf_n >= 1 and not mom_up:
+        add_scale = _CFG["veto_half"] if (mtf_n == 1 or delta >= _CFG["veto_sig_mult"] * eff_buy_band) else 0.0
     feats = {"close": close, "atr": round(atr, 3), "sup_prev": sup_prev, "res_prev": res_prev,
              "gap_lower": gap_lower, "gap_upper": gap_upper, "gap_age": gap_age,
              "gap_decay": round(tp["gap_decay"], 3), "squeeze": tp["squeeze"],
@@ -438,54 +527,89 @@ def decide(ctx: TradeContext) -> TradeDecision:
              "min_pi_step": round(min_pi_step, 4), "min_eff_delta": round(min_eff_delta, 4),
              "eff_buy_band": round(eff_buy_band, 4), "eff_sell_band": round(eff_sell_band, 4),
              "vol_shrink": shrink, "vol_expand": expand, "mtf_down": mtf_down,
+             "mtf_n": mtf_n, "mom_up": mom_up, "mom_adj": round(tp["mom_adj"], 3),
+             "cooldown_mult": cooldown_mult, "add_scale": round(add_scale, 2),
              "cash": cash, "total_value": total_value}
 
-    def _lot(budget_value: float) -> int:
-        """按整百股取整的可买数量：受现金与给定金额预算双重约束。"""
+    def _lot(budget_value: float, price: Optional[float] = None) -> int:
+        """按整百股取整的可买数量：受现金与给定金额预算双重约束。
+        现金校验用**申报价**（申报价高于锚价时同样要付得出钱）。"""
+        p_ = float(price or px)
         budget = min(budget_value, cash)
-        if px <= 0 or budget < px * 100 or cash < px * 100:
+        if p_ <= 0 or budget < p_ * 100 or cash < p_ * 100:
             return 0
-        lots = int(budget // px // 100) * 100
-        if lots < 100 and budget >= px * 50:
+        lots = int(budget // p_ // 100) * 100
+        if lots < 100 and budget >= p_ * 50 and cash >= p_ * 100:
             lots = 100
-        return lots if lots * px <= cash else 0
+        return lots if lots * p_ <= cash else 0
 
-    def _target_qty(pi: float) -> int:
+    def _target_qty(pi: float, price: Optional[float] = None) -> int:
         """把目标仓位折算为整百股持股数（增量由目标持股数 − 当前持股数得出，
-        避免用 Δπ·total_value 再除价取整造成的单侧截断损耗）。"""
-        if px <= 0 or pi <= 0:
+        避免用 Δπ·total_value 再除价取整造成的单侧截断损耗）。折算锚定最近收盘价。"""
+        p_ = float(price or px)
+        if p_ <= 0 or pi <= 0:
             return 0
-        return int(pi * total_value // px // 100) * 100
+        return int(pi * total_value // p_ // 100) * 100
 
     # ── 带仓 ──────────────────────────────────────────────────────────────
     if qty_held > 0:
         if close < sup_prev:
-            return _dec(DECISION_SELL, px, qty_held, CONF_HIGH,
+            return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_HIGH,
                         "收盘跌破前3日结构性低点，止损离场", **feats)
         if cost > 0 and (close / cost - 1.0) * 100.0 <= _CFG["stop_loss_pct"] and mtf_down:
-            return _dec(DECISION_SELL, px, qty_held, CONF_MID,
+            return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
                         "浮亏触及硬止损线且月/周线空头，截断风险", **feats)
         if tp["edge"] <= 0:
-            return _dec(DECISION_SELL, px, qty_held, CONF_MID,
+            return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
                         "赔率×胜率期望为负，持有即负期望，退出", **feats)
         if delta >= eff_buy_band:
-            want = _target_qty(pi_star) - qty_held
-            q = _lot(want * px) if want >= 100 else 0
+            # 加仓侧动量否决分级（第 11 步）：单周期空头不享有与双周期空头同等的一票否决权。
+            #   · mtf_n ≥ 2 且 Δπ < 2×eff_buy_band → 全否决（月/周一致空头 = 趋势证据最强）；
+            #   · mtf_n == 1（常见于「月线未收官 bar」）→ 只折半执行，保留 kelly 的方向权；
+            #   · mtf_n ≥ 2 但 Δπ ≥ 2×eff_buy_band（缺口显著级）→ 降级为折半，不整条吞掉。
+            if add_scale <= 0.0:
+                return _dec(DECISION_HOLD, 0.0, 0, CONF_LOW,
+                            "Δπ=+%.1f%% 触发补仓，但月/周线一致空头(mtf_n=%d)且日线动量未确认、"
+                            "缺口未达显著级(%.1f%%)，动量否决本次换手"
+                            % (delta * 100, mtf_n, _CFG["veto_sig_mult"] * eff_buy_band * 100), **feats)
+            # 折半执行：执行目标 π_exec = π_cur + scale·Δπ，实际股数同时受
+            # 「最小有效换手」下界（向上取整——向下取整会使实际 Δπ 跌破阈值，
+            # 换手退化为负期望动作）与「π* 对应持股」上界约束。
+            pi_exec = pi_cur + add_scale * delta
+            cap_q = _target_qty(pi_star) - qty_held
+            if add_scale < 1.0:
+                need_q = int(math.ceil(eff_buy_band * total_value / px / 100.0)) * 100 if px > 0 else 0
+                want_q = max(_target_qty(pi_exec) - qty_held, need_q)
+            else:
+                want_q = cap_q
+            want_q = min(want_q, cap_q) if cap_q > 0 else 0
+            q = _lot(want_q * px, _order_px(+1)) if want_q >= 100 else 0
             if q >= 100:
-                return _dec(DECISION_BUY, px, q, CONF_MID,
-                            "目标仓位 %.0f%% > 当前 %.0f%%（Δπ=%.1f%% ≥ 触发阈值 %.1f%%），binding=%s，"
-                            "正期望下把闲置现金转化为暴露；移动止损已 trail 至 %.2f，容量随 r=%.2f 释放"
-                            % (pi_star * 100, pi_cur * 100, delta * 100, eff_buy_band * 100,
-                               tp["binding"], tp["stop"], tp["risk"]), **feats)
+                return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
+                            "目标仓位 %.0f%% > 当前 %.0f%%（Δπ=%.1f%% ≥ 触发阈值 %.1f%%，否决强度 scale=%.1f），"
+                            "binding=%s，按执行目标 %.0f%% 补仓；止损 %.2f，r=%.2f"
+                            % (pi_star * 100, pi_cur * 100, delta * 100, eff_buy_band * 100, add_scale,
+                               tp["binding"], pi_exec * 100, tp["stop"], tp["risk"]), **feats)
             return _dec(DECISION_HOLD, 0.0, 0, CONF_LOW,
                         "仓位缺口 %.2f%% 不足一手（一手步长 %.2f%%），受整百股约束本次无法执行"
                         % (delta * 100, min_pi_step * 100), **feats)
         if delta <= -eff_sell_band:
-            q = int(((-delta) * total_value) // px // 100) * 100 if px > 0 else 0
+            if _CFG["momentum_veto"] and mom_up and abs(delta) < _CFG["veto_sig_mult"] * eff_sell_band:
+                # 减仓侧对称分级：上涨段只有「|Δπ| 未达显著级」时才否决；
+                # 若超配已达显著级（风险敞口失控），单日动量不足以支撑继续持有。
+                return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
+                            "Δπ=%.1f%% 触发减仓，但日线动量向上（近3收盘递增）且未达显著级(%.1f%%)，动量否决本次换手"
+                            % (delta * 100, _CFG["veto_sig_mult"] * eff_sell_band * 100), **feats)
+            # 减仓量 = 当前持股 − π* 折算的目标持股（向上取整到整百）：
+            # 原式 (−Δπ·总值)//价//100*100 向下截断 ⇒ 减仓后仓位仍显著高于目标，
+            # 停在「半仓不表态」区，方向与仓位一致性未解决。
+            tgt_q = _target_qty(pi_star, px)
+            q = qty_held - tgt_q
+            q = min(qty_held, ((q + 99) // 100) * 100) if q > 0 else 0
             if q >= 100:
-                return _dec(DECISION_SELL, px, min(q, qty_held), CONF_MID,
-                            "当前仓位 %.0f%% 显著高于目标 %.0f%%（Δπ=%.1f%% ≤ −%.1f%%，含最小有效换手阈值），降暴露"
-                            % (pi_cur * 100, pi_star * 100, delta * 100, eff_sell_band * 100),
+                return _dec(DECISION_SELL, _order_px(-1), q, CONF_MID,
+                            "当前仓位 %.0f%% 高于目标 %.0f%%（Δπ=%.1f%% ≤ −%.1f%%），减至目标持股 %d 股"
+                            % (pi_cur * 100, pi_star * 100, delta * 100, eff_sell_band * 100, tgt_q),
                             **feats)
         return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
                     "当前仓位已在目标仓位带内（|Δπ|=%.1f%% < 阈值），持有是仓位已达标而非惰性"
@@ -495,10 +619,10 @@ def decide(ctx: TradeContext) -> TradeDecision:
     if close < sup_prev and mtf_down:
         return _flat(True, CONF_MID, "已跌破前3日低点且月/周线空头，破位下跌中不建仓，等站回结构位", **feats)
     # 空仓：开仓与加仓受同一套闸门约束（逐日结算下低胜率开仓同样放大负分天数）
-    if tp["edge"] > 0 and tp["floor_on"]:
-        q = _lot(_target_qty(pi_star) * px)
+    if tp["edge"] > 0 and tp["floor_on"] and not (_CFG["momentum_veto"] and mtf_down and not mom_up):
+        q = _lot(_target_qty(pi_star) * px, _order_px(+1))
         if q >= 100:
-            return _dec(DECISION_BUY, px, q, CONF_MID,
+            return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
                         "正期望(edge=%.2f)且目标仓位 %.0f%%，按风险预算建仓" % (tp["edge"], pi_star * 100),
                         **feats)
     if mtf_down and close < res_prev and shrink:

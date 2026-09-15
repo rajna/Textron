@@ -81,8 +81,8 @@
 
 ## 六、下一轮 P0 候选（按杠杆排序，**仍只挑一项**）
 
-1. **配对源根治（R6 剩余面）**：查 `allPendingTasks` 的来源（本轮仍见跨进程/陈旧匹配：`matchedTaskTs` = `18:33:28Z` / `18:35:42Z` / `18:35:55Z`，而窗口基线为 `18:48:13Z`）——让候选集合只含「本会话 + 未消费」任务，或 `matched.rawUserPrompt` 为空时**改选** activeTask（`a121d67` 只治素材，未治「配对身份」）。判据：`semantic_backward_entered.matchedTaskTs` 不再早于窗口起点 10 分钟以上。
-2. **悬空 `[fn:σ]` 清理（连续四轮未达标 4→17→27→33）**：`fn_block_evicted` 时同步从 content 剥离 `[fn:σ]`（现只记 `dangling`）；加每轮反传后回扫 `fn_ref_dangling`（**仅记事件，不自动改写节点**）。**硬性约束 2：存量悬空不得手工清理**。
+1. **悬空 `[fn:σ]` 清理（连续四轮单调恶化 4→17→27→33，唯一持续变差指标 ⇒ 摆首位）**：`fn_block_evicted` 时同步从 content 剥离 `[fn:σ]`（现只记 `dangling`）；加每轮反传后回扫 `fn_ref_dangling`（**仅记事件，不自动改写节点**）。**硬性约束 2：存量悬空不得手工清理**。
+2. **配对源根治（R6 剩余面）**：查 `allPendingTasks` 的来源（本轮仍见跨进程/陈旧匹配：`matchedTaskTs` = `18:33:28Z` / `18:35:42Z` / `18:35:55Z`，而窗口基线为 `18:48:13Z`）——让候选集合只含「本会话 + 未消费」任务，或 `matched.rawUserPrompt` 为空时**改选** activeTask（`a121d67` 只治素材，未治「配对身份」）。判据：`semantic_backward_entered.matchedTaskTs` 不再早于窗口起点 10 分钟以上。
 3. **函数槽淘汰优先级（本轮新量化）**：`NODE_FN_BLOCK_MAX=2` 下工程域函数顶掉交易域函数已成**重复现象**（`turn_based_step_driver`←`classify_reply_failure`；`sender_step_loop_orchestrate`←`pi_star_gate_delta_decision`）⇒ 优先淘汰 LLM 判为离目标域的函数块（判据仍须由 LLM 给，不得写词表）；或把 `L0::node_0` 的函数槽按域隔离。
 4. **域隔离的「配置/注入侧」**（R5 剩余面）：`pinnedTaskFamily` 全局 pin ⇒ 本轮仍 8 次把交易网络注入 guard/sender 会话（`context_user_message_injected`）；选项：pin 改 per-session / 每轮 `autoRouteNetworkDecision` 复核域一致性并记 `route_domain_mismatch`。
 5. **`no_pending_match` 丢自产 HE ⇒ self-backward（本轮实测 2 次）**：窗口 `agent_end_backward_skipped{reason:"no_pending_match"}` ×2 与 `highentropy_missing_at_agent_end{reason:"raw_operational_trace"}` ×2；`semantic_backward_skipped_not_feedback{pairing_judge_no_match}` ×2（`pendingCount` 3/5，候选 taskType 全工程域）。落盘时 `reward=null/unattributed`，**不得让 HE 驱动 reward**。

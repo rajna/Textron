@@ -27,12 +27,20 @@ export function isTruncated(text: string): boolean {
     /(\.{2,}|…|未完|待续|more|etc\.?|等[。\s]|详见|如上|如前|上述).{0,10}$/i.test(s);
 }
 
+/**
+ * 会话性时序摘要判据 —— **单一事实来源**（2026-09-15 手动编码）。
+ * 背景：本文件与 src/highentropy.ts 各有一份同名实现且语义发散：捕获侧宽松（时间词+会话性谓语）、
+ * 写入侧激进（时间词 ∧ 完成类动词，len≤300）。同一段交易 Technique 夹带「本轮…修复了…」即被判为
+ * 时序摘要整包丢弃 ⇒ highEntropy 为空 ⇒ 反传无素材（实测 7 次 agent_end 仅 2 次捕获）。
+ * 判据重定义为「时间词**后接会话性谓语**」，而非时间词/完成动词单独出现 —— 交易语料天然含
+ * 「最近收盘价」「上次交易分数」「2次交易推进」「本轮修复了止损参数」。不引入实例级硬编码。
+ */
 export function isTemporalSummary(text: string): boolean {
   const s = String(text || "").trim();
-  if (s.length > 300) return false;
-  const temporalMarkers = /(上次|上次对话|上一轮|之前|刚才|刚刚|今天|昨天|本周|本轮|当前|目前进展|目前为止)/;
-  const summaryOps = /(测试了|完成了|修复了|修改了|更新了|新增了|删除了|重启了|启动了|执行了|运行了)/;
-  return temporalMarkers.test(s) && summaryOps.test(s);
+  if (!s || s.length > 400) return false;   // 长文=知识正文，不判摘要
+  if (/(?:最近|昨天|上周|今天|刚才|刚刚|上次|这次)\s*(?:我们|咱们|讨论|提到|说过|聊过|沟通|复盘过|开会|会话)/.test(s)) return true;
+  if (/\b(?:ye?sterday|last\s+(?:week|month|night)|just\s+now|previous\s+session)\b[^.]{0,16}\b(?:we|we've|discussed|talked|mentioned|chat|session)\b/i.test(s)) return true;
+  return false;
 }
 
 export function isMetaInstruction(text: string): boolean {

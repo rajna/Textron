@@ -1,4 +1,5 @@
 import { distillNodeName, sharesKeywordWithContent } from "./name_distill.ts";
+import { isTemporalSummary } from "./lib/entropy";
 import { HIGH_ENTROPY_TASK_MAX_CHARS, HIGH_ENTROPY_TECHNIQUE_MAX_CHARS } from "./content_limits.ts";
 
 export interface HighEntropyCrystal {
@@ -61,19 +62,6 @@ function isTruncated(text: string): boolean {
   const cjkCount = (s.match(/[\u4e00-\u9fff]/g) || []).length;
   if (cjkCount > 0 && cjkCount / s.length > 0.6 && /(?:因为|如果|需要|通过|以及|并且|或者|但|而|与|和|及|的|地|得|了)$/.test(s)) return true;
   if (/\b(a|an|the|in|on|at|to|for|of|and|or|but|via|per|by|from|with|not|is|are|was|were|has|had|when|if|as)\s*$/i.test(s)) return true;
-  return false;
-}
-
-function isTemporalSummary(text: string): boolean {
-  const s = String(text || "");
-  // 2026-09-15 n8 第十一轮：收紧（原实现裸匹配 /最近|上次|\d+次/ 是误杀源）。
-  // 交易 Technique 天然含「最近收盘价」「上次交易分数」（来自 UI prompt 固定措辞与
-  // 反馈白名单话术）、以及「2次交易推进」这类计数 —— 旧规则把它们整包判为时序摘要丢弃
-  // ⇒ highEntropy 为空 ⇒ 反传无素材。实测：7 次 agent_end 仅 2 次捕获成功。
-  // 会话性时序摘要的判据 = 时间词「后面跟随会话性谓语」，而非时间词单独出现。
-  if (/(?:最近|昨天|上周|今天|刚才|刚刚|上次|这次)\s*(?:我们|咱们|讨论|提到|说过|聊过|沟通|复盘过|开会|会话)/.test(s)) return true;
-  if (/\b(?:ye?sterday|last\s+(?:week|month|night)|just\s+now|previous\s+session)\b[^.]{0,16}\b(?:we|we've|discussed|talked|mentioned|chat|session)\b/i.test(s)) return true;
-  if (/\d+\s*次缺失|373\s*次/.test(s)) return true;
   return false;
 }
 

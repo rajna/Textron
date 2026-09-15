@@ -6,6 +6,39 @@
 
 ---
 
+# ✦ 最近更新（2026-09-15 16:35）：n8 第十二轮 —— **反传「写入路径」全断真因 = `completeContent(0)==""` + 节点名被内容判据误杀**（已修 `2f8344e`）；重启后 `rawUserPrompt` 丢失导致反传被 `no_domain_evidence` 静默跳过（未修）
+
+> 触发：guard n8 第十二轮（三件套 16:16:34~41 重启 ⇒ 首次运行期加载 `571205a`+`eab4b87`+`aafad84`+`85b03f7`）。sender 第 1/2 次推进 step 61→62→63，均「不建仓继续观察」，零成交 ¥102,493（flat/unattributed）。
+> 状态：✅ 已改 `2f8344e`（3 处 + 测试）。**需 n9 重启生效**。
+
+## 一、验收：哪几项真生效了（第十二轮本轮 08:16:30Z 之后实测）
+| 上轮修复 | 判据 | 本轮实测 | 结论 |
+|---|---|---|---|
+| `571205a`（onLog 绑定） | 4 模式≥1 成功 / `status=ok` | `semantic_backward_llm_done{status:"ok", mode:"chat_nothinking"}` ×2；`extract_failed`=0、`llm_attempt_failed`=1（真失败，带 diag） | ✅ **解析路径修好** |
+| `eab4b87`（isTemporalSummary 收紧） | `temporal_summary` 归零 | 0 次；替代 reason 变为 `not_transferable_experience`/`ngram_fragment`/`missing` | ✅ |
+| `eab4b87`（清理闸门改判） | 真交易节点不再入 MUST-CLEANSE | `goal_guard.offGoalCandidates=[]`（08:19/08:20）；`goal_cleanse_fallback` 未触发 | ✅（f6c4c25 后又改“全摆给 LLM”，见四） |
+| `aafad84`（轨迹保真） | 反传输入不再被 slice | 反传侧 `currentMessageChars=5117` vs raw 4680+HE ⇒ **未截断**；`tool_result` 20000c / tools 全量落盘 | ✅（仅轨迹 `userPrompt` 仍 `.slice(0,4000)`，属可视化层，不影响反传） |
+| `85b03f7`（写入前版本化） | 覆写可回滚 | 同秒两次写入会产生 `_node_history/<id>.<ts>.html` 备份（本轮实测救回 node_1 全文） | ✅（但同秒覆盖，见三.3） |
+| `TEXTRON_STATE_FILE` 隔离 | 三件套各自成文件、共享文件零写入 | sender 20990B / worker 12076B 本轮各增长；共享 `_last_state.json` mtime 冻结 15:54:24 全程未动 | ✅ |
+
+## 二、真因（本轮核心，**写入路径 = 0 沉淀的最后一道闸**）：`completeContent(x, 0)` 把「不限制」当成「截断到 0」
+- 4d9de9b(00:40) 起 `NODE_CONTENT_MAX_CHARS=0` 表示取消写入上限（`content_limits.ts` 注释与 `applyContentLimit` 都是「0=不限制」），但 `lib/utils.completeContent` 旧实现 `if (s.length <= maxLen) return s; … s.slice(0, maxLen)` 对 `maxLen=0` **恒返回 ""**。
+- `normalize()` 中 node_updates（字符串分支 L1891 / 对象分支 L1900）与 add_nodes（L1913）的 content 共 6 处调用点全走 `completeContent(_, NODE_CONTENT_MAX_CHARS)` ⇒ content="" ⇒ `if (content && name)` 恒假 ⇒ **LLM 提出的更新全部静默丢弃**。
+- 量化实锤（`_events.jsonl` 全量）：`diagDirectKeys>0` 的 raw，4d9de9b 之前 **800/954 被接受（84%，含 249 个 add_nodes）**，之后 **2/2 全空**（`parsedNodeUpdateKeys=[]` 而 `diagDirectParseOk=true`）。
+- 由此解释长期现象：**唯一还能写入的路径是 `semantic_backward_goal_cleanse_fallback`（用 `applyContentLimit`）** ⇒ 网络只能被“确定性覆写”改变、好知识持续被顶替（用户报的「越改越差/记忆被抹去」的机械原因）。
+- 次因：`normalize()` 对 **name** 也套 `isNgramFragmentContent`，其第一条判据是「<18 字符 = 碎片」，而中文节点名按 prompt 约定只有 3~6 关键词（实测 11~17 字）⇒ 合法中文名被稳定误杀（对照：磁盘存活节点名全在 19~48 字）。
+- 修复 `2f8344e`：①`completeContent` 对 `maxLen<=0` 原样返回（一处覆盖 6 个调用点）；②新增 `isNgramFragmentName`（只拒纯 ASCII/标点拼贴）；③normalize 两处改用新判据。验证 `test_content_limit_zero.ts` 7/7（含用本轮真实 raw 复刻 normalize 对象分支）+ jiti LOAD_OK。
+
+## 三、本轮新发现（按价值排序，均未修）
+1. **重启后 `rawUserPrompt` 丢失 ⇒ 反传被 `no_domain_evidence` 静默跳过（100% 命中交易回合）**
+   `toPersist` 只存 taskType/taskFamily/highEntropy/activatedIds/ts/processLog，**不含 `rawUserPrompt`**；恢复时硬编码 `rawUserPrompt: ""`（L3311/L3323）。agent_end 闸门 `if (!hasDomainEvidence && !capturedHighEntropy)` 用的是**匹配到的 pending 任务**的 `highEntropy`（重启恢复项常为空）+ 空串 rawPrompt ⇒ `hasNewDomainEvidence("")`=false ⇒ skip。实测 worker 两个交易回合 `backward{status:"skipped",reason:"no_domain_evidence"}`（= 反传零触发），而同一轮的第三回合因匹配到 HE≠0 的任务才跑起来。修法：①`toPersist` 持久化 `rawUserPrompt`（截断 4KB）+ 恢复时读回；②闸门改用**本轮**素材 `_capturedHE || capturedHighEntropy` 与 `_capturedRaw`（两者在 L4255/4257 已捕获，却在闸门里没用）。
+2. **`highentropy_fallback_add_candidate` 会在 6ms 内覆写刚 merge 完的节点**：08:20:05 merge(L0::node_1→L0::node_0)=1，紧接着 fallback 把 HE 正文写进 node_0 ⇒ node_1 被清空且知识未落地（靠 `_node_history/node_1.20260915T082005.html` 才留住）。= 覆写通道仍在，只是换成了 fallback。
+3. **`_node_history` 备份名按秒**，同一秒两次写入互相覆盖（node_0 的 merge 中间版本已丢）⇒ 备份粒度需带序号/毫秒。
+4. 闸门用 `matched.highEntropy`（pending 任务的 HE）而非本轮 `_capturedHE` ⇒ 当本轮 HE 被判空时，反传吃的是**旧任务**的高熵包（本轮 default 会话 `hasHighEntropy:false` 但 `semantic_backward{hasHighEntropy:true}` 实证）。
+5. `goalInfo.targets` 在 f6c4c25 后变成「按 goalSim 升序取前 4」= 所有非空节点都进 MUST-CLEANSE 列表（实测 L0::node_0 纯交易语料 goalSim=0.009 也被列出）⇒ 需依赖 LLM 判别力，程序侧已无豁免。
+
+---
+
 # ✦ 最近更新（2026-09-15 16:05）：n8 第十一轮 —— 反传十轮全败真因 = `onLog` 未绑定 ReferenceError（一处绑定修复）；三件套状态隔离 ✅
 
 > 触发：guard n8 第十一轮（sender 2 次推进 59→60→61，均「不建仓继续观察」，零成交，账户 ¥102,493/+2.49% 不变，flat/unattributed）。

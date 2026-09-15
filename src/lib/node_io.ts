@@ -74,6 +74,19 @@ export function writeNodeFunction(filePath: string, symbol: string, code: string
 }
 
 export function writeNodeHtml(filePath: string, layer: number, nodeId: string, content: string, outEdges: { toId: string; weight: number }[], name?: string) {
+  // 2026-09-15 n8 第十二轮：**写入前版本化** —— 反传的语义是覆写（无差分、无副本），
+  // 实测节点内容被拼贴/截肢后无法回滚（" | ymbol 的块" 这类断片、function 块被 1200c 截肢）。
+  // 所有节点写入都经过本函数，故在此统一备份旧版到 <net>/_node_history/，使任何「抹去」可追溯可回滚。
+  try {
+    if (fs.existsSync(filePath)) {
+      const cut = filePath.lastIndexOf("/");
+      const histDir = `${filePath.slice(0, cut)}/../_node_history`;
+      fs.mkdirSync(histDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+      const base = filePath.slice(cut + 1).replace(/\.html$/, "");
+      fs.copyFileSync(filePath, `${histDir}/${base}.${stamp}.html`);
+    }
+  } catch { /* 备份失败不影响写入 */ }
   const storedContent = applyContentLimit(String(content || ""));
   const nodeName = (name || compressNodeName(storedContent)).slice(0, 64);
   const preservedFn = readNodeFunction(filePath);

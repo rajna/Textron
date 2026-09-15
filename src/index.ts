@@ -2487,7 +2487,19 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const raw = String(functionBlock || "").trim();
     if (!raw) return undefined;
     const symbol = (raw.match(/functionSymbol\s*[:：]\s*`?([A-Za-z_][A-Za-z0-9_]*)`?/) || [])[1] || "";
-    const code = raw.slice(0, 1200).trim();
+    // 2026-09-15 n8 第十二轮：**域闸** —— 工程域产物禁止写入领域网络。
+    // 因果链（实测坐实）：route_done reason=pinned_manual 把所有 pi 会话（含 guard 做工程
+    // 审计/写 workflow）都钉在 stock_alpha ⇒ 每轮 guard 自己产出的 HighEntropy <Function>
+    // （如 guardNodeContentOverwrite）都被直写进 stock_alpha 节点，并与交易知识拼在一起
+    // （实测 node_0 content 内 1300c 工程代码 + 900c 工程语料 vs 175c 交易知识 = 7%）。
+    // 审计者持续污染被审计网络，且污染量 > 修复量 ⇒ 十轮越改越差。
+    // 判据：symbol 或 code 命中工程标识词 ⇒ 判为工程产物 ⇒ 不落盘（只记事件）。
+    const code = raw.slice(0, 8000).trim();   // 原 1200c 会把函数体截肢（节点里实测的断码来源）
+    const ENGGEN_RE = /Textron|semantic_backward|highentropy|goalSim|layerCaps|mergeNode|guardNode|persistHighEntropy|node_\d|layer_\d|CLEANSE|反传|覆写|验收门禁/i;
+    if (ENGGEN_RE.test(`${symbol}\n${code}`)) {
+      recordMonitorEvent({ type: "trace", action: "highentropy_function_domain_gated", taskFamily, symbol, codeChars: code.length, reason: "engineering_artifact_refused" });
+      return undefined;
+    }
     if (!code) return undefined;
     // symbol 解析失败宁可早退：写无 symbol 的 <function> 块会让前向 ⟨fn:σ⟩ 永不命中，
     // 形成「看似落盘、引用链仍断」的假达标（审计 A 项硬要求 symbol 非空）。

@@ -70,12 +70,12 @@
 
 ## 五、下一轮验收断言（逐条可字面核对）
 
-- **F1'（新闸触发）**：窗口出现 `semantic_backward_function_off_goal`，其 `reason` 指向**函数机制**（非任务标签）；且同轮出现 `highentropy_function_skipped{reason:"function_off_goal"}` ⇒ 硬落盘确实被拦（而非只记不拦）。
+- **F1'（新闸触发；含前置样本条件，防假阴性）**：**前置断言**——窗口内存在 `highentropy_function_persisted` **且**其 `symbol` 属离域族（engineering/orchestration/relay-idempotency/API-session/bookkeeping/UI/config/audit），否则该轮**无样本可拦**；有样本时再看：窗口出现 `semantic_backward_function_off_goal`，其 `reason` 指向**函数机制**（非任务标签），且同轮出现 `highentropy_function_skipped{reason:"function_off_goal"}` ⇒ 硬落盘确实被拦（而非只记不拦）。**无样本一律记 `no_offgoal_sample`（跳过而非失败）**，不得计作迁移未生效。
 - **F2'（不误杀、不吞学习）**：交易域 Function（`gate`/`sizer`/`momentum`/`exposure`/`atr`/`position`/`kelly` 语义）仍能 `highentropy_function_persisted`；且 `semantic_backward_apply` 的 `nodesUpdated/nodesMerged` **不低于**本轮基线（1 真融合 + 4 次 `refused_keep_better`）⇒ 证明“不整轮早退”落地。
 - **F3'（工程域块占比下降）**：磁盘闭合 `<function>` 块中工程/编排域 **≤ 3**（本轮 4/7），且 `L0::node_0` 的 2 个函数槽中**至少 1 槽为交易域**（防再出现 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`）。
 - **F4'（悬空不增）**：悬空 `[fn:σ]` **≤ 33**（本轮基数 27→33）；理想情形下降（需 P0-2 一并实施）。
 - **F5'（`selected ⊆ context` / 注入）**：延续 **8/8**；`contextCount ≥ 1`；轨迹工具侧仍无“恰 180c”。
-- **反证判据（防“改完就宣称成功”）**：若窗口 `semantic_backward_llm_raw_response` 中 `function_off_goal` 字段出现率 **< 30%**，则判本迁移**未生效**（而非失败）—— 因为缺省=在域内，LLM 不答即行为等于回滚前，需转 R7 剩余面（程序侧硬判据缺位，如：只允许与已激活交易域节点共享 `functionSymbol` 的函数落盘）。
+- **反证判据（防“改完就宣称成功”；已加样本前置）**：仅在 F1' **前置断言成立**（窗口内确有离域族 `<Function>` 提交）时生效：若 `semantic_backward_llm_raw_response` 中 `function_off_goal` 字段出现率 **< 30%**，则判本迁移**未生效**（而非失败）—— 因为缺省=在域内，LLM 不答即行为等于回滚前，需转 R7 剩余面（程序侧硬判据缺位，如：只允许与已激活交易域节点共享 `functionSymbol` 的函数落盘）。**无离域样本时**：记 `no_offgoal_sample` 并**跳过本判据**（避假阴性）。
 - 不变式（沿用）：`injectedCount ≥ 1` ∧ 拒写时 `scoreOld > scoreNew` ∧ 同层逐字同文计数 = 0 ∧ 零成交轮 `flat/unattributed`。
 
 
@@ -255,5 +255,7 @@
 4. 字符串感知括号扫描（inString/escaped）是 JSON 提取的通用正确形态（app.py 与 Textron 两处统一）
 5. 该学没学要靠指标告警：backward failed、转化率低、任务栈只 push 不消费，显式记录+告警
 6. reasoning 系模型：预算参数名要按 compat 分流、思维链要可界（effort=low / enable_thinking=false），否则 content 恒空
+7. **保守迁移：闸门类改动只做单侧风险**（默认放行）——新增/迁移判据时优先选「不触发时行为 ≡ 改动前」的形状（如 `strict === true` 才拦、字段缺失/`"true"` 一律视作在域内），使改动**只能改善不能改差**。选择依据是**误杀/漏杀成本不对称**：层容量 `NODE_FN_BLOCK_MAX=2` 下误杀真域内函数（落一个即淘汰一个域内块）代价远高于漏放一个离域块。反之，任何「默认拦截」型判据在 LLM 不输出字段时会静默剔除合法内容，不可回滚式地对账。
+8. **判据的适用前提必须显式化**（防假阴性）——“字段出现率 < 30% ⇒ 未生效”这类反证只能用于**窗口内确有目标样本**时；无样本时闸门本无需触发，直接套用会误报失败。修法：给判据加前置样本断言（本例：先看 `highentropy_function_persisted` 且符号属离域族），无样本记 `no_offgoal_sample` **跳过而非失败**。同理：闸门“输出事件为 0”必先分辨“判据维度不匹配（LLM 从未作答）”与“实现 bug（字段有但未拦）”——前者换维度，后者修消费点。
 
 ---

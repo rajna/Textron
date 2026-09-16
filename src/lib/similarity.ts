@@ -1,4 +1,4 @@
-import { previewText } from "./utils";
+import { previewText } from "./utils.ts";
 
 // ── TF-IDF utilities ──
 
@@ -37,6 +37,52 @@ export function stripFunctionBlocks(text: string): string {
     .replace(/[\[⟨]fn:[^\]⟩]*[\]⟩]/g, " ")
     .replace(/functionSymbol\s*[:：][^\n]*/gi, " ")
     .replace(/functionAbstract\s*[:：]?/gi, " ");
+}
+
+/**
+ * 悬空 `[fn:σ]` / `⟨fn:σ⟩` 回扫（n8 第十八轮）—— **仅统计，绝不改写节点**（硬性约束 2：存量悬空
+ * 不得手工清理）。
+ *
+ * 口径（本函数即口径的单一事实来源，杜绝每轮手工 grep 口径漂移）：
+ *   symbolsAlive   = 全部节点中闭合 `<function symbol="σ">` 块的去重符号数；
+ *   danglingPair   = 「节点 × 引用符号」对，该 σ 无对应 function 块 ⇒ 悬空；
+ *   danglingRefs   = 悬空引用出现次数（同一符号在同节点重复出现按次数计）；
+ *   danglingSymbols = 悬空符号去重集合。
+ * 比较历史值请用 danglingPair（与 4→17→27→33 的既有台账同口径）。
+ */
+export function scanDanglingFnRefs(nodes: { id: string; content: string }[]): {
+  symbolsAlive: number;
+  danglingPairs: number;
+  danglingRefs: number;
+  danglingSymbols: string[];
+  refsTotal: number;
+  perNode: { id: string; danglingPairs: number }[];
+} {
+  const alive = new Set<string>();
+  for (const n of nodes) {
+    for (const m of String(n.content || "").matchAll(/<function\s+symbol="([^"]+)"/g)) alive.add(m[1]);
+  }
+  const refRe = /[\[⟨]fn:([A-Za-z_][A-Za-z0-9_]*)[\]⟩]/g;
+  const danglingSymbols = new Set<string>();
+  const perNode: { id: string; danglingPairs: number }[] = [];
+  let danglingPairs = 0;
+  let danglingRefs = 0;
+  let refsTotal = 0;
+  for (const n of nodes) {
+    const counts = new Map<string, number>();
+    for (const m of String(n.content || "").matchAll(refRe)) counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+    let nodePairs = 0;
+    for (const [sym, k] of counts) {
+      refsTotal += k;
+      if (alive.has(sym)) continue;
+      nodePairs++;
+      danglingPairs++;
+      danglingRefs += k;
+      danglingSymbols.add(sym);
+    }
+    perNode.push({ id: n.id, danglingPairs: nodePairs });
+  }
+  return { symbolsAlive: alive.size, danglingPairs, danglingRefs, danglingSymbols: [...danglingSymbols].sort(), refsTotal, perNode };
 }
 
 export function buildTfidfIndex(net: { hyperparams: { layers: number[] }; path: string }): {

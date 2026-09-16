@@ -37,7 +37,7 @@ import { evaluateFunctionDomainGate, functionDomainGateRule } from "./domain_gat
 import { chooseTaskFamilyRoute } from "./learning_policy";
 import { assistantMessageText, extractHighEntropy, extractLatestHighEntropyFromMessages, parseHighEntropyCrystal } from "./highentropy";
 import { distillNodeName, buildAtomKey } from "./name_distill.ts";
-import { applyExplorationPolicy, buildLocalScores, lexicalRelevance, parseNodeScores, rankLayerWithExploration } from "./scoring_policy";
+import { applyExplorationPolicy, buildLocalScores, lexicalRelevance, parseNodeScores, rankLayerWithExploration, retentionVerdict } from "./scoring_policy";
 import { routeL0ThroughMoe } from "./moe_router.ts";
 import { decideNoveltyExpansion } from "./novelty_policy.ts";
 import { DEFAULT_COMPILED_CONTEXT_MAX_CHARS, NODE_CONTENT_MAX_CHARS, applyContentLimit } from "./content_limits.ts";
@@ -55,7 +55,7 @@ import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNod
 import { normalizeMergeFragment, mergeDistinctContentFragments,
          mergeNodeContent, mergeContent } from "./lib/merge";
 import { tfidfTokens, buildTfidfIndex, cosineSim, tfidfSimilarity, stripFunctionBlocks,
-         nameTokens, jaccard, tokenSimilarity, findSimilarNode, findSimilarKnowledgeNode } from "./lib/similarity";
+         nameTokens, jaccard, tokenSimilarity, findSimilarNode, findSimilarKnowledgeNode, scanDanglingFnRefs } from "./lib/similarity";
 import { TEXTRON_HOME, DEFAULT_HYPERPARAMS, DEFAULT_WEIGHT, NGRAM_DISTILL_PROMOTE,
          TEXTRON_ALLOW_NODE_GROWTH, getTaskFamilyPath, networkExists, listNetworks,
          initNetwork, loadNetwork, layerCapFor, DEFAULT_LAYER_CAP,
@@ -2712,21 +2712,34 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // 的相对比较。判据 = 网络自身 goal 与**剥离 <function> 块后正文**的词面相关度(lexicalRelevance)：
       // 新明显更低 ⇒ 拒写（旧内容保留，_node_history 有副本可回滚）；略低 ⇒ 降级为融合（旧要点不丢）。
       // 此处不引入任何词表、不引入绝对阈值。
+      //
+      // 2026-09-16 n8 第十八轮修正（R8）：拒写从「新分低」收窄为「新分低 **且** 新文无任何在域证据」。
+      // 实证 lexicalRelevance 的分子只数 goal 侧命中数 ⇒ 旧文因累积+每轮 keep 反而单调占优；新文是
+      // 专业符号化增量（π* ／ ATR ／ gap_lower ／ 函数名）⇒ 字面命中天然稀疏，实测比值 15×（0.0075
+      // vs 0.1143）远超 0.85 阈值 ⇒ LLM 每轮的提炼被整轮丢弃。更致命的是同一实现在 L0::node_1 上
+      // 反转：其正文已被函数块吞没（stripFunctionBlocks 后空，scoreOld=0）⇒ 永假条件 + 空旧文零重叠
+      // ⇒ 交易正文一旦丢失就再也长不回来（实测层0：node_0 160KB 膨胀 vs node_1 2.7KB 空壳）。
+      // 新判据：空壳豁免（不断死锁）+ 证据制（goal 词面命中 ∨ 与旧文域重叠 ≥15%）⇒ 只在「体量足够
+      // ∧ 无证据 ∧ 非空壳」时拒绝；否则一律降级为融合（旧要点不丢，新知识能进）。
       let forcedReplace = isCleanse;
       if (newContent && oldContent.trim()) {
         const _g = readNetworkGoal(path.basename(net.path));
-        const _sOld = lexicalRelevance(_g, stripFunctionBlocks(oldContent));
-        const _sNew = lexicalRelevance(_g, stripFunctionBlocks(newContent));
-        if (_sNew < _sOld * 0.85) {
+        const _v = retentionVerdict(_g, stripFunctionBlocks(oldContent), stripFunctionBlocks(newContent));
+        const _sOld = _v.scoreOld;
+        const _sNew = _v.scoreNew;
+        const _logFields = { id, scoreOld: Number(_sOld.toFixed(4)), scoreNew: Number(_sNew.toFixed(4)), goalHits: _v.goalHits, oldCover: Number(_v.oldCover.toFixed(4)), freshNode: _v.freshNode, evidence: _v.evidence, oldChars: oldContent.length, newChars: newContent.length };
+        if (_sNew < _sOld * 0.85 && _v.offDomain) {
           result.skipped++;
           result.skipReasons.push(`${id}:retention_new_worse`);
-          recordMonitorEvent({ type: "trace", action: "node_write_refused_keep_better", id, scoreOld: Number(_sOld.toFixed(4)), scoreNew: Number(_sNew.toFixed(4)), oldChars: oldContent.length, newChars: newContent.length });
-          onLog(`Textron backward: refused overwrite of ${id} — new less goal-relevant (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)}); old kept (versioned)`);
+          recordMonitorEvent({ type: "trace", action: "node_write_refused_keep_better", ..._logFields, offDomain: true });
+          onLog(`Textron backward: refused overwrite of ${id} — off-domain increment (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)}, goalHits=${_v.goalHits} oldCover=${_v.oldCover.toFixed(2)}); old kept (versioned)`);
           continue;
         }
         if (_sNew < _sOld) {
           forcedReplace = false;
-          onLog(`Textron backward: downgraded overwrite of ${id} to merge — new not better (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)})`);
+          // 观测点（下轮验收）：判据修正后 LLM 增量应当真正落盘 ⇒ 本事件数应与 refused 一起看。
+          recordMonitorEvent({ type: "trace", action: "node_write_downgraded_to_merge", ..._logFields, offDomain: false });
+          onLog(`Textron backward: downgraded overwrite of ${id} to merge — in-domain increment (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)}, evidence=${_v.evidence.join("+") || "none"})`);
         }
       }
       // isCleanse（网络目标驱动的离域清洗）：**真覆盖**，不与旧内容/旧名拼接。
@@ -3148,6 +3161,28 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     let bwResult: ReturnType<typeof autoBackward>;
     try { bwResult = autoBackward(net, activatedIds, effectiveReward, log, selectedEdgeIds, undefined, result.node_updates, result.add_nodes, gatedNodeActions); } catch (e) { recordMonitorEvent({ type: "trace", action: "debug_backward_autobackward_failed", taskFamily, error: (e as Error).stack || (e as Error).message }); throw e; }
     recordMonitorEvent({ type: "trace", action: "semantic_backward_apply", taskFamily, reward: effectiveReward, llmReward: result.reward, edgesUpdated: bwResult.changes, nodesUpdated: bwResult.nodesUpdated, nodesAdded: bwResult.nodesAdded, nodesMerged: bwResult.nodesMerged, nodesSkipped: bwResult.nodesSkipped, skipReasons: bwResult.nodeSkipReasons.slice(0, 8), changedNodes: bwResult.changedNodes, nodeMutations: bwResult.nodeMutations });
+
+    // ── 悬空 [fn:σ] 回扫（n8 第十八轮，P0-1 后半句）：**仅记事件，绝不改写节点**
+    // （硬性约束 2：存量悬空不得手工清理）。口径由 scanDanglingFnRefs 单一持有 ⇒ 消灭「每轮手工 grep
+    // 口径漂移」——P0 台账 4→17→27→33 连续四轮无可比基线，根因就是口径没有代码载体。
+    // 下轮验收：直接读 fn_ref_dangling.danglingPairs（与台账同口径），不再重新数。
+    try {
+      const _fnNodes: { id: string; content: string }[] = [];
+      for (const dir of fs.readdirSync(net.path).filter((d) => /^layer_\d+$/.test(d))) {
+        const _l = dir.slice(6);
+        for (const f of fs.readdirSync(path.join(net.path, dir)).filter((f) => /^node_\d+\.html$/.test(f))) {
+          const fp = path.join(net.path, dir, f);
+          _fnNodes.push({ id: `L${_l}::${f.replace(".html", "")}`, content: readNodeContent(fp) || "" });
+        }
+      }
+      const _scan = scanDanglingFnRefs(_fnNodes);
+      recordMonitorEvent({
+        type: "trace", action: "fn_ref_dangling", taskFamily,
+        symbolsAlive: _scan.symbolsAlive, danglingPairs: _scan.danglingPairs, danglingRefs: _scan.danglingRefs,
+        danglingSymbols: _scan.danglingSymbols.slice(0, 24), danglingSymbolCount: _scan.danglingSymbols.length,
+        refsTotal: _scan.refsTotal, perNode: _scan.perNode.filter((p) => p.danglingPairs > 0),
+      });
+    } catch { /* 观测失败不影响反传 */ }
 
     // HighEntropy fallback: if no node update happened, synthesize from previous assistant
     let highEntropyFallbackNode = "";

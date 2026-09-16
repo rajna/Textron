@@ -112,6 +112,8 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
   box-shadow:0 24px 60px rgba(8,12,24,.35);
 }
 .panel{padding:22px 24px}
+/* 网络图面板：flex 容器 + gap（不再用 margin，避免与 order 重排叠加）*/
+#graphs{display:flex;flex-direction:column;gap:18px}
 .spanel{padding:20px 22px}
 .sp-title{font-size:17px;font-weight:700;margin-bottom:14px;letter-spacing:-.01em}
 .panel-meta{font-size:12px;color:var(--faint);text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin-bottom:12px}
@@ -160,10 +162,12 @@ h1{margin:0;font-size:44px;line-height:1.02;font-weight:700;letter-spacing:-.02e
 }
 .graph canvas{display:block;cursor:crosshair}
 .gtip{
-  display:none;position:absolute;z-index:6;pointer-events:none;
-  background:rgba(8,12,24,.94);border:1px solid var(--border-hi);border-radius:10px;
+  display:none;position:fixed;z-index:9999;pointer-events:auto;
+  background:rgba(8,12,24,.96);border:1px solid var(--border-hi);border-radius:10px;
   padding:10px 12px;font:11px var(--mono);color:#dbe4f8;line-height:1.7;
-  max-width:300px;white-space:pre-wrap;box-shadow:0 14px 40px rgba(0,0,0,.5);
+  max-width:min(420px,86vw);white-space:pre-wrap;box-shadow:0 14px 40px rgba(0,0,0,.55);
+  /* 内容过长时浮窗自身滚动，不再被 .graph(overflow:auto) 裁剪 */
+  max-height:min(70vh,480px);overflow:auto;overscroll-behavior:contain;
 }
 .gtip b{color:var(--lime)}
 .graph-foot{font:10px var(--mono);color:var(--faint);margin-top:10px}
@@ -501,7 +505,24 @@ function ensureGraphView(name,isFirst){
     data:null,W:0,H:0,R:15,dpr:1,_sig:'',staticCanvas:null,staticCtx:null
   };
   canvas.addEventListener('mousemove',function(e){onGraphHover(gv,e)});
-  canvas.addEventListener('mouseleave',function(){gv.tip.style.display='none'});
+  // 延迟隐藏：给鼠标留出从 canvas 移到浮窗上滚动的时间（浮窗自身可滚动）
+  canvas.addEventListener('mouseleave',function(){ gv._hideT=setTimeout(function(){gv.tip.style.display='none'},300) });
+  tip.addEventListener('mouseenter',function(){ if(gv._hideT){clearTimeout(gv._hideT);gv._hideT=null} });
+  tip.addEventListener('mouseleave',function(){ gv.tip.style.display='none' });
+  // ── canvas 缩放：Ctrl/⌘ + 滚轮（以光标为锚点，缩放前后光标下的内容位置不变）；双击重置 ──
+  graph.addEventListener('wheel',function(e){
+    if(!(e.ctrlKey||e.metaKey))return;            // 普通滚轮保留为滚动
+    e.preventDefault();
+    var z0=gv.zoom||1, z1=Math.min(3,Math.max(0.5,z0*(e.deltaY<0?1.12:1/1.12)));
+    if(z1===z0)return;
+    var rect=graph.getBoundingClientRect();
+    var mx=e.clientX-rect.left, my=e.clientY-rect.top;      // 光标在视口内的偏移
+    var px=(graph.scrollLeft+mx)/z0, py=(graph.scrollTop+my)/z0;  // 光标下的逻辑坐标
+    gv.zoom=z1;
+    applyZoom(gv);
+    graph.scrollLeft=px*z1-mx;graph.scrollTop=py*z1-my;     // 锚定光标
+  },{passive:false});
+  graph.addEventListener('dblclick',function(){ if((gv.zoom||1)!==1){gv.zoom=1;applyZoom(gv)} });
   return gv;
 }
 function onGraphHover(gv,e){
@@ -516,10 +537,16 @@ function onGraphHover(gv,e){
   if(best&&bd<(gv.R+10)*(gv.R+10)){
     gv.tip.innerHTML='<b>'+esc(best.qid)+'</b>'+(best.score!=null?'  score '+Number(best.score).toFixed(3):'')+
       '\nname: '+esc(best.name||'(empty)')+'\ncontext: '+esc(best.context||'(empty)');
-    var grect=gv.graph.getBoundingClientRect();
-    gv.tip.style.left=(e.clientX-grect.left+gv.graph.scrollLeft+16)+'px';
-    gv.tip.style.top=(e.clientY-grect.top+gv.graph.scrollTop+12)+'px';
-    gv.tip.style.display='block';
+    if(gv._hideT){clearTimeout(gv._hideT);gv._hideT=null}
+    gv.tip.style.display='block';                 // 先显示才能量到尺寸
+    // 视口坐标 + 边界翻转（position:fixed 不再受 .graph 滚动/裁剪影响）
+    var tw=gv.tip.offsetWidth, th=gv.tip.offsetHeight;
+    var vw=window.innerWidth, vh=window.innerHeight;
+    var tx=e.clientX+16, ty=e.clientY+14;
+    if(tx+tw>vw-8) tx=Math.max(8, e.clientX-tw-16);   // 右越界 → 翻到光标左侧
+    if(ty+th>vh-8) ty=Math.max(8, vh-th-12);          // 下越界 → 上移贴底
+    gv.tip.style.left=tx+'px';
+    gv.tip.style.top=ty+'px';
   }else gv.tip.style.display='none';
 }
 
@@ -646,20 +673,54 @@ function updateGraphView(name,net,state){
   gv.layerCounts=layerCounts;
   gv.R=Rv;
   var dpr=(W*H>1500000)?1:Math.min(2,window.devicePixelRatio||1);
-  if(gv.W!==W||gv.H!==H||gv.dpr!==dpr){
-    gv.W=W;gv.H=H;gv.dpr=dpr;
-    gv.canvas.width=W*dpr;gv.canvas.height=H*dpr;
-    gv.canvas.style.width=W+'px';gv.canvas.style.height=H+'px';
-    gv.ctx.setTransform(dpr,0,0,dpr,0,0);
+  var zoom=(gv.zoom||1);
+  var fz=pxFactor(W,H,dpr,zoom);        // 分辨率因子（已封顶，防 zoom² 像素爆炸）
+  if(gv.W!==W||gv.H!==H||gv.dpr!==dpr||gv._z!==zoom||gv._fz!==fz){
+    gv.W=W;gv.H=H;gv.dpr=dpr;gv._z=zoom;gv._fz=fz;
+    gv.canvas.width=Math.round(W*fz);gv.canvas.height=Math.round(H*fz);
+    gv.canvas.style.width=(W*zoom)+'px';gv.canvas.style.height=(H*zoom)+'px';
+    gv.ctx.setTransform(fz,0,0,fz,0,0);
+    gv._sig='';                       // 尺寸/缩放变了 ⇒ 静态层需重建
   }
   var wsum=0;for(var wi=0;wi<edges.length;wi++)wsum+=Math.round(edges[wi].w*10000);
   var sig=layers.join(',')+'|'+nodes.length+'|'+edges.length+'|'+selectedIds.join(',')+'|'+wsum;
   if(sig!==gv._sig){gv._sig=sig;renderStatic(gv)}
-  gv.meta.innerHTML='Network Graph · <b>'+esc(name)+'</b> · layers ['+layers.join(',')+'] · selected '+selectedIds.length+' · threshold '+net.threshold;
+  gv.meta.innerHTML='Network Graph · <b>'+esc(name)+'</b> · layers ['+layers.join(',')+'] · selected '+selectedIds.length+' · threshold '+net.threshold+' · zoom <b>'+Math.round((gv.zoom||1)*100)+'%</b>';
   gv.path.textContent=selectedIds.length?selectedIds.join(' → '):'no selected path';
   var backInfo=backwardEdges?'↩ '+(backward.edgesUpdated||0)+' edges':'';
   var ledN=(net.weights&&net.weights.ledger)?Object.keys(net.weights.ledger).length:0;
   gv.foot.textContent='selectedEdges: '+selectedEdges.length+' · glowing: '+goldReal+' · mutations: '+moved.length+' · lateral: '+latRaw.length+' · ledger trained: '+ledN+(backInfo?' · '+backInfo:'');
+}
+
+/* 缩放：Ctrl/⌘ + 滚轮（普通滚轮仍为滚动）；双击重置。内部像素随 zoom 同步放大 ⇒ 清晰 */
+/* 缩放像素上限：canvas 宽高同乘 zoom ⇒ 面积按 zoom² 增长（3× 即 9 倍像素），会卡顿。
+   故对「分辨率因子 fz」封顶：总像素 ≤ ZOOM_MAXPX（约 1920×1350），超出则降分辨率（略糊换流畅）。*/
+var ZOOM_MAXPX=2600000;
+function pxFactor(W,H,dpr,zoom){
+  var fz=(dpr||1)*(zoom||1);
+  var cap=Math.sqrt(ZOOM_MAXPX/Math.max(1,W*H));
+  return Math.max(0.75, Math.min(fz,cap));
+}
+function applyZoom(gv){
+  if(!gv||!gv.canvas||!gv.W)return;
+  var z=gv.zoom||1, fz=pxFactor(gv.W,gv.H,gv.dpr||1,z);
+  gv.canvas.width=Math.round(gv.W*fz);gv.canvas.height=Math.round(gv.H*fz);
+  gv.canvas.style.width=(gv.W*z)+'px';gv.canvas.style.height=(gv.H*z)+'px';
+  gv.ctx.setTransform(fz,0,0,fz,0,0);
+  gv._z=z;gv._fz=fz;
+  drawGraph(gv,performance.now());       // 先用旧静态层快速 blit：拖拽/滚轮期间不卡
+  if(gv._rbT)clearTimeout(gv._rbT);      // 计时器挂在 gv 上：多面板各自独立，互不取消
+  gv._rbT=setTimeout(function(){         // 停手 180ms 后才重建高清静态层（避免连续全量重绘）
+    gv._rbT=null; gv._sig=''; renderStatic(gv); drawGraph(gv,performance.now());
+  },180);
+  updateZoomLabel(gv);
+}
+function updateZoomLabel(gv){
+  if(!gv||!gv.meta)return;
+  var z=Math.round((gv.zoom||1)*100);
+  var tag=' · zoom <b>'+z+'%</b>';
+  var cur=gv.meta.innerHTML.replace(/ · zoom <b>\d+%<\/b>/,'');
+  gv.meta.innerHTML=cur+tag;
 }
 
 /* static synapse layer — rebuilt per poll, blitted per frame (perf) */
@@ -667,9 +728,10 @@ function renderStatic(gv){
   var d=gv.data;if(!d)return;
   var sc=gv.staticCanvas;
   if(!sc){sc=gv.staticCanvas=document.createElement('canvas');gv.staticCtx=sc.getContext('2d')}
-  if(sc.width!==gv.W*gv.dpr||sc.height!==gv.H*gv.dpr){sc.width=gv.W*gv.dpr;sc.height=gv.H*gv.dpr}
+  var fz=gv._fz||pxFactor(gv.W,gv.H,gv.dpr||1,gv.zoom||1);   // 与主 canvas 用同一（已封顶的）因子
+  if(sc.width!==Math.round(gv.W*fz)||sc.height!==Math.round(gv.H*fz)){sc.width=Math.round(gv.W*fz);sc.height=Math.round(gv.H*fz)}
   var g=gv.staticCtx;
-  g.setTransform(gv.dpr,0,0,gv.dpr,0,0);
+  g.setTransform(fz,0,0,fz,0,0);
   g.clearRect(0,0,gv.W,gv.H);
   g.lineCap='round';g.textAlign='center';
   // Quiet lane scaffolding makes empty layers and uneven counts legible without competing with edges.
@@ -707,8 +769,12 @@ function drawGraph(gv,t){
   var rect=gv.panel.getBoundingClientRect();
   if(rect.bottom<-60||rect.top>innerHeight+60)return; // viewport culling
   var ctx=gv.ctx,Rv=gv.R,i,e,nd;
-  ctx.clearRect(0,0,gv.W,gv.H);
-  ctx.drawImage(gv.staticCanvas,0,0,gv.W,gv.H);
+  // 1:1 像素直拷（静态层与 canvas 同分辨率）⇒ 消除每帧全幅重采样的开销
+  var fz=gv._fz||1;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,gv.canvas.width,gv.canvas.height);
+  ctx.drawImage(gv.staticCanvas,0,0);
+  ctx.setTransform(fz,0,0,fz,0,0);       // 恢复逻辑坐标供下方动态层使用
 
   // ── additive living layer ──
   ctx.save();
@@ -1211,6 +1277,12 @@ function render(s){
   var names=Object.keys(s.networks||{});
   if(!names.length){graphsEl.innerHTML='<div class="panel">No Textron networks.</div>';return}
   var activeName=s.currentTaskFamily&&s.networks[s.currentTaskFamily]?s.currentTaskFamily:names[0];
+  // 激活网络排到最前（其余保持原顺序）
+  names.sort(function(a,b){
+    if(a===activeName)return -1;
+    if(b===activeName)return 1;
+    return 0;
+  });
   var activeIds=(s.currentActivatedIds||[]);
   var b=s.lastBackwardState||null;
 
@@ -1226,6 +1298,14 @@ function render(s){
   for(var k in graphViews){
     if(!s.networks[k]){graphViews[k].panel.remove();delete graphViews[k]}
   }
+  // 激活网络置顶：用 CSS `order` 排序（不移动 DOM ⇒ 不会重置滚动位置）
+  // 注：早期用 appendChild 重排，而 render() 每 1.5s 轮询一次，会把滚动条反复挤回顶部
+  for(var no=0;no<names.length;no++){
+    var gvo=graphViews[names[no]];
+    if(gvo&&gvo.panel)gvo.panel.style.order=no;
+  }
+  for(var km in graphViews){if(graphViews[km].panel)graphViews[km].panel.id=''}
+  if(graphViews[names[0]])graphViews[names[0]].panel.id='sec-graph';
 
   renderSteps(s,activeIds,b);
 

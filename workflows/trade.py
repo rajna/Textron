@@ -357,8 +357,12 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
          且止损 trail 上移 → 容量同步放大。
     """
     stop = sup_prev
-    trail_ok = (close > res_prev) or (gap_lower is not None and close >= gap_lower)
-    if trail_ok:
+    res_break = close > res_prev                       # 真突破压力位（区别于「收复缺口下沿」）
+    trail_ok = res_break or (gap_lower is not None and close >= gap_lower)
+    if res_break:
+        # 只有**真实突破** res_prev 才把止损 trail 到 res_prev 下方；仅「收复缺口下沿」不构成
+        # 突破证据，原式共用 trail_ok 会把 stop 抬到 res_prev·0.995 ⇒ 出现 stop > close 的
+        # 退化区间（风险距离变负，只能靠 vol_floor 兜底），feats 里的 stop 也会误导复盘。
         stop = max(stop, res_prev * _CFG["trail_ratio"])   # 突破确认 → 移动止损上移
     if gap_lower and close >= gap_lower:
         stop = max(stop, gap_lower * 0.99)                  # 收复缺口 → 止损再上移至缺口下沿
@@ -567,7 +571,9 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
         budget = min(budget_value, cash)
         if p_ <= 0 or budget < p_ * 100 or cash < p_ * 100:
             return 0
-        lots = int(budget // p_ // 100) * 100
+        # 浮点地板必须带 eps：budget = 200×55.21 时 11042.0 // 55.21 == 199.0（二进制表示误差）
+        # ⇒ 少买整整一手（200→100 股），执行层收到的仓位低于策略意图且无任何报错信号。
+        lots = int(math.floor(budget / p_ / 100.0 + 1e-9)) * 100
         if lots < 100 and budget >= p_ * 50 and cash >= p_ * 100:
             lots = 100
         return lots if lots * p_ <= cash else 0
@@ -578,7 +584,7 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
         p_ = float(price or px)
         if p_ <= 0 or pi <= 0:
             return 0
-        return int(pi * total_value // p_ // 100) * 100
+        return int(math.floor(pi * total_value / p_ / 100.0 + 1e-9)) * 100   # 同上：地板带 eps
 
     # ── 带仓 ──────────────────────────────────────────────────────────────
     if qty_held > 0:

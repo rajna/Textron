@@ -6,7 +6,58 @@
 
 ---
 
-# ✦ 最近更新（2026-09-16 03:05）：n8 **第十七轮** —— **`75847ed`（任务侧域闸）按登记判据回滚**：`semantic_backward_off_domain` 连续三轮恒 **0**，且窗口内 12 次 `semantic_backward_llm_raw_response` 中 `off_domain` 字段出现率 **0/12** ⇒ 该闸**结构性不可触发**（判据维度错位：问「本轮任务是否属域」，而任务标签恒在域内）。本轮**删闸 + 把判据面迁到「`<Function>` 块的机制域」**（只 gate 两条程序化写入通道：Function 硬落盘 + HE fallback add），并实施函数侧域闸 `evaluateFunctionDomainGate`/`functionDomainGateRule`。
+# ✦ 最近更新（2026-09-16 23:35）：n8 **第十八轮** —— 首次运行期验收 **`fa15bc2`（函数侧域闸）** ⇒ **F1' = `no_offgoal_sample`（前置样本不成立 ⇒ 按登记规则跳过而非失败）**；F3' **✗**（`L0::node_0` 两槽仍全为工程域）；F4' **✗**（悬空 33→**35** 符号×节点对，P0 连续五轮恶化）。**本轮根因 R8 = 保留判据（`lexicalRelevance` 相对比较）的度量错位 + 空壳自锁**：判据分子只数 goal 侧命中 ⇒ 旧文因每轮 keep 反复保留 goal 字面词而**单调累加**（实测 `scoreOld 0.1143` vs `scoreNew 0.0075`，比值 **15×**，远超 0.85 阈值）；更致命的是在 `L0::node_1` 上反转 —— 其正文已被 2 个 `<function>` 块**吞没成空壳**（`stripFunctionBlocks` 后 ≈0、`scoreOld=0`）⇒ 旧条件**永假** + 与新文零重叠 ⇒ **交易正文一旦丢失就再也长不回来**（层 0 两极：`node_0` **160KB** 膨胀 vs `node_1` **2.7KB** 空壳）。这同时是 P0「悬空单调恶化」的上游：正文不长 ⇒ 只剩 `[fn:σ]` 引用持续累积。**实施 `14f5961`：判据改证据制 + 悬空口径代码化（需 n9 重启生效）**。
+
+> 触发：guard n8 第十八轮。三件套 **23:17 重启** ⇒ **首次运行期加载 `fa15bc2`**（第十七轮函数侧域闸）。
+> 窗口 = `_events.jsonl` UTC `15:15:29–15:25:30`（293 事件 / 7 `propagate_done` / 4 `semantic_backward_entered` / 3 反传 LLM 成功 / 2 `highentropy_function_persisted` / 4 `trajectory_tools_fidelity`）；`project=default`、`deepseek-flash`、`default_session_id=4cf529337f29`、`active_stock=sz.301299`、`step_index=74`（存档口径，与本轮 2 次推进互不相干）。
+> **以下第二~七节仍为第十七轮存档内容**（保留其断言编号 F1'–F5' 的字面形，便于对照历史）。
+
+## 一、本轮验收（逐条字面核对）
+- **F1' = `no_offgoal_sample`（跳过）**：窗口 2 次 `highentropy_function_persisted` 的 `symbol` **均为 `pi_star_gate_trade`**（交易域），**无** engineering/orchestration/relay-idempotency/API-session/bookkeeping/UI/config/audit 样本 ⇒ 前置断言不成立，记 `no_offgoal_sample`，**不计失败**；`semantic_backward_function_off_goal` 0 次、`highentropy_function_skipped{function_off_goal}` 0 次（与无样本自洽）。**反证判据同步跳过**（`function_off_goal` 字段出现率 1/4=25%，但前提不成立不得据此判「未生效」—— 照搬会得出错误结论，这正是第十七轮加前置断言的价值）。
+- **F2'（不吞学习）✅（写入面在动）**：`semantic_backward_apply` 两次 `nodesMerged=1/3`、`nodesUpdated=3/1`、`nodesSkipped=0,2`；`highentropy_function_persisted` 2 次 ⇒ **但内容面被 R8 吞掉**（见下）。
+- **F3' ✗**：磁盘闭合 `<function>` 块 **6 符号 / 9 槽**；工程域符号 **3**（`sender_step_loop_orchestrate`、`sender_advance_with_gate_regression`、`build_symbol_substitution`）⇒ 第一条 ≤3 **恰好达标**；但 **`L0::node_0` 的 2 个函数槽仍全为工程域**（两个 `sender_*`），**0 槽交易域** ⇒ 第二条件 **✗**（第十七轮登记的「工程域块顶掉交易决策块」再次命中；被顶掉的 `pi_star_gate_delta_decision` 现为**悬空引用**）。
+- **F4' ✗（P0 连续五轮单调恶化）**：悬空 **35** 符号×节点对（27→33→**35**）、`danglingRefs=47`、去重符号 35、引用 57 次 / 44 对；口径 = content 中 `[fn:σ]`/`⟨fn:σ⟩` 而磁盘无对应 `<function symbol="σ">` 块。**本轮把口径代码化** ⇒ 下轮起不再人工 grep（4→17→27→33 之所以「无可比基线」，根因就是口径没有代码载体）。
+
+## 二、本轮数据（对应 n8 第 1–7 项）
+1. **轨迹采集（近 ✅，仍有截断）**：4 次 `trajectory_tools_fidelity` = `entries/inputTruncated/outputTruncated` → `4/0/1`、`8/1/1`、`7/0/0`（**`thinkingChars=51124` ⇒ `thinkingTruncated=true`**）、`1/0/0`。工具侧保真结论（`inputPreview` 恰 180c 已消失）仍成立，但**长思考会被截** ⇒ 反传素材上限即思考上限。
+2. **反传触发（✅ 3 次落地，3 类丢失复现）**：`semantic_backward_entered` 4 次（3 次 `hasHighEntropy=true`、`learningPromptSource=raw_prompt`、`taskPromptPatch=matched`）⇒ LLM 反传确实跑；但 `agent_end_backward_skipped{no_pending_match}` ×1 + `highentropy_missing_at_agent_end{raw_operational_trace}` ×1 + `semantic_backward_skipped_not_feedback{pairing_judge_no_match}` ×2 ⇒ **P0-5（配对/归因）第三轮原样复现**（两条 skipped 的 `msgPreview` 正是本轮 n6 派发消息）。
+3. **HE→Function 沉淀 ✅**：`highentropy_captured` ×3（1843/1772/1858c）→ `highentropy_function_persisted` ×2（`pi_star_gate_trade`，`codeChars=1200`，`contentAppended=true`）。
+4. **抽象融合 ✅（在发生）**：`nodeMutations` 出现跨层 merge（`L1::node_1←L0::node_1`、`L2::node_0←L2::node_1`、`L3::node_0←L3::node_1`）；`semantic_backward_compression_round{trigger:add_skipped_at_cap}` → `compression_done{resolved:true, progress:true}` ⇒ 容量满时的压缩轮有效。
+5. **内容面被拒（R8 入口）**：`node_write_refused_keep_better` ×2（`L0::node_1`：0.1143 vs 0.0075；0.1017 vs 0.0087）⇒ LLM 每轮增量提炼**整轮丢弃**。
+6. **LLM 返回空（新观察）**：`semantic_backward_goal_cleanse_fallback{reason:"llm_returned_empty_node_updates", victim:"L2::node_1"}` ×2 ⇒ 清筛指令把 LLM 逼成空 `node_updates`（与「MUST-CLEANSE 指令污染反传输出」同族）。
+7. **离线复核面自伤（新登记）**：`semantic_backward_llm_raw_response.rawContent` 落盘被截到 **2000c**（`rawContentChars=5181` ⇒ `storedLen=2000`）⇒ 4 条中 **2 条 `JSON.parse` 失败**（`Unterminated string`）。**不是模型问题**：离线无法复核反传原文。
+
+## 三、本轮根因 R8（单变量）：保留判据 = 拿「绝对字面命中」比较「累积长文 vs 符号化增量」
+- **判据面**：`index.ts` 写入前置比较 `_sNew < _sOld * 0.85 ⇒ 拒写`，而 `_sOld/_sNew = lexicalRelevance(goal, stripFunctionBlocks(body))`，其中 `lexicalRelevance = hit / sqrt(|a|·|b|)`（`hit` = goal 侧被命中的 token 数）。
+- **缺陷 1（累积偏差）**：`hit` 只数 goal 侧命中，而旧文每轮 keep 都保留 goal 的字面词（交易/买点/卖点/量能/均线）⇒ 该分对旧文**单调累加**；新文是「专业符号化增量」（`π*` / `ATR` / `gap_lower` / 函数名 + 少量领域词）⇒ 字面命中天然稀疏 ⇒ **结构性必输**（实测 15×）。
+- **缺陷 2（空壳自锁，更致命）**：同一实现换个节点就反转 —— `L0::node_1` 正文已被 2 个 `<function>` 块吞没（`stripFunctionBlocks` 后 ≈0 ⇒ `scoreOld=0`）⇒ ①`_sNew < _sOld*0.85` **永假**；②任何新文本与空旧文的重叠也恒为 0 ⇒ 正文**一旦丢失即永久锁死**（层 0 实测两极分化）。
+- **后果链**：LLM 每轮投入（4 反传 / 3 HE / 2 Function / 51124c thinking）在**节点内容更新通道**被大面积丢弃 ⇒ 节点不再演化 ⇒ 只剩 `[fn:σ]` 引用累积 ⇒ **悬空 4→17→27→33→35 与节点两极分化同源**。
+- **不变式（新增）**：**保留类判据不得把「绝对命中量」在两个长度/累积状态不同的文本间比较**；判据应「只看新文自身是否带在域证据」，且**旧文为空壳时不得拒写**（否则形成不可恢复的死锁）。
+
+## 四、本轮实施的改进（git **`14f5961`**；**需 n9 重启三件套生效**）
+- **① 判据改「证据制」**（`scoring_policy.ts` 新增 `retentionVerdict(goal, oldText, newText, opts)`）：拒写收窄为「**新分低 ∧ 无任何在域证据**」；证据 = ①新文命中 goal 词面（`goalHits>0`）∨ ②新文与旧文词面重叠 ≥ **0.15**（同节点应同域）；**空壳豁免**（旧文词面 <20 ⇒ `freshNode` ⇒ 永不判离域）；仅当「新文词面 ≥40 ∧ 无证据 ∧ 非空壳」才拒。**无词表、无 LLM 调用、纯函数可测**；`0.85` 相对条件保留（只作辅助，不再单独定生死）。
+- **② 新增观测点** `node_write_downgraded_to_merge`（含 `scoreOld/scoreNew/goalHits/oldCover/freshNode/evidence/oldChars/newChars`）⇒ 下轮可直接验证「LLM 增量是否真落盘」，而不是只看 `refused` 计数；`node_write_refused_keep_better` 同步补同样字段。
+- **③ 悬空口径代码化**（`lib/similarity.ts` 新增 `scanDanglingFnRefs(nodes)` + 每次反传后事件 `fn_ref_dangling`）：输出 `symbolsAlive / danglingPairs / danglingRefs / danglingSymbols / refsTotal / perNode`，**仅记事件、绝不改写节点**（硬性约束 2）。P0-1 的前半句（`fn_block_evicted` 时剥离 content 引用）**本轮暂缓**——它会改写节点正文，与「存量悬空不得手工清理」冲突；改为先量化、由 F4'' 决定剥离策略。
+- **④ 验证**：新套件 `src/test_retention_increment.ts` **31/31**（T1 旧判据偏差复现 / T2 交易放行+离域仍拒 / T3 空壳豁免 / T4 域一致性证据 / T5 小增量不误杀 / T6 口径纯函数 / T7 源码守卫「无 content 侧剥离」）；回归 **10 套件全绿**（`task_prompt_patch 17`、`fn_multiblock_move 16`、`fn_block_survival 9`、`lift_merge 42`、`lift_overflow_dup 15`、`lift_jump 18`、`task_persist_roundtrip 15`、`tools_fidelity ALL PASS`、`content_limit_zero ALL PASS`、`function_domain_gate 34/34`）；`LOAD_OK src/index.ts`（esbuild bundle 354KB）。改动文件全为**符号链接**（`index.ts`/`scoring_policy.ts`/`lib`）⇒ 无需 `cp` 同步；新测试文件不挂载进 extension（硬性约束 9）。
+- **运行器补记（避免下轮重复踩坑）**：根目录套件用 pi 自带 esbuild（`/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/esbuild`）+ `--bundle --format=cjs --define:import.meta.url="file:///…/<test>.ts"`；缺 `--define` 时 `new URL(import.meta.url)` 会 `TypeError: Invalid URL` 假失败（非回归）。
+
+## 五、下一轮验收断言（逐条可字面核对；F1'–F5' 已随本轮收窄）
+- **F1''**：窗口 `node_write_refused_keep_better` **≤1**（本轮 2）**且**同轮 `node_write_downgraded_to_merge ≥1` ⇒ 证明证据制放行了在域增量（防「拒写变静默跳过」）。
+- **F2''（空壳复活判据）**：`L0::node_1` 的 `stripFunctionBlocks(content)` **字符数 > 200**（当前 ≈0）⇒ 交易正文能长回来；若仍空 ⇒ R8 未修完，下一步查 `mergeContent`/`goal_cleanse` 是否再次清空。
+- **F3''**：`L0::node_0` 的 2 个函数槽**至少 1 槽为交易域**（`gate/sizer/position/atr/kelly/level` 语义）。
+- **F4''**：`fn_ref_dangling.danglingPairs` **≤35**（本轮首次有代码口径基线），**优先要求下降**；若上升，只能从 F2'' 与「淘汰优先级」找因，**不得手工清理**（硬性约束 2）。
+- **F5''**：`semantic_backward_llm_raw_response` 补 `rawContentTruncated` 标志或提高落盘上限（本轮 2/4 条离线 `JSON.parse` 失败）。
+- **F6''（沿用 F1' 形）**：函数侧域闸仍按**前置样本条件**判 —— 有离域族 `<Function>` 样本才计拦截率，无样本记 `no_offgoal_sample`。
+- 不变式（沿用）：`injectedCount ≥ 1` ∧ 拒写时 `scoreOld > scoreNew` ∧ 同层逐字同文计数 = 0 ∧ 零成交轮 `flat/unattributed`。
+
+## 六、P0 候选更新（本轮只实施一项：R8 保留判据）
+1. **悬空 `[fn:σ]`** → 第十八轮**已实施后半句**（`fn_ref_dangling` 事件 + 代码口径），**前半句（剥离 content 引用）暂缓**（与硬性约束 2 冲突，待 F4'' 量化后再决）。当前基线 **35**（符号×节点对）。
+2. **配对源根治（P0-5，第三轮复现）**：`no_pending_match` 丢自产 HE ⇒ 无匹配时应入栈 + 标 `reward=unattributed`（禁 HE 驱动 reward）并补 self-backward；判据 = 窗口 `agent_end_backward_skipped{no_pending_match}` **= 0**。
+3. **函数槽淘汰优先级**（F3'' 同源）：`NODE_FN_BLOCK_MAX=2` 下工程域块顶掉交易域块**连续两轮命中** ⇒ 优先淘汰 LLM 判离域的函数块，或按域隔离槽位。
+4. **`llm_returned_empty_node_updates`（新）**：清筛指令与反传输出互斥（2 次 victim 均为 `L2::node_1`）⇒ 建议清筛走**独立通道**，不占用同一 `node_updates` 预算。
+5. **离线复核面（新）**：`rawContent` 2000c 落盘上限（见 F5''）。
+6. **`pinnedTaskFamily` 全局 pin**（R5 剩余面，沿用）。
+7. **事件写入者归因**（沿用）：`pid` + `md5(src/index.ts)` —— **本轮 writer hash = `6e87cc81`（index.ts）/ `2284199e`（scoring_policy.ts）/ `60e23df7`（lib/similarity.ts）**，三个文件在 `~/.pi/agent/extensions/textron/` 下已校验 **SAME**（符号链接，无需 `cp`）。
 
 > 触发：guard n8 第十七轮。三件套 02:49 重启 ⇒ **首次运行期加载 `a121d67`**（第十六轮补丁）。
 > 窗口 = `_events.jsonl` **L97841–L98225**（384 事件 / 8 propagate / 6 `agent_end_task_pushed` / 6 反传 LLM / 5 `semantic_backward_entered` / 3 `highentropy_function_persisted` / 2 `fallback_add_candidate`）；基线 = 重启后首条 `before_agent_start` `18:48:13.177Z`。
@@ -245,6 +296,9 @@
     - **根治**：指令里直接给可复制的 `curl`（含 `session_id`/body 形状）；API 速查写入 `workflows/API.md` 并给路径。
     - **诊断**：`ps -eo pid,ppid,etime,%cpu,command` 按 `ppid == agent_pid` 过滤，命中「**%cpu 高 ∧ etime 长 ∧ 含 `find .`/`grep -r`**」即判卡；**处置=只杀子进程**（保 agent 上下文），**不杀 agent**。
     - **闭环纪律**：这类干预**不进** `_trajectories.jsonl` / `_events.jsonl` ⇒ guard 的 n8 **看不到**；**不显式回灌文档即下轮必重现**。
+11. **跨轮比较的指标必须由代码持有口径**（第十八轮新增；触发：悬空 `[fn:σ]` 台账 4→17→27→33→**35** 连续五轮「单调恶化」，但每轮口径由人工 grep 临时决定 —— 含不含 `⟨fn:σ⟩`、按符号去重还是按「节点×符号」、是否计入函数块内引用、strip 与否 ⇒ **无可比基线**，根本无法判断是「真变差」还是「口径变严」）。
+    - **规则**：任何要跨轮比较的指标（悬空引用 / 闭合 `<function>` 块数与域占比 / 写入拒绝率 / 注入数），必须在代码里有一个**单一事实来源的采集函数 + 事件**（如 `scanDanglingFnRefs` → `fn_ref_dangling`），断言直接读事件字段；**禁用每轮手工 grep 计数作为台账依据**。
+    - **副产品**：口径入代码后，同一指标才能在多轮间形成时间序列，否则「恶化」与「测量方式变化」不可区分。
 ---
 
 # 决策经验（已沉淀节点，供快速复习）

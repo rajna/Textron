@@ -2044,7 +2044,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
     function clampReward(v: unknown) { return clamp(Number(v) || 0, -1, 1); }
     function normalize(obj: any) {
-      const out: { reward: number; rationale?: string; function_off_goal?: boolean; function_off_goal_reason?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
+      const out: { reward: number; rationale?: string; function_off_goal?: boolean; function_off_goal_reason?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string; mode?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
         reward: clampReward(obj?.reward),
       };
       if (obj?.rationale) out.rationale = String(obj.rationale).slice(0, 120);
@@ -2078,7 +2078,10 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
           if (typeof v === "string" && v.trim()) {
             const content = completeContent(v.trim(), NODE_CONTENT_MAX_CHARS);
             const name = compressNodeName(content);
-            if (content && name) out.node_updates[k] = { content, name };
+            // 2026-09-18 n8 第二十一轮：透传 LLM 声明的 mode。规则 0(a) 要求「离域节点清洗必须走
+            // OVERWRITE」，但此前 mode 在 normalize 被消费后即丢弃 ⇒ 程序侧无法判断候选节点是
+            // 被 replace（真清洗）还是 merge（内容被继续追加）。纯观测字段，不影响写入合成逻辑。
+            if (content && name) out.node_updates[k] = { content, name, mode: "merge" };
           } else if (v && typeof v === "object") {
             const vv = v as any;
             // 融合语义(2026-09-14 FUSION NOT OVERWRITE): keep=旧内容必须保留的要点, content=本轮增量。
@@ -2090,7 +2093,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             const name = completeContent(String(vv.name || compressNodeName(content)).trim(), 64);
             const drop = String(vv.drop || "").trim();
             if (drop) onLog(`Textron fusion: ${k} drop(证伪)=${drop.slice(0, 200)}`);
-            if (content && name && !isNgramFragmentContent(content) && !isNgramFragmentName(name)) out.node_updates[k] = { name, content };
+            // 2026-09-18 n8 第二十一轮：mode 透传（见上文纯观测说明）——replace=整段覆盖(真清洗)，
+            // merge=keep ⏎ delta(内容追加)。用于离线判定「离域候选是否被真清洗」。
+            if (content && name && !isNgramFragmentContent(content) && !isNgramFragmentName(name)) out.node_updates[k] = { name, content, mode: rawMode };
           }
         }
       }
@@ -2772,7 +2777,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     return { goal, targets: targets.slice(0, limit), scanned };
   }
 
-  function applySemanticNodeUpdates(net: NonNullable<ReturnType<typeof loadNetwork>>, updates: Record<string, string | { name?: string; content?: string; context?: string }> | undefined, onLog: (msg: string) => void, opts?: { forceOverwrite?: Set<string> }) {
+  function applySemanticNodeUpdates(net: NonNullable<ReturnType<typeof loadNetwork>>, updates: Record<string, string | { name?: string; content?: string; context?: string; mode?: string }> | undefined, onLog: (msg: string) => void, opts?: { forceOverwrite?: Set<string> }) {
     const forceOverwrite = opts?.forceOverwrite || new Set<string>();
     const result: {
       updated: number;
@@ -3089,6 +3094,20 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     const nodeResult = applySemanticNodeUpdates(net, nodeUpdates, onLog, { forceOverwrite: cleanseTargets });
     const nodeMutations = [...nodeResult.nodeMutations];
     if (cleanseInfo.goal) {
+      // 2026-09-18 n8 第二十一轮：本事件的 cleanseTargets/cleansedNodes **结构性恒为空**（forceOverwrite
+      // 于 2026-09-15 被有意移除为「抹掉好知识的直接通道」后未同步事件语义）⇒ 该字段对「离域是否被
+      // 清洗」零判别力（= 死指标，违反硬性约束 11）。改为记录 LLM 的真实消费情况：候选名单 +
+      // 候选各自收到的 mode（replace=真清洗 / merge=内容追加 / 无键=false=未动），供离线形成时间序列。
+      const candidateModes: Record<string, string> = {};
+      const cleanseViolations: { nodeId: string; mode: string; goalSim: number | null }[] = [];
+      for (const t of cleanseInfo.targets) {
+        const u = nodeUpdates ? (nodeUpdates as any)[t.key] : undefined;
+        const mode = !u ? "(no_update)" : String(u?.mode || "merge");
+        candidateModes[t.key] = mode;
+        // 规则 0(a)：离域候选必须走 replace(OVERWRITE)。用 merge 更新候选 = 「工程内容被追加留存」的
+        // 静默违反（候选判据与写入目标自相矛盾）。只告警、不改写入策略（硬性约束 2/7：不重开强制覆写通道）。
+        if (u && mode !== "replace") cleanseViolations.push({ nodeId: t.key, mode, goalSim: t.goalSim });
+      }
       recordMonitorEvent({
         type: "trace",
         action: "semantic_backward_goal_cleanse",
@@ -3098,8 +3117,23 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         cleansedNodes: nodeResult.nodeMutations
           .filter((m) => m.type === "update" && cleanseTargets.has(m.id))
           .map((m) => m.id),
+        // 新增（真实值）：离域候选名单 + 各自 mode + 兜底是否触发（此前无任何字段能反映清洗是否发生）
+        candidates: cleanseInfo.targets.map((t) => t.key),
+        candidateModes,
+        cleanseViolationCount: cleanseViolations.length,
+        fallbackApplied: goalCleanseFallback || null,
         nodeUpdatesKeys: Object.keys(nodeUpdates || {}),
       });
+      if (cleanseViolations.length) {
+        recordMonitorEvent({
+          type: "trace",
+          action: "semantic_backward_goal_cleanse_violation",
+          taskFamily: path.basename(net.path),
+          goal: cleanseInfo.goal,
+          violations: cleanseViolations,
+          note: "off_goal_candidate_updated_without_replace",
+        });
+      }
     }
 
     // ── Node additions ──

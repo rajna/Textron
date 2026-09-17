@@ -6,7 +6,51 @@
 
 ---
 
-# ✦ 最近更新（2026-09-16 23:35）：n8 **第十八轮** —— 首次运行期验收 **`fa15bc2`（函数侧域闸）** ⇒ **F1' = `no_offgoal_sample`（前置样本不成立 ⇒ 按登记规则跳过而非失败）**；F3' **✗**（`L0::node_0` 两槽仍全为工程域）；F4' **✗**（悬空 33→**35** 符号×节点对，P0 连续五轮恶化）。**本轮根因 R8 = 保留判据（`lexicalRelevance` 相对比较）的度量错位 + 空壳自锁**：判据分子只数 goal 侧命中 ⇒ 旧文因每轮 keep 反复保留 goal 字面词而**单调累加**（实测 `scoreOld 0.1143` vs `scoreNew 0.0075`，比值 **15×**，远超 0.85 阈值）；更致命的是在 `L0::node_1` 上反转 —— 其正文已被 2 个 `<function>` 块**吞没成空壳**（`stripFunctionBlocks` 后 ≈0、`scoreOld=0`）⇒ 旧条件**永假** + 与新文零重叠 ⇒ **交易正文一旦丢失就再也长不回来**（层 0 两极：`node_0` **160KB** 膨胀 vs `node_1` **2.7KB** 空壳）。这同时是 P0「悬空单调恶化」的上游：正文不长 ⇒ 只剩 `[fn:σ]` 引用持续累积。**实施 `14f5961`：判据改证据制 + 悬空口径代码化（需 n9 重启生效）**。
+# ✦ 最近更新（2026-09-17 19:55 UTC / 本地 09-18 03:55）：n8 **第十九轮** —— 运行期验收 `14f5961`（证据制保留判据 + 悬空口径代码化）。**R9 = 口径函数的采集源缺陷**：`scanDanglingFnRefs` 只从 `readNodeContent`（`<content>…</content>`）收集存活符号，而 `<function symbol=…>` 块**写在 `</content>` 之外**（`writeNodeHtml` 在 `</content>` 后拼 `fnHtml`、`writeNodeFunction` 文件末尾 append）⇒ **`symbolsAlive` 恒 0**（stock_alpha / normal 两网旧口径一律 0）⇒ 全部引用被判悬空 ⇒ F4''「4-6 ≤ 35」是**假达标**，该指标对函数块存活毫无判别力。**实施 `741788a`**（可选 `fnSymbols` 采集源 + `fnBlocksOnDisk` 字段 + 调用点接 `readNodeFunctions`；不传时行为 ≡ 旧实现）；测试 **18/18**。
+
+> 触发：guard n8 第十九轮。窗口 = `_events.jsonl` UTC `18:45:30–19:42:45`（830 事件 / 18 `propagate_done` / 8 `semantic_backward_entered` / 8 `semantic_backward_apply` / 4 `highentropy_function_persisted` / 15 `trajectory_tools_fidelity` / 8 `node_write_downgraded_to_merge` / 1 `node_write_refused_keep_better` / 1 `semantic_backward_function_off_goal`）。三件套**本轮已加载 `14f5961`**（`node_write_downgraded_to_merge` 8 次 + `fn_ref_dangling` 8 次首现即为证）。
+
+## 一、本轮验收（逐条字面核对）
+- **F1'' ✅**：`node_write_refused_keep_better` **1**（≤1 达标；该次 `offDomain:true` 合理）∧ `node_write_downgraded_to_merge` **8**（≥1）⇒ 证据制放行在域增量，非"拒写变静默跳过"。旁证：`L0::node_0` oldChars **7848→8582→8962→9611→9936** 单调增长、`L0::node_1` **3436→3761→6786**，写入真发生。
+- **F2'' ✅**：`stock_alpha/layer_0/node_1.html` 正文 **86,633 字符**（第十八轮登记 ≈0 空壳）、`node_0` 83,531 ⇒ 不再自锁；normal 网 `L0::node_1` 6,786。**但两极分化转为"普遍膨胀"**：两网 L0 均 80KB+。
+- **F3'' ⚠️ 部分达标**：`stock_alpha L0::node_0` 槽 = `sender_advance_with_gate_regression`（工程）+ **`pi_star_gate_trade`（交易域）⇒ ≥1 达标**；`L0::node_1` 槽 = `rollback_gate_by_net_effect` + `verify_prompt_hint_change`（**全工程域**）；全网 6 存活符号中工程/编排 5、交易 1 ⇒ P0-3 仍在。
+- **F4'' ⚠️ 假达标（本轮根因）**：事件 `danglingPairs` **4-6**（≤35 表面达标），但 `symbolsAlive` **8/8 = 0** ⇒ 口径源缺陷（R9）。**修后离线真实基线（同口径）**：`stock_alpha` **79 / 103 / refsTotal 118 / symbolsAlive 6 / fnBlocksOnDisk 7**；`normal` **4 / 5 / 8 / 4 / 4**。⇒ 历史台账「4→17→27→33→35」与代码口径不可比，**以本次两网数值为新基线**。
+- **F5'' ✗**：`semantic_backward_llm_raw_response` 仍是 `rawContent.slice(0, 2000)`（`src/index.ts` L2305/L2336），无 `rawContentTruncated`/`storedLen`（本轮 rawContentChars 754–3504）⇒ 离线复核面自伤未修。
+- **F6'' ✅（首次拿到真实样本）**：1 次 `semantic_backward_function_off_goal{reason:"purge_cross_role_guard_steps是workflow编排/文本清洗管道，非日常经验域知识", llmReward:-0.5}` + 1 次 `highentropy_function_skipped{function_off_goal}` ⇒ 函数侧域闸**判据维度正确、拦截生效**（对照第十七轮任务侧闸 0/12）。
+- 不变式：`injectedCount ≥ 1` 18/18 ✅（`topScores` 非全零）；同层逐字同文 0 ✅；**交易轮 HE 未触发反传**（见二.2）。
+
+## 二、本轮数据（n8 第 1–7 项）
+1. **轨迹采集（✅ 无 slice 稳态）**：15 次 `trajectory_tools_fidelity`，`entries` 0–31、`inputChars` 最大 48,112、`outputChars` 最大 42,853、`droppedOldest` 全 0、`thinkingTruncated` 全 false；`inputTruncated` 2 / `outputTruncated` 1（长输出触 8000c/条目上限，属预期非常数 slice）⇒ 第十四轮的 180c/640c/24 条截断未回潮。
+2. **反传触发（工程轮 ✅ / 交易轮 ✗）**：8 次 entered → 8 `llm_done` → 8 `apply`（reward 0.5/-0.6/-0.5/0.1/0/0.35…）；但**交易决策/复盘轮的 HE 全被丢**：`agent_end_backward_skipped{no_pending_match}` **7 次**、`semantic_backward_skipped_not_feedback{pairing_judge_no_match}` **8 次**、`highentropy_missing_at_agent_end{raw_operational_trace}` 1 次。新机制证据：`task_stack_restore_empty{stackLen:0}` → `pending_list_built{count:0,hasActive:false}` → `pending_list_empty_skip`（19:40:21）⇒ coms 续接轮在任务栈已清空时**无 pending 可配** ⇒ 该轮 HE（301299 决策/复盘）无处归因。**后果（核心失败）**：`stock_alpha/layer_*` mtime 全部停在 **09-16 23:54 / 09-17 01:06** ⇒ 本轮交易知识**零写入 stock_alpha**；反倒 4 个交易函数（`decide_ashare_boxbreak_vol`/`attrib_hold_decision_dd`/`decide_upper_shadow_fade`/`evaluate_trade_quality_module`）落进了 **normal 网**。P0-2 第四轮原样复现。
+3. **HE→Function 沉淀 ✅（但网错）**：`highentropy_captured` 14 次（359–1860c）→ `highentropy_function_persisted` **4 次**（codeChars 1186–1200，`contentAppended` 3 true / 1 false）。
+4. **抽象融合 ✅**：8 次 `semantic_backward_apply`（nodesUpdated 1–2 / nodesMerged 0–1 / nodesAdded 0–1）；跨层向上提升 merge 实测 `L1::node_0 → L0::node_1`（`nodeMutations{type:"merge"}`）；name 层也在抽象（`L1::node_0` 名称新增"动作来源双交叉·兜底非人工决策须区分·趋势状态合法非未来数据"）。
+5. **内容面写入（R8 修后）**：1 次拒写（离域，合理）+ 8 次降级 merge；**新风险**：降级判据的放行证据 **8/8 都是 `coherence`**（`scoreNew` 恒 0、`goalHits` 恒 0）⇒ 在 goal="日常经验" 这类宽泛目标下，`lexicalRelevance` 对任何非日常语料恒 0，实际**只剩"新旧词面重叠"一条证据**在定生死（域外知识若沿用旧文词面即可通过）。
+6. **`semantic_backward_goal_cleanse_fallback` 8 次**（`llm_returned_empty_node_updates`，victim `L0::node_0`/`L1::node_0`）⇒ P0-4 原样复现（MUST-CLEANSE 与反传输出预算互斥）。
+7. **新异常：L0 打分首试失败 7/18（39%）**：`l0_score_attempt_failed{error:"No parseable node scores: {\"answer\":\"L0::node_0=0.10\\nL0::node_1=0.05…"}` ⇒ LLM 输出**行式 `K=V`**，解析器只认 JSON 对象 ⇒ 回退 `json_mode/budget4096`（成功但 topScores 更稀疏）⇒ P0 候选⑥。
+
+## 三、本轮根因 R9（单变量）：口径函数的**采集源**与真实存储位置不一致
+- **判据面**：`lib/similarity.ts::scanDanglingFnRefs` 的 `alive` 只扫 `node.content`；`node_io.ts` 的 `writeNodeHtml`（`…<content>${storedContent}</content>${fnHtml}`）与 `writeNodeFunction`（文件末尾 append）都**把块写在 content 之外**，而 `readNodeContent` 只截 `<content>…</content>` ⇒ `alive` 恒空集。
+- **字面证据三角**：①`fn_ref_dangling.symbolsAlive` **8/8 = 0**，同窗口 4 次 `highentropy_function_persisted` 成功；②磁盘 `stock_alpha` 实测 **7 个闭合块 / 6 去重符号**，`L0::node_0/node_1` 正文含 **56/58 条 `[fn:σ]` 引用**，事件只报 4-6；③源码模板与正则如上。
+- **后果**：①F4''「悬空下降」是测量假象（口径换代码 ⇒ 数值 35→4 是**测量面缩小**）；②指标对"函数块被淘汰后引用悬空"零判别力（恒判悬空）；③P0-1 剥离策略失去依据。
+- **不变式（新增，硬性约束 12）**：**口径代码化 ≠ 口径正确** —— 采集函数上线必须对**至少一个真实网络**做离线基线核对，断言「存活集合非空、数值与独立抽样一致」；`symbolsAlive=0` 这类**结构性零值**直接判口径源缺陷。
+
+## 四、本轮实施的改进（git **`741788a`**；需 `/reload` 或重启三件套生效）
+- **① 采集源补全**（`lib/similarity.ts`）：入参扩为 `{ id, content, fnSymbols? }[]`，`alive` = content 内联块 ∪ `fnSymbols`；新增 `fnBlocksOnDisk`。**不传 `fnSymbols` 时行为 ≡ 旧实现**（单侧风险）。
+- **② 调用点接入**（`src/index.ts` 反传后回扫）：`fnSymbols: readNodeFunctions(fp).map(b => b.symbol)`；事件增 `fnBlocksOnDisk`。
+- **③ 验证**：`src/test_fn_ref_scan_source.ts` **18/18**（T1 缺陷复现 / T2 修法生效 / T3 混合来源 / T4 端到端复刻真实磁盘形状「块在 `</content>` 之后 ∧ readNodeContent 不含 ∧ readNodeFunctions 能读到」/ T5 源码守卫+向后兼容）；回归 `retention_increment 31/31`、`function_domain_gate 34/34`、`fn_multiblock_move 16`、`fn_block_survival 9`、`LOAD_OK`（bundle 864,775B）。
+- **④ 离线真实基线**（只读）：见 F4''。
+- **运行器补记**：`--define:import.meta.url='<双引号包住的绝对 file:// 路径>'` 必须给内层引号（否则 esbuild `Invalid define value`）；**产物要输出到仓库内**（`--outfile=/tmp/…` 会让测试里 `src/…` 相对路径解析到 `/private/tmp` ⇒ 假失败，非回归）。
+
+## 五、下一轮验收断言（G 组；F 组已被本轮口径替换）
+- **G1**：`fn_ref_dangling.symbolsAlive` **> 0** ∧ `fnBlocksOnDisk ≥ 1`；`stock_alpha` 的 `danglingPairs` 与离线基线 **79** 同量级（±10）。
+- **G2**：`node_write_refused_keep_better` ≤1 ∧ `node_write_downgraded_to_merge ≥1`（沿用 F1''）。
+- **G3**：`stock_alpha` 目录 mtime **晚于**窗口起点 ∧ 窗口 `agent_end_backward_skipped{no_pending_match}` **= 0**（P0-2，第四轮未达标）。
+- **G4**：`L0::node_1` 两槽中 ≥1 为交易域 ∧ `stock_alpha` 存活符号交易域占比 ≥ 1/2（P0-3）。
+- **G5**：`semantic_backward_llm_raw_response` 带 `rawContentTruncated`（或 `storedLen == rawContentChars`）（F5''）。
+- **G6**：`l0_score_attempt_failed` **≤2/18**（当前 7/18；需实施 P0⑥ 行式 `K=V` 兜底解析）。
+- 不变式（沿用）：`injectedCount ≥ 1` ∧ 拒写时 `scoreOld > scoreNew` ∧ 同层逐字同文 = 0 ∧ 零成交轮 `flat/unattributed` ∧ **口径指标必须能打印非零存活集合**。
+
+## ✦ 第十八轮存档（2026-09-16 23:35）：n8 第十八轮 —— 首次运行期验收 `fa15bc2`（函数侧域闸）⇒ F1'=`no_offgoal_sample`（前置样本不成立）/ F3'✗（node_0 两槽全工程域）/ F4'✗（悬空 33→35）；根因 **R8=保留判据度量错位（`lexicalRelevance` 对旧文单调累加 15×）+ 空壳自锁（`node_1` 正文被函数块吞没后永不长回）**；实施 `14f5961`（证据制判据 + `fn_ref_dangling` 口径代码化）。细节见 git `14f5961`、`42ff7ae` 与下方 3 段 `>` 存档。
 
 > 触发：guard n8 第十八轮。三件套 **23:17 重启** ⇒ **首次运行期加载 `fa15bc2`**（第十七轮函数侧域闸）。
 > 窗口 = `_events.jsonl` UTC `15:15:29–15:25:30`（293 事件 / 7 `propagate_done` / 4 `semantic_backward_entered` / 3 反传 LLM 成功 / 2 `highentropy_function_persisted` / 4 `trajectory_tools_fidelity`）；`project=default`、`deepseek-flash`、`default_session_id=4cf529337f29`、`active_stock=sz.301299`、`step_index=74`（存档口径，与本轮 2 次推进互不相干）。
@@ -278,7 +322,7 @@
 | 16 | **工程语料污染 stock_alpha**：`layer_0/node_0` 正文残留 guard 会话 HE（`571205a(~16:0x)…`）且 merge 拼接无句界保护（半句截断/首尾互吃） | ⏳ 未修 |
 | 17 | **`<`/`>` 疑被吞**：node_0 正文 `all(b=gap_lower*0.97` / `broke_prior_low=price=…` 反复重复，待与 `_node_history` 原始 raw 对照判定 | ⏳ 待证 |
 | 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含陈旧/已出栈项（第十七轮仍见 `matchedTaskTs` = `18:33:28Z`/`18:35:42Z`/`18:35:55Z`，窗口基线 `18:48:13Z`）；`matched.rawUserPrompt` 为空时应**改选** activeTask。判据：`matchedTaskTs` 不再早于窗口起点 10min+ | ⏳ 未修 |
-| 19 | **悬空 `[fn:σ]` 清理（连续四轮未达标 4→17→27→33）**：`fn_block_evicted` 时同步剥离 content 引用；每轮回扫 `fn_ref_dangling`（仅记事件不自动改写）。**存量悬空不得手工清理** | ⏳ 未修 |
+| 19 | **悬空 `[fn:σ]`**：✅ 口径采集源已修（`741788a`：`symbolsAlive` 恒 0 的根因 = 函数块写在 `</content>` 之外）；**真基线 stock_alpha 79 pairs / 103 refs（symbolsAlive 6）**。剥离 content 引用的策略待 G1 基线稳固后再决；**存量悬空仍禁手工清理** | ⏳ 部分 |
 | 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
 
@@ -316,6 +360,10 @@
 11. **跨轮比较的指标必须由代码持有口径**（第十八轮新增；触发：悬空 `[fn:σ]` 台账 4→17→27→33→**35** 连续五轮「单调恶化」，但每轮口径由人工 grep 临时决定 —— 含不含 `⟨fn:σ⟩`、按符号去重还是按「节点×符号」、是否计入函数块内引用、strip 与否 ⇒ **无可比基线**，根本无法判断是「真变差」还是「口径变严」）。
     - **规则**：任何要跨轮比较的指标（悬空引用 / 闭合 `<function>` 块数与域占比 / 写入拒绝率 / 注入数），必须在代码里有一个**单一事实来源的采集函数 + 事件**（如 `scanDanglingFnRefs` → `fn_ref_dangling`），断言直接读事件字段；**禁用每轮手工 grep 计数作为台账依据**。
     - **副产品**：口径入代码后，同一指标才能在多轮间形成时间序列，否则「恶化」与「测量方式变化」不可区分。
+12. **口径代码化 ≠ 口径正确**（第十九轮新增；触发：`scanDanglingFnRefs` 上线后 F4''「悬空 4-6 ≤ 35」看起来达标，实则 `symbolsAlive` 8/8 恒 0 —— 函数块写在 `</content>` 之外而采集只读 content ⇒ 指标对函数块存活零判别力，真实基线 `stock_alpha` 79 pairs / 103 refs）。
+    - **规则**：跨轮指标的采集函数（硬性约束 11）上线后，必须先对**至少一个真实网络**做一次**离线基线核对**（只读、不改盘），并断言「存活集合非空 ∧ 与独立人工抽样一致」；**结构性零值**（如 `symbolsAlive=0`、`refsTotal=0`、`injectedCount=0`）一律先判**采集源缺陷**，不得当作"改善"记入台账。
+    - **推论**：口径改动后若无离线基线，指标数值的跨轮变化**不可解释为质量变化**（第三轮"降低"实为测量面缩小）。
+
 ---
 
 # 决策经验（已沉淀节点，供快速复习）

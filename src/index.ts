@@ -446,12 +446,24 @@ export default function (pi: ExtensionAPI) {
   }
 
   // 硬杀/异常退出兜底：exit 事件可跑同步 IO（SIGKILL 除外）
-  process.on("exit", () => { try { unregisterMonitorPort(); } catch {} });
-  // 【必需】非 TTY / 未被 pi 接管信号时，SIGTERM/SIGHUP 会走内核默认终止而**不触发** exit 事件
-  // （实测：无 handler 时 registry 条目残留）。此处只追加监听，不改变 pi 自身的 graceful 流程。
-  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
-    try { process.on(sig, () => { try { unregisterMonitorPort(); } catch {} }); } catch {}
+  // 【reload 防泄漏】/reload 在同一进程内重载扩展 ⇒ 若每次都 process.on(...)，监听器会累积
+  //（Node 超 11 个即 MaxListenersExceededWarning）。用 globalThis 槽位保证进程级只挂一组，
+  //  且 handler 始终指向「当前活跃实例」的 unregister（新实例加载时接管，旧实例闭包被丢弃）。
+  const MONITOR_HOOK_KEY = "__textronMonitorHooks";
+  function installMonitorHooks(unregister: () => void) {
+    const g = globalThis as any;
+    if (g[MONITOR_HOOK_KEY]) { g[MONITOR_HOOK_KEY].unregister = unregister; return; }
+    const box = { unregister };
+    g[MONITOR_HOOK_KEY] = box;
+    const run = () => { try { box.unregister(); } catch {} };
+    process.on("exit", run);
+    // 【必需】非 TTY / 未被 pi 接管信号时，SIGTERM/SIGHUP 会走内核默认终止而**不触发** exit 事件
+    //（实测：无 handler 时 registry 条目残留）。此处只追加监听，不改变 pi 自身的 graceful 流程。
+    for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
+      try { process.on(sig, run); } catch {}
+    }
   }
+  installMonitorHooks(unregisterMonitorPort);
 
   function broadcast(data: Record<string, unknown>) {
     const eventType = data.type || "message";
@@ -1188,13 +1200,17 @@ export default function (pi: ExtensionAPI) {
   dlog("INIT", "Textron extension loaded", { monitorPort: PORT });
 
   pi.on("session_shutdown", () => {
-    server.close();
-    unregisterMonitorPort();
-    // Clean up all SSE clients
+    // 【/reload 端口漂移防护】必须先把 SSE 连接全部断掉再 close：
+    // server.close() 会等现有连接结束，若 SSE 长连接不断则端口不释放 ⇒ 重载后同端口 listen 失败
+    // ⇒ EADDRINUSE 静默 +1（这正是 reload 场景的端口漂移源）。closeAllConnections 为强兜底。
     for (const res of SSE_CLIENTS) {
       try { res.end(); } catch {}
     }
     SSE_CLIENTS.clear();
+    server.close();
+    try { (server as any).closeAllConnections?.(); } catch {}
+    try { (server as any).closeIdleConnections?.(); } catch {}
+    unregisterMonitorPort();
   });
 
   function buildStateJSON() {

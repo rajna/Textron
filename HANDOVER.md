@@ -28,6 +28,12 @@
 - esbuild 转译 OK（0 处 `MONITOR_CNAME` 残留）；端到端 4 组：**注册**（registry 出现 `{11185:('porttest',8899)}`、latest 指向之）→ **SIGTERM 摘除**（registry `{}`、latest 清空、端口释放）→ **kill -9 残留** → **新实例注册 prune 收敛**（只剩 `{11138:prunetest@8899, 11185:prunetest2@8897}`）。
 - 副作用：`pi --help` 这类一次性启动**也会**监听 monitor（实测 `--help` 即在 8767 留过条目）⇒ 固定端口后这些短命实例会与同 cname 的长驻实例抢同号；因单进程内 `tryListen` 只跑一次、且 EADDRINUSE 仍会 +1，行为安全但排障时需知悉。
 
+## /reload 场景专属（实施后补测，两个 reload 特有陷阱）
+- **监听器泄漏**：`/reload` 在同一进程内重载扩展 ⇒ 若每次加载都 `process.on(...)`，监听器累积（Node >11 即 `MaxListenersExceededWarning`），且旧实例闭包长期持有 `MONITOR_PID` 状态。修法：`globalThis.__textronMonitorHooks` 槽位保证进程级**只挂一组**（`exit` + `SIGTERM/SIGHUP/SIGINT` 共 4 个），新实例加载时**接管**槽位里的 `unregister` 引用（旧闭包被丢弃）。
+- **reload 端口漂移**：`server.close()` 会等现有连接结束，SSE 长连接不断则**端口不释放** ⇒ 重载后同端口 `listen` 失败 ⇒ EADDRINUSE 静默 +1（这是 reload 场景的漂移源，与“关 TUI掉线”是两回事）。修法：`session_shutdown` 内**先** `res.end()` 清空 SSE **再** `server.close()`，并补 `closeAllConnections()/closeIdleConnections()` 强兜底。
+- 测试：`src/test_monitor_hooks.ts` **11/11**（T1 三次安装只增 1 组监听器 / T2 新实例接管 / T3c `process.on("exit")` 仅 1 处 / T4a `res.end` 先于 `close`）。**工程教训**：源码守卫断言前必须**剥注释** —— 注释里同样含 `process.on("exit")`/`server.close()` 字样，直接 `indexOf` 会误报（首版实测 2 处 FAIL 全为注释干扰）。
+- 生效后的端口预期：经 `pi-coms-spawn` 起的 agent = `guard 8801 / sender 8802 / worker 8803 / stock-coder 8804`；**手工起的 TUI（如 default 主会话）不带该环境变量 ⇒ 仍监听 8766**（单进程只 `tryListen` 一次，reload 会先释放再重占）。
+
 ---
 
 # ✦ 最近更新（2026-09-17 19:55 UTC / 本地 09-18 03:55）：n8 **第十九轮** —— 运行期验收 `14f5961`（证据制保留判据 + 悬空口径代码化）。**R9 = 口径函数的采集源缺陷**：`scanDanglingFnRefs` 只从 `readNodeContent`（`<content>…</content>`）收集存活符号，而 `<function symbol=…>` 块**写在 `</content>` 之外**（`writeNodeHtml` 在 `</content>` 后拼 `fnHtml`、`writeNodeFunction` 文件末尾 append）⇒ **`symbolsAlive` 恒 0**（stock_alpha / normal 两网旧口径一律 0）⇒ 全部引用被判悬空 ⇒ F4''「4-6 ≤ 35」是**假达标**，该指标对函数块存活毫无判别力。**实施 `741788a`**（可选 `fnSymbols` 采集源 + `fnBlocksOnDisk` 字段 + 调用点接 `readNodeFunctions`；不传时行为 ≡ 旧实现）；测试 **18/18**。

@@ -86,6 +86,8 @@
 - **F-A（生效）**：窗口出现 `semantic_backward_goal_cleanse` 且 `candidates` 非空 ∧ `candidateModes` 键集 == `candidates`；`cleanseViolationCount` == 离线脚本重算值（±0）。
 - **F-B（假阴性防护）**：候选全 `mode=replace` 时 violation 必须 0；无候选 ⇒ 记 `no_offgoal_sample` 跳过而非失败。
 - **F-C（对应待办 #13）**：`agent_end_backward_skipped{no_pending_match}` 仍 >0 ⇒ 交易决策 HE 仍丢，须走「pending 无匹配 ⇒ 入栈 + self-backward（reward 标 `unattributed`，禁由 HE 驱动 reward）」。
+- **F-D（硬性约束 10 复发治理，`67f8b6f` / n9 生效）**：**正例** = 三件套启动后**首个 bash 在 30s 内直调 `127.0.0.1:7860` API**（`_events.jsonl` 首条 `tool_call` 即 curl，可从 `tool_call.inputPreview` 字面核）；**负例信号** = `ps -Ao pid,ppid,command` 抓到 agent 子进程含 `grep -r` / `find .` ⇒ 判纪律注入未生效（先查 `PI_COMS_NO_DISCIPLINE`，并用 `PI_COMS_DRY_RUN=1 pi-coms-spawn <cname> …` 自证 `discipline=on` + `--append-system-prompt` 已带上）。**归因纪律**：本轮 sender 3 次 `/api/trade_quality` 200（第二十轮 0 次）应归因于 **7860 重启使端点 404→200**，不得记为「agent 行为改进」（因果必须落在可验证的变更上）。
+- **回灌闭环（本轮 guard 的 n8 盲区）**：干预动作（kill 子进程 / pkill -P）**不写** `_trajectories`/`_events` ⇒ n8 结构性看不到；**单次 kill 不足止损**（agent 1s 内换关键词重试），处置必须 `pkill -9 -P <agent_pid>` 循环清洗。
 
 ## 五、P0 排序变化
 1. **#13 `no_pending_match` 丢 HE**（第五轮复现，交易轮学习直接损失）→ 最高杠杆。
@@ -413,6 +415,7 @@
 | 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含陈旧/已出栈项（第十七轮仍见 `matchedTaskTs` = `18:33:28Z`/`18:35:42Z`/`18:35:55Z`，窗口基线 `18:48:13Z`）；`matched.rawUserPrompt` 为空时应**改选** activeTask。判据：`matchedTaskTs` 不再早于窗口起点 10min+ | ⏳ 未修 |
 | 19 | **悬空 `[fn:σ]`**：✅ 口径采集源已修（`741788a`：`symbolsAlive` 恒 0 的根因 = 函数块写在 `</content>` 之外）；**真基线 stock_alpha 79 pairs / 103 refs（symbolsAlive 6）**。剥离 content 引用的策略待 G1 基线稳固后再决；**存量悬空仍禁手工清理** | ⏳ 部分 |
 | 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
+| 24 | **子 agent 纪律注入运行期验收（`67f8b6f`，n9 生效）**：F-D 正例 = 启动后首个 bash 在 30s 内直调 7860 API；负例 = `ps -Ao pid,ppid,command` 出现 agent 子进程含 `grep -r`/`find .` ⇒ 判未注入（先查 `PI_COMS_NO_DISCIPLINE`，`PI_COMS_DRY_RUN=1` 自证 `discipline=on`）；干预回灌须循环 `pkill -9 -P` | ⏳ 待 n9 |
 | 23 | **`/api/trade_quality` 空仓时 `position` 维度恒 0 分**（第二十一轮实测：清仓后 `open_trades=0` ⇒ `position=0`，而 `account/behavior/benchmark/holding/risk_control/timing/trade` 均正常）：属**结构性零值**（无持仓 → 无仓位可评），不得当作「仓位管理最差」记入质量台账（同硬性约束 12 推论）；判据：`open_trades==0` 时该维度必须返回 `null`/`no_position` 而非 0，且综合分权重重归一 | ⏳ 未修（7860 侧） |
 | 22 | **R10 离域清洗判据运行期验收**（`e9076f0`，需 `/reload`）：`semantic_backward_goal_cleanse.candidates` 非空 ∧ `candidateModes` 键集==candidates ∧ `cleanseViolationCount`==离线脚本重算；反证：`candidates` 恒空或与 `nodeUpdatesKeys` 无关 ⇒ 判据未接线 | ⏳ 待 reload |
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
@@ -448,6 +451,7 @@
     - **根治**：指令里直接给可复制的 `curl`（含 `session_id`/body 形状）；API 速查写入 `workflows/API.md` 并给路径。
     - **诊断**：`ps -eo pid,ppid,etime,%cpu,command` 按 `ppid == agent_pid` 过滤，命中「**%cpu 高 ∧ etime 长 ∧ 含 `find .`/`grep -r`**」即判卡；**处置=只杀子进程**（保 agent 上下文），**不杀 agent**。
     - **闭环纪律**：这类干预**不进** `_trajectories.jsonl` / `_events.jsonl` ⇒ guard 的 n8 **看不到**；**不显式回灌文档即下轮必重现**。
+    - **修订（第二十一轮，复发后实测）**：①`kill -9` 单个子进程**不足止损** —— agent 1 秒内换关键词重试（实测 kill 11962/11964 → 新起 12318），必须 `pkill -9 -P <agent_pid>` **循环清洗至静默**；②`--purpose` 只是注册表**展示字段、不进 prompt**，纪律必须靠 `--append-system-prompt <workflows/AGENT_DISCIPLINE.md>` 在**启动期**注入（否则写进 purpose = 没写）；③纪律生效后须按 F-D（§第二十一轮四）用正例（首个 bash 30s 内直调 7860 API）+ 负例（`ps` 拓到 `grep -r`/`find .`）双向验收，不得只看「本轮没卡死」当证据（症状消失 ≠ 机制工作）。
 11. **跨轮比较的指标必须由代码持有口径**（第十八轮新增；触发：悬空 `[fn:σ]` 台账 4→17→27→33→**35** 连续五轮「单调恶化」，但每轮口径由人工 grep 临时决定 —— 含不含 `⟨fn:σ⟩`、按符号去重还是按「节点×符号」、是否计入函数块内引用、strip 与否 ⇒ **无可比基线**，根本无法判断是「真变差」还是「口径变严」）。
     - **规则**：任何要跨轮比较的指标（悬空引用 / 闭合 `<function>` 块数与域占比 / 写入拒绝率 / 注入数），必须在代码里有一个**单一事实来源的采集函数 + 事件**（如 `scanDanglingFnRefs` → `fn_ref_dangling`），断言直接读事件字段；**禁用每轮手工 grep 计数作为台账依据**。
     - **副产品**：口径入代码后，同一指标才能在多轮间形成时间序列，否则「恶化」与「测量方式变化」不可区分。

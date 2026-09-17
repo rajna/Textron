@@ -6,6 +6,30 @@
 
 ---
 
+# ✦ default 侧改进 2（2026-09-18 04:50）：子 agent 操作纪律**自动注入**（治「全盘搜索阻塞整轮」）
+
+> 触发：第二十一轮 sender 启动后立即 `cd /Users/rama && grep -rl "api/health" --include=*.py … .`
+> ⇒ 同步阻塞 **4m19s / CPU 60%**；同类事故第十六轮已发生（sender 两次全盘搜索 4m50s/3m40s）——**属硬性约束 10 复发**。
+
+## 干预记录（按约束 10 必须显式回灌，否则不进 `_trajectories`/`_events` ⇒ guard 的 n8 看不到）
+- 04:33:36 sender(pid 11863) 子进程 `11962(bash)/11964(grep)` 全盘 grep → `kill -9` **只杀子进程**（保 agent 上下文）。
+- 04:35:0x sender 随即又起同类 grep(12318) → `pkill -9 -P 11863` 清空其子进程。
+- 04:35:34 恢复：sender 转向 `curl /api/health` → `/api/enter` → `/api/prompt` → `/api/step`，两次推进 78→79→80 正常完成（04:39:25）。
+- 结论：**kill 子进程只是止损，不是根治**；根治必须让子 agent 启动时就知道「不该搜、去哪查」。
+
+## 根治实施
+- 新增 **`workflows/AGENT_DISCIPLINE.md`**：硬性禁令（宽目录禁 `find .`/`grep -r … .`/`ls -R`）、命令必须有界（`timeout`/`-m`/`head`）、可复制的 curl 速查、`trade.py` 只改函数体、**打分必须真调 `/api/trade_quality`（禁编分数）**、收件人边界、monitor 端口表。
+- **`pi-coms-spawn`** 默认对每个 cname 追加 `--append-system-prompt <该文件>`（`PI_COMS_NO_DISCIPLINE=1` 关闭；dry-run 行打印 `discipline=on`）。
+  - **关键区分**：`--purpose` 只是注册表**展示字段**，不进 prompt ⇒ 之前把要求写进 purpose 等于没写。
+- 生效范围：下一轮 n9 重启三件套即自动带上（本轮三件套用旧启动方式，故本轮卡死仍发生）。
+
+## 本轮交易侧摘要（guard 第二十一轮 n6/n8）
+- 2 次推进 `step 78→79→80`（2025-05-09 → 2025-05-12），总资产 **104,571 → 104,166 → 104,415**（已清仓，+4.415%）。本轮 sender **真实调用了 `/api/trade_quality`**（04:30:36 / 04:39:10 / 04:39:37 均 200）——对比第二十轮完全未调、靠手工拼 portfolio。
+- guard n8 根因 **R10（>95%）**：`semantic_backward_goal_cleanse.cleanseTargets` 结构性恒空（移除 forceOverwrite 后未同步事件语义）+ LLM `mode` 在 normalize 被丢弃 ⇒ 无法分辨 replace 真清洗与 merge 追加，而 `covered` 只看键存在 ⇒ 兜底不触发、离域内容以「已覆盖」假象永久追加。实施 **`e9076f0`**（mode 透传 + 真实 `candidates/candidateModes/fallbackApplied` + violation 告警，**不新增拦截**）；文档 `01863b7`/`26f8de3`。
+- 未解决：决策轮 HE 仍被 `no_pending_match` ×2 丢弃（第五轮复现）；`nodesMerged 0-1`/`edgesUpdated=0` 融合质量偏低；空仓时 `/api/trade_quality` position 维度结构性 0 分（禁记台账，待办 #22/#23）。
+
+---
+
 # ✦ default 侧改进（2026-09-18 04:25）：monitor **端口漂移/掉线**治理 —— 端口注册表 + 固定分配 + 读侧工具
 
 > 触发：用户报「textron live web 总是掉线或换端口」。归因链全部落代码取证，非猜测。

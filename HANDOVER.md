@@ -260,6 +260,7 @@
 - **新 API**：`GET /api/trade_quality?session_id=&review=1&force=1`（返回 score/dims/trades/evidence/llm_text；review=1 才含 for_review 区）；`GET/POST /api/trade_quality/config`（权重/阈值增量合并落盘 `UI/trade_quality_config.json`，POST 后清缓存自动重算）。缓存按轨迹长度失效。UI 新增「交易质量评分」面板。
 - **`/api/prompt`（`_build_ai_prompt`）新增「最近交易轨迹」块**（`_render_recent_trajectory`，最近 5 条：step/日期/动作/标的/@price）：标的还原用**倒序游标**——从 `current_stock` 向头走，遇换股记录按消息「从 X 切换至 Y」回退标的；**易错**：消息必须同时搜 `rec.message` 与 `trade_result.message`（后者是「换入 Y」格式不含旧标的，若优先会致游标不回退、换股前记录标的错置）。
 - **生效条件**：7860 UI 服务需重启；workflow 消费点为 sender 的 `/api/prompt`（第4步）与 `/api/trade_quality`（第9步反馈）。
+- **⚠️ 第十九轮 guard 运行期实测（2026-09-17 19:5x UTC）**：**未重启 ⇒ 改动未生效** —— `curl -s http://127.0.0.1:7860/api/health` ✅（`{"ok":true,"sessions":1,"default_session_id":"4cf529337f29"}`）但 `curl -s "http://127.0.0.1:7860/api/trade_quality?session_id=4cf529337f29"` 返回 **404 Not Found**（路由未注册）⇒ sender 第9步的 `force=1` 重试同样 404，只能落到 workflow 里写明的 `step.portfolio` 兜底打分。**判据**：`/api/trade_quality` 返回 200 且含 `data.score` 才算生效。**处置**（不在 guard n8 范围内，登记以免下轮误判为代码 bug）：重启 7860 UI 服务后再由 sender 跑一轮交易验证。
 
 ---
 

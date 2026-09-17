@@ -52,6 +52,17 @@ curl -s -X POST http://127.0.0.1:7860/api/finish -H 'Content-Type: application/j
 # load/resume 若已有进行中的异股存档且未带 "force":true → 409
 ```
 
+## 7. 交易质量评分（第十九轮新增；**需重启 7860 才生效**）
+```bash
+curl -s "http://127.0.0.1:7860/api/trade_quality?session_id=<SID>"            # 决策侧（禁含未来数据）
+curl -s "http://127.0.0.1:7860/api/trade_quality?session_id=<SID>&review=1"   # 复盘侧（含 for_review 未来数据，禁入 prompt）
+curl -s -X POST http://127.0.0.1:7860/api/trade_quality/config -H 'Content-Type: application/json' -d '{}'   # 权重/阈值增量合并
+# → {"ok":true,"data":{"score":0-100,"dims":{...},"trades":[...],"evidence":[...],"llm_text":"..."}}
+# 第十九轮实测：未重启 ⇒ 404（路由未注册）；workflow 第9步须 force=1 重试后以 step.portfolio 兜底，禁止跳过 API 凭记忆编分数
+```
+
+---
+
 ---
 
 ## 口径提醒（易错）

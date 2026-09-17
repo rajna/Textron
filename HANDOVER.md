@@ -210,6 +210,15 @@
 - **机制性质**：这是**结果反验型护栏**（用**事后**可知的日内极值判定「限价当日是否被触及」），把过程中撮合（排队优先级 / 对手盘存在性 / 部分成交 / 更优价撮合）压缩成**布尔判定** ⇒ **系统性高估可成交性**。真实 A 股限价单需盘中触及**且**有对手盘，且成交价可能优于委托价。
 - **待核对（勿当缺陷修）**：同一 `(sz.301299, 2025-04-23)` 在 `/api/prompt` 的总资产 **¥103,485**（按 04-23 收盘 55.35×600 估值）vs sender 回执 **¥102,783**（按成交价 54.18×600）＝差 **+¥702**，疑为「成交价 vs 当日收盘价」两套估值口径 ⇒ 下轮核对 `_equity_point` / `get_portfolio_value` 的取值基准，并统一 sender 报数口径（否则跨轮收益率不可比）。
 
+## 十一、stock-trade API 扩展：交易质量量化模块 + /api/prompt 轨迹块（2026-09-17，stock-trade 仓，非 textron 代码）
+
+- **新模块 `UI/trade_quality.py`**（纯函数，无 Flask 依赖）：买卖配对（平均成本法）+ 8 维评分（account/trade/risk_control/benchmark/timing/holding/position/behavior，含 Sharpe/Sortino/Calmar/Ulcer/ProfitFactor/兑现率/MFE回吐/下跌不作为 inaction_ratio/处置效应 PGR-PLR/excess_vs_bh）。输入全 JSON 化 dict；`for_review` 区隔离未来数据（卖出后走势/基准超额/空仓机会成本）——**决策 prompt 只能消费 `render_for_llm(for_review=False)` 的文本，带未来数据的复盘区禁入 prompt**。
+- **新 API**：`GET /api/trade_quality?session_id=&review=1&force=1`（返回 score/dims/trades/evidence/llm_text；review=1 才含 for_review 区）；`GET/POST /api/trade_quality/config`（权重/阈值增量合并落盘 `UI/trade_quality_config.json`，POST 后清缓存自动重算）。缓存按轨迹长度失效。UI 新增「交易质量评分」面板。
+- **`/api/prompt`（`_build_ai_prompt`）新增「最近交易轨迹」块**（`_render_recent_trajectory`，最近 5 条：step/日期/动作/标的/@price）：标的还原用**倒序游标**——从 `current_stock` 向头走，遇换股记录按消息「从 X 切换至 Y」回退标的；**易错**：消息必须同时搜 `rec.message` 与 `trade_result.message`（后者是「换入 Y」格式不含旧标的，若优先会致游标不回退、换股前记录标的错置）。
+- **生效条件**：7860 UI 服务需重启；workflow 消费点为 sender 的 `/api/prompt`（第4步）与 `/api/trade_quality`（第9步反馈）。
+
+---
+
 # ✦ 前序轮次一行摘要（第十~十五轮 + 更早，细节见 git 历史与已沉淀节点）
 
 - **第十五轮（09-15 22:35）**：n8 首次运行期验收 `db33ba8`/`c8b015d` ⇒ A1 轨迹工具侧保真 ✅（`inputPreview` 恰 180c 22→0）、A2 多块搬运 ✅（闭合真块 7）；A3 ✗（悬空 `[fn:σ]` 4→17）、A4 ✗（域隔离 4/9 非交易域）。根因 **R5 = goal guard 单向 + `pinnedTaskFamily` 全局 pin**（离域知识不是多占位置，而是**淘汰域内事实**）⇒ 实施 `75847ed` 任务侧域闸（`src/domain_gate.ts` 新 + `index.ts` 早退：`off_domain===true` ⇒ 内容零写入、reward 原样返回 ⇒ 只禁内容面不禁学习面）。**破例**改共享层 `local-coms.ts`（静默空包 ⇒ 「仅非空时覆盖」+ `empty_assistant_text`；备份 `.bak-emptyreply-20260915-222627`，默认保留）。

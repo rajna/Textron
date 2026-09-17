@@ -46,7 +46,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 6. 执行：worker 依据 prompt 产出决策 JSON {decision∈买入·卖出·持有·不建仓继续观察·不建仓更换股票, tradePrice, tradeQuantity, confidence∈高·中·低, reasoning}；worker 做决策时不能用任何手段获取后续股票数据，可以使用的工具：/Users/rama/textron-agent/workflows/trade.py
 7. worker -> sender: worker 调 coms_send 把决策 JSON 发回 sender
 8. 执行：sender 调 POST http://127.0.0.1:7860/api/step，body {session_id,decision,tradePrice,tradeQuantity,confidence}，获取返回值 step.trade_result 与 step.portfolio(总资产/浮盈亏/收益率/收益曲线)
-9. 反馈：sender根据交易返回状态给worker 打分 账户盈利10分，亏损-10，不亏不赚-2，输出格式：<反馈>：上次交易分数{具体分数}，和账户情况，简要说明分数原因 100字，sender ->worker，发给worker 复盘
+9. 反馈：sender 调 GET http://127.0.0.1:7860/api/trade_quality?session_id={session_id}，取 data.score(0-100)、dims.account.score、dims.trade.score 与 data.evidence（若请求失败先加 force=1 重试一次，仍失败则以 step.portfolio 收益数据兜底打分；禁止跳过 API 凭记忆或猜测编分数），写 <反馈>：交易质量分{score}/100（账户{dims.account.score} 单笔{dims.trade.score}），账户情况（总资产/收益率），依据 evidence 简要说明分数原因 ≤100 字；sender 调 coms_send 把 <反馈> 发给 worker 复盘
 10. 复盘：worker 依据盈亏反馈复盘反思，把反思内容和/Users/rama/textron-agent/workflows/trade.py中的交易策略,进行元分析，形成更抽象 更凝练，更成熟，更风报比高的交易策略，然后更新trade.py的函数体，保证输入输出不变即可反思结束 调 coms_send 通知 sender，worker -> sender。【收件人边界】worker 只与 sender 交互，禁止直接通知 guard 或其他 agent。
 11. 判定：sender 收到worker信息，sender 计数 /api/step 执行次数，未满2次 则回第4步；满2次则下一步(注意这里的次数是从0开始计数，不是看 stock trade里step数，stock trade里step数因为有存档 可能已经发生很多步了)
 12. 衔接（属 sender 专属职责，worker/guard 均不发起）：满 2 次后由 sender 调 coms_send 通知 guard「交易推进已完成」；同一轮只通知一次，guard 收到后执行 n8。
@@ -57,7 +57,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n8 (prompt)
 
-sender-> guard: sender 是唯一负责通知 guard 的角色，在推进计数满 2 次后 coms 通知 guard 完成所有交易推进次数；guard 接到通知后要做的：1 guard不用分析 交易情况,guard关注点是textron,2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 整个系统变得更差了 要直接回滚代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用,信息不要被slice 前向注入节点信息2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ,已有节点的抽象融合 比如l1的节点抽象融合进入l0等,融合的质量6 根据分析找出根本原因 3 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 实施最有潜力的一个改进 ,改代码前先提交代码到git  修改代码 后 把改进写入textron agent 的交接文档 8 guard-default: guard通知default workflow运行完成,1000字过程摘要
+sender-> guard: sender 是唯一负责通知 guard 的角色，在推进计数满 2 次后 coms 通知 guard 完成所有交易推进次数；guard 接到通知后要做的：1 guard不用分析 交易情况,guard关注点是textron,2 分析textron agent0.5 分析textron agent 的交接文档 是否有要验证的修改 或之前的修改本轮是否生效 整个系统变得更差了 要直接回滚代码1 交易轨迹是否正确完整的收集 包含对话的全部信息 工具调用,信息不要被slice 前向注入节点信息2  交易轨迹有没有触发llm反向传播3 反向传播有没有把轨迹中的高熵信息 HighEntropy Function 沉淀到 stock_alpha网络中3.5网络节点信息是否在不断抽象  沉淀高质量信息 经验 还是 趋于紊乱 噪音 无效信息4 反传时 stock_alpha节点 是否会 高效的抽象融合 比如 轨迹的HighEntropy和前向节点信息的抽象融合 ,已有节点的抽象融合 比如l1的节点抽象融合进入l0等,融合的质量6 根据分析找出置信度超过85%的bug的根本原因 低于85%置信度的问题可以后续跑workflow有更多数据支持后再处理 3 改进是否最大化利用了llm的杠杆  提出最有潜力的改进 7 实施最有潜力的一个改进 ,改代码前先提交代码到git  修改代码 后 把改进写入textron agent 的交接文档 8 guard-default: guard通知default workflow运行完成,500字过程摘要
 
 ### n9 (prompt)
 

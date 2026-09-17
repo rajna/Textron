@@ -253,6 +253,23 @@ _CFG: Dict[str, float] = {
     "sup_zone_atr": 2.0,      # 「贴支撑」判定改用 ATR 倍数。原用 1.2·risk，而 risk 已被 vol_floor 放大
     #                           ⇒ 止损 trail 上移反而丢掉 pos_adj（止损越近越不算贴支撑，逻辑倒置）
     "order_slip_atr": 0.30,   # 申报价方向偏移(×ATR)：抵消跳空造成的「申报价越出次日区间」整笔失效
+    # ── 第 13 步纠错（本局第 2 轮实测）：锚价申报在跳空日的失效是**结构性缺陷**而非运气 ──
+    #   实测：加仓 200 股 @ 申报价 55.21（=D 收盘锚）遇 D+1 向上跳空，[low,high] 不含 55.21
+    #   ⇒ 整笔失效、仓位维持 26%、交易次数 69 未变 —— 方向判断正确而收益未落地。
+    #   故新增**双向可成交性宽容带**（口径只含当日可知量：ATR 与收盘价，无任何未来信息）：
+    #     band = max(gap_tol_atr·ATR, gap_tol_pct·close)；买申报 = close+band、卖申报 = close−band。
+    #   安全性来自撮合式：买 effective = min(申报, 开盘) ⇒ 抬高申报价只扩触发窗、不抬成交价
+    #   （最坏按开盘价成交）；卖 effective = max(申报, 开盘) ⇒ 降低申报价同理不砸成交价。
+    "gap_tol_atr": 0.6,      # 宽容带 ATR 分量（≈覆盖一次典型隔夜跳空）
+    "gap_tol_pct": 0.02,     # 宽容带下限 2%·close（低波动期 ATR 过小时仍保可成交性）
+    #   ⚠ 错误修正方案的判定边界（本带的有效性依赖成交价语义）：
+    #   ① 若实际成交价 = min(买申报, 开盘) / max(卖申报, 开盘)（本文件注释与实测失效现象
+    #      所指的模型）→ 带只扩触发窗、不抬成交价，**永远不吃亏**；
+    #   ② 若实际成交价 = 前收盘价而申报价仅作区间校验（prompt 原文「成交价默认参考最近收盘价」）
+    #      → 带同样零成本；
+    #   ③ 仅当执行层是「成交价 ≡ 申报价」的纯限价模型时，本带才变成真实滑点（买+2.2%/卖−2.2%）。
+    #      该情形下的修正不是缩带（缩带＝退回失效模式），而是**申报失败重报**：由调用方在
+    #      ctx["memory"]["last_fill_failed"] 回传失败标志，次日用同一方向、按新收盘重算的带重报。
     "momentum_veto": 1,       # 动量否决分级：Δπ 方向与日线动量冲突时降级/否决换手（硬止损/结构破位仍可越过）
     # ── 第 11 步（终局）纠错：否决权必须与「证据强度」与「缺口显著性」双向绑定 ─────
     "veto_sig_mult": 2.0,    # Δπ ≥ 该倍数×触发阈值 ⇒ 仓位缺口已属显著级，动量否决不得整条吞掉方向信号，
@@ -460,8 +477,11 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
                     (d) 减仓量 = 当前持股 − π* 折算的目标持股（向上取整到整百），
                         不再用 Δπ·总值 折算（向下取整会停在半仓不表态区）。
         申报（申报价 ≠ 成交价）：D 收盘出决策 → D+1 以 D+1 价格成交，tradePrice 只决定
-                    「申报是否落入 D+1 的 [low, high]」。故按动量方向偏移 0.3·ATR 并以 ±9.5% 限幅，
-                    降低跳空导致的整笔失效概率；仓位折算仍锚定最近收盘价。
+                    「申报是否落入 D+1 的 [low, high]」。锚定 D 收盘的固定申报价遇跳空即整笔
+                    失效（第 13 步实测：55.21 锚价在 D+1 向上跳空日失效）⇒ 改为双向宽容带
+                    band=max(0.6·ATR, 2%·close) 触发（买 +band / 卖 −band），动量方向再追加
+                    0.3·ATR；撮合式 min(买)/max(卖) 保证「抬高触发位不抬高成交价」，故本修正只
+                    提高可成交率、不引入新赔率损失；仓位折算仍锚定最近收盘价。
         最小有效换手 = (score_cost_pct/100) / (ATR/close)：覆盖一次「零变动」固定失分所需的最小仓位变动，
                     防止小额换手在逐日评分下成为负期望动作
         风控：close < 前3日低点 或 浮亏 ≤ −8% 且月/周空头 或 edge ≤ 0 → 清仓。
@@ -512,19 +532,26 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
                           mtf_n=mtf_n, mom_up=mom_up)
 
     def _order_px(side: int) -> float:
-        """申报价：side +1 买入 / −1 卖出（**限价锚，非成交价**）。
+        """申报价：side +1 买入 / −1 卖出（**成交触发位，非成交价**）。
 
-        执行层为限价单真实撮合：买入 effective = min(申报价, D+1 开盘)、
-        卖出 effective = max(申报价, D+1 开盘)；唯一闸门 = 申报价须落入成交日
-        D+1 的 [low, high] 闭区间，越界整笔失效但仍推进一日。
-        推论一：申报价高低**不决定成交价水平**（买取 min / 卖取 max），故不得为「求更好成交价」
-                而偏移报价——偏移只会平移失效概率，不会平移收益。
-        推论二：有明确短期动量时沿动量方向偏移 0.3·ATR，只为吸收跳空（跨过次日 low 的命中窗）；
-                反向交易不追价（贴锚价，避免边缘越界）。
+        执行层撮合规则（本文件唯一的执行假设）：买入 effective = min(申报价, D+1 开盘)、
+        卖出 effective = max(申报价, D+1 开盘)；唯一闸门 = 申报价须落入成交日 D+1 的
+        [low, high] 闭区间，越界**整笔失效**（仓位不变但仍推进一日）。
+        推论一：申报价只回答「D+1 是否会碰到该价位」；成交价水平由 min/max 与开盘价决定。
+        实证（第 13 步）：锚定 D 收盘的 55.21 遇 D+1 向上跳空 ⇒ 200 股加仓整笔失效、
+               仓位维持 26%、交易次数 69 未变 ⇒ 方向对、仓位上不去。**锚价申报在跳空日
+               的失效概率是结构性缺陷，不是运气**；只靠「有动量才偏移 0.3·ATR」不够，
+               因为「收复缺口下沿/放量阳线」常伴 mom_up=False（前一日微跌即打断严格递增）。
+        修正：双向宽容带 band = max(gap_tol_atr·ATR, gap_tol_pct·close)，且**不再以 mom_up
+               为启用前提**（动量仅在 band 之上追加 0.3·ATR 同向偏移）。
+               安全性不自相矛盾：买 effective = min(申报, 开盘) ⇒ 抬高申报价只扩触发窗、
+               不抬高成交价（最坏等于按开盘价成交）；卖 effective = max(申报, 开盘) 对称。
+        边界：band 只由当日可知的 ATR 与 close 决定（无未来信息）；整体受 ±9.5% 限幅约束。
         """
+        band = max(_CFG["gap_tol_atr"] * atr, _CFG["gap_tol_pct"] * close)
         drift = _CFG["order_slip_atr"] * atr if ((side > 0 and mom_up) or (side < 0 and mtf_down and not mom_up)) else 0.0
         lim = 0.095 * close
-        return round(_clip(close + side * drift, close - lim, close + lim), 2)
+        return round(_clip(close + side * (band + drift), close - lim, close + lim), 2)
 
     pi_star = tp["pi_star"]
     pi_cur = (mv / total_value) if qty_held > 0 else 0.0
@@ -628,7 +655,11 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
             else:
                 want_q = cap_q
             want_q = min(want_q, cap_q) if cap_q > 0 else 0
-            q = _lot(want_q * px, _order_px(+1)) if want_q >= 100 else 0
+            px_ord = _order_px(+1)
+            # 预算与单价的**计价单位必须一致**（第 13 步）：旧式 `want_q·px(锚价)` 再除以
+            # 申报价，一旦申报价带上宽容带（>锚价）就会凭空少买一手（want_q=200 ⇒ 实取 100）。
+            # 正确口径：预算 = 期望股数 × **申报价**，再按申报价整除整手。
+            q = _lot(want_q * px_ord, px_ord) if want_q >= 100 else 0
             if q >= 100:
                 return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
                             "目标仓位 %.0f%% > 当前 %.0f%%（Δπ=%.1f%% ≥ 触发阈值 %.1f%%，否决强度 scale=%.1f），"
@@ -677,7 +708,8 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
         return _flat(True, CONF_MID, "已跌破前3日低点且月/周线空头，破位下跌中不建仓，等站回结构位", **feats)
     # 空仓：开仓与加仓受同一套闸门约束（逐日结算下低胜率开仓同样放大负分天数）
     if tp["edge"] > 0 and tp["floor_on"] and not (_CFG["momentum_veto"] and mtf_down and not mom_up):
-        q = _lot(_target_qty(pi_star) * px, _order_px(+1))
+        px_ord = _order_px(+1)
+        q = _lot(_target_qty(pi_star) * px_ord, px_ord)   # 同上：预算按申报价计
         if q >= 100:
             return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
                         "正期望(edge=%.2f)且目标仓位 %.0f%%，按风险预算建仓" % (tp["edge"], pi_star * 100),
@@ -781,6 +813,16 @@ def _contract_violations(d: TradeDecision, ctx: TradeContext) -> List[str]:
             v.append("buy_blocked_by_p_gate:p=%.2f<%.2f" % (float(p_snap), _CFG["p_gate"]))
         if sq_snap is True:
             v.append("buy_blocked_by_squeeze")
+    # ⑤ **可成交性断言**（第 13 步）：申报价必须带宽容带，不得退回「贴锚价」
+    #    失败模式：锚价申报在 D+1 跳空日整笔失效 ⇒ 仓位不变、白耗一日、方向对而收益不落地。
+    #    本层无法知道 D+1 的 [low, high]，但 band 只依赖当日可知的 ATR/close ⇒ 可断言。
+    if dec in (DECISION_BUY, DECISION_SELL) and len(daily) >= 2 and close > 0:
+        band = max(_CFG["gap_tol_atr"] * _atr(daily, int(_CFG["atr_window"])),
+                   _CFG["gap_tol_pct"] * close)
+        if dec == DECISION_BUY and price < close + band - 0.01:
+            v.append("order_px_stale_anchor_buy:<%.2f" % (close + band))
+        if dec == DECISION_SELL and price > close - band + 0.01:
+            v.append("order_px_stale_anchor_sell:>%.2f" % (close - band))
     return v
 
 
@@ -855,7 +897,7 @@ def _selfcheck() -> bool:
     print("[%s] 负例(持有带价)命中 flat_decision_must_zero_price_qty"
           % ("OK" if "flat_decision_must_zero_price_qty" in viol2 else "FAIL"))
     # 负例（第 12 步新增）：配额达标但**准入未过**的买入产出必须被拦
-    bad3 = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 200,
+    bad3 = {"decision": DECISION_BUY, "tradePrice": 56.50, "tradeQuantity": 200,
             "confidence": CONF_MID, "featureSnapshot": {"p": 0.49, "squeeze": True}}
     viol3 = _contract_violations(bad3, cases[0][1])
     hit_gate = any(x.startswith("buy_blocked_by_p_gate") for x in viol3)
@@ -864,11 +906,20 @@ def _selfcheck() -> bool:
     print("[%s] 负例(p=0.49&squeeze 买入)命中 %s"
           % ("OK" if (hit_gate and hit_sq) else "FAIL", viol3))
     # 正例：同一组特征下 p≥p_gate 且非 squeeze 时，同一买入决策必须放行
-    good = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 200,
+    good = {"decision": DECISION_BUY, "tradePrice": 56.50, "tradeQuantity": 200,
             "confidence": CONF_MID, "featureSnapshot": {"p": 0.55, "squeeze": False}}
     ok = ok and not _contract_violations(good, cases[0][1])
     print("[%s] 正例(p=0.55 非收缩 买入)准入放行"
           % ("OK" if not _contract_violations(good, cases[0][1]) else "FAIL"))
+    # 负例（第 13 步新增）：锚价申报（无宽容带）必须被判为 stale_anchor 并降级不动仓
+    stale = {"decision": DECISION_BUY, "tradePrice": 54.93, "tradeQuantity": 200,
+             "confidence": CONF_MID, "featureSnapshot": {"p": 0.55, "squeeze": False}}
+    vs = _contract_violations(stale, cases[0][1])
+    ok = ok and any(x.startswith("order_px_stale_anchor_buy") for x in vs)
+    dd_stale = decide(dict(kline=dict(daily=daily, weekly=weekly, monthly=[]), account=held))
+    print("[%s] 负例(锚价买入)命中 %s；decide 实际产出 %s px=%s"
+          % ("OK" if any(x.startswith("order_px_stale_anchor_buy") for x in vs) else "FAIL",
+             vs, dd_stale["decision"], dd_stale["tradePrice"]))
     # 边界用例（本轮新增）：「超配但未达减仓带」必须落为持有，且 under_target=True（漂移可统计）
     drift_ctx = dict(kline=dict(daily=daily, weekly=[], monthly=[]),
                      account=dict(cash=102922.0 - 700 * 53.84, total_value=102922.0,

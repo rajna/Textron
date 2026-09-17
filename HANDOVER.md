@@ -389,6 +389,7 @@
 | 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含陈旧/已出栈项（第十七轮仍见 `matchedTaskTs` = `18:33:28Z`/`18:35:42Z`/`18:35:55Z`，窗口基线 `18:48:13Z`）；`matched.rawUserPrompt` 为空时应**改选** activeTask。判据：`matchedTaskTs` 不再早于窗口起点 10min+ | ⏳ 未修 |
 | 19 | **悬空 `[fn:σ]`**：✅ 口径采集源已修（`741788a`：`symbolsAlive` 恒 0 的根因 = 函数块写在 `</content>` 之外）；**真基线 stock_alpha 79 pairs / 103 refs（symbolsAlive 6）**。剥离 content 引用的策略待 G1 基线稳固后再决；**存量悬空仍禁手工清理** | ⏳ 部分 |
 | 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
+| 23 | **`/api/trade_quality` 空仓时 `position` 维度恒 0 分**（第二十一轮实测：清仓后 `open_trades=0` ⇒ `position=0`，而 `account/behavior/benchmark/holding/risk_control/timing/trade` 均正常）：属**结构性零值**（无持仓 → 无仓位可评），不得当作「仓位管理最差」记入质量台账（同硬性约束 12 推论）；判据：`open_trades==0` 时该维度必须返回 `null`/`no_position` 而非 0，且综合分权重重归一 | ⏳ 未修（7860 侧） |
 | 22 | **R10 离域清洗判据运行期验收**（`e9076f0`，需 `/reload`）：`semantic_backward_goal_cleanse.candidates` 非空 ∧ `candidateModes` 键集==candidates ∧ `cleanseViolationCount`==离线脚本重算；反证：`candidates` 恒空或与 `nodeUpdatesKeys` 无关 ⇒ 判据未接线 | ⏳ 待 reload |
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
 

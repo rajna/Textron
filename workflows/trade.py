@@ -276,6 +276,42 @@ _CFG: Dict[str, float] = {
     #                           只能降级为折半执行（实测代价：单周期空头一票否决 kelly 0.281 ≫ π_cur 0.156
     #                           的方向信号，结算价高于决策日收盘 ⇒ 机会成本）
     "veto_half": 0.5,         # 折半执行系数：π_exec = π_cur + half·Δπ
+    # ── 第 14 步纠错（本局第 2 轮实测，亏损 −405 元 / −0.39%）────────────────────
+    #   失败模式：「无信号 ⇒ 持有」被当成零成本的中性选项。实盘：05-08 收 57.45，
+    #   日线缩量小阳（168.7 万 < 221.8 万）收复前日收盘，我判为「弱信号、等确认」
+    #   ⇒ 输出持有；次日回落至 56.10，300 股浮亏由 +978 降至 +573，持仓敞口全额计入账户。
+    #   根因一（定价缺陷）：形态学上 05-07 已是「放量长上影阴线」——冲高回落比
+    #     (high−close)/(high−low) = (59.84−56.61)/3.73 = 0.87、收阴、量 222.8 万 ≈ 1.5×
+    #     前 4 日均量 148.8 万，即放量上攻被抛压打回；05-08 高点 57.78 < 59.84 ⇒ 反抽未能
+    #     收复上影高点，上攻失败被第二次确认。原 p 公式对该组合**完全不敏**（vol_adj 的
+    #     expand/shrink 二值均不命中 ⇒ 0），使 edge 停在 +0.006 ≈ 0 的「零期望区」。
+    #   根因二（触发滞后）：存量减仓此前只有三条路径——破 sup_prev / −8% 硬止损 / Δπ ≤ −12%，
+    #     即必须先积累 12% 超配漂移才轮到减仓；轻仓（π_cur≈5%）时 Δπ=−4.5% 永远够不着门槛
+    #     ⇒ 退化为「超配未达带时持有」的惰性持有。
+    #   修正：把上述两个确认纳入 p（exhaust_pen），使衰竭证据直接令 edge 转负，把退出由
+    #     「仓位漂移触发」升级为「期望为负触发」——**无需任何 12% 超配前置条件**。
+    #   判别力实测（同一 05-08 数据，仅持股数不同）：300 股时修补前后同为卖出（无差分）；
+    #     100 股时修补前持有（Δπ=−4.5% > −12%）、修补后卖出（edge +0.006 → −0.146）⇒
+    #     差分可观测，且正是本轮失败模式本身。禁用边界：若次日收复前一日最高价则不算衰竭
+    #     （避免把「回踩后再创新高」误杀）；仅用 daily[-2]/daily[-1]，无未来函数。
+    "exhaust_pen": 0.08,     # 冲高衰竭扣分：放量长上影阴线 + 次日未收复其高点 ⇒ p 下修
+    "exhaust_fall_frac": 0.5,  # 冲高回落比门槛 (high−close)/(high−low)，高于此值视为上攻被打回
+    "exhaust_vol_mult": 1.3,   # 上影日的量能门槛（×前 4 日均量），保证是「放量」而非缩量假阴
+    # ── 第 15 步纠错（本局第 2 轮实测，本轮盈利 +249 元 / +0.24%）───────────────────
+    #   实盘：05-09 光头阴线收 56.10（-2.35%，收于当日最低、量缩至 131.5 万），我输出
+    #   卖出 300 股 @54.88；D+1 开盘 56.93 且盘中回落至 54.88 以下 ⇒ 申报落入区间、
+    #   撮合价 = max(申报 54.88, 开盘 56.93) = 56.93 ⇒ 以高于前收盘 1.48% 的价格清仓。
+    #   复盘发现 trade.py 在同一数据上仍输出「持有」（与上轮同一处回退），两个缺陷：
+    #   ①**确认窗口只有 1 日**：exhaust 只查 daily[-2]，而 05-09 视角下上影阴线在 daily[-3]
+    #     （05-07），导致 exhaust=False ⇒ 漏报。真实衰竭链是「放量长上影 → 反抽未收复 →
+    #     第三日光头阴线」，跨度可达 2 日，必须用滑动窗口遍历而非只看前一根。
+    #   ②**靶位取已失效的压力位**：res_prev=59.84 正是被 05-07 长上影否定、05-08 未收复的
+    #     位置，把它当靶位得 b=3.07 ⇒ edge=+0.71，掩盖 p=0.42<p_gate 的准入否决 ⇒
+    #     决策从卖出翻成持有。靶位折价到 close+1.0·ATR（58.13）后 b=1.67、edge 转负 -0.09。
+    #   判别力实测：仅修 ①（窗口）不够（p 降但 edge 仍正）；仅修 ②（折价）也不够（exhaust
+    #     未触发）；**两者必须同时**才能翻转决策 ⇒ 属「两处独立缺陷互相掩盖」型 bug。
+    "exhaust_confirm_bars": 2, # 衰竭确认窗口：在最近 2 根阴线中找放量长上影，看其后是否收复
+    "target_cap_atr": 1.0,    # 衰竭（exhaust）时靶位封顶 = close + 该值·ATR：已失效的压力位不配当赔率锚
 }
 
 
@@ -351,11 +387,55 @@ def _mom_up(daily: Sequence[KLineBar], n: int = 3) -> bool:
     return len(cl) >= n and all(cl[i] < cl[i + 1] for i in range(len(cl) - 1))
 
 
+def _upper_shadow_exhaust(daily: Sequence[KLineBar]) -> bool:
+    """冲高衰竭（顶部结构）判定：前一日「放量长上影阴线」+ 当日未收复其最高价。
+
+    两条**独立**确认，缺一不可（单条皆为常见噪音，组合才是结构证据）：
+      ① 供给证据（滑动窗口内的 prior  bar，k=1…exhaust_confirm_bars）：冲高回落比
+         (high−close)/(high−low) ≥ exhaust_fall_frac，且收阴（close < open），
+         且量 ≥ exhaust_vol_mult × 其前 4 日均量；
+      ② 确认证据（prior 之后**到当日为止**的每一根）：最高价 < prior 最高价 ⇒ 反抽未收复上影高点。
+    语义：①说明上攻被抛压打回，②说明后续买盘不足以推翻该结论 ⇒「弱信号」应按 p 下修处理，
+    而非按「无信号」处理（无信号=中性=持有，是本文件第 14 步纠错的失败模式）。
+    第 15 步将确认窗口由 1 日扩到 exhaust_confirm_bars 日：真实衰竭链
+    「放量长上影 → 反抽未收复 → 第三日光头阴线」跨度可达 2 日，只看 daily[-2] 会漏报
+    （05-09 视角下上影阴线位于 daily[-3]）。滑动窗口遍历 k，取首个成立者即为衰竭。
+    仅用到决策日收盘前的历史 bar，无未来函数。
+    """
+    if len(daily) < 6:
+        return False
+    for k in range(1, int(_CFG["exhaust_confirm_bars"]) + 1):
+        idx = len(daily) - 1 - k
+        start = idx - 4
+        if idx <= 0 or start < 0 or k >= len(daily):
+            break
+        prior = daily[idx]
+        pr_high = float(prior.get("high") or 0.0)
+        pr_low = float(prior.get("low") or 0.0)
+        pr_open = float(prior.get("open") or 0.0)
+        pr_close = float(prior.get("close") or 0.0)
+        rng = pr_high - pr_low
+        if rng <= 0 or pr_close >= pr_open:            # 非阴线 ⇒ 无「冲高回落」可言
+            continue
+        ref_vols = [float(b.get("volume") or 0.0) for b in daily[start:idx]]
+        ref_vol = (sum(ref_vols) / len(ref_vols)) if ref_vols else 0.0
+        pr_vol = float(prior.get("volume") or 0.0)
+        if ref_vol <= 0 or pr_vol < _CFG["exhaust_vol_mult"] * ref_vol:
+            continue
+        if (pr_high - pr_close) / rng < _CFG["exhaust_fall_frac"]:
+            continue
+        confirm = daily[idx + 1:]                     # prior 之后到当日为止的全部 bar
+        if confirm and all(float(b.get("high") or 0.0) < pr_high for b in confirm):
+            return True
+    return False
+
+
 def _target_position(close: float, sup_prev: float, res_prev: float,
                      gap_lower: Optional[float], gap_upper: Optional[float],
                      atr: float, mtf_down: bool, shrink: bool, expand: bool,
                      total_value: float, gap_age: Optional[int] = None,
-                     mtf_n: Optional[int] = None, mom_up: bool = False) -> Dict[str, float]:
+                     mtf_n: Optional[int] = None, mom_up: bool = False,
+                     exhaust: bool = False) -> Dict[str, float]:
     """目标仓位函数 π* = f(赔率 b, 胜率 p, 结构性止损距离 r, 风险预算, 机会成本)。
 
     返回 dict: risk(止损距离) / b(赔率) / p(胜率) / edge(单位风险期望) /
@@ -389,6 +469,11 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
         target = gap_upper                          # 缺口未回补 → 回补目标（赔率锚）
     else:
         target = max(res_prev, close + 1.5 * atr)
+    # 衰竭靶位折价（第 15 步）：若 res_prev 已被「放量长上影 + 后续未收复」否定，它就不再是
+    # 可达靶位。把它继续当赔率锚会系统性高估 b（05-09 实测 b=3.07 ⇒ edge=+0.71，恰好掩盖
+    # p=0.42 < p_gate 的准入否决，使决策从「卖出」翻成「持有」）。折价口径取 close+1.0·ATR。
+    if exhaust:
+        target = min(target, close + _CFG["target_cap_atr"] * atr)
     b = _clip((target - close) / risk, 0.5, 4.0)
 
     # 缺口回补动能的时间衰减：未回补的交易日越多，「必回补」的先验越弱
@@ -406,12 +491,16 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
     # 噪音带惩罚：若结构距离（close−sup_prev）不足 1·ATR，止损实际被摆进当日噪音区，
     # 胜率必须打折——「止损被 floor 拉到更远处」意味着真实风险大于结构距离，不能当白赚
     noise_pen = -0.06 if (atr > 0 and (close - sup_prev) < 1.0 * atr) else 0.0
+    # 冲高衰竭惩罚（第 14 步）：见 _CFG["exhaust_pen"] 旁的失败模式记录。要在**存量端**
+    # 生效，唯一干净的入口就是把 p 压下去使 edge 转负 —— 退出路径从「Δπ ≤ −12% 超配漂移」
+    # 变为「edge ≤ 0 负期望」，后者不含任何仓位前提，故轻仓同样能触发。
+    exh_pen = -_CFG["exhaust_pen"] if exhaust else 0.0
     # 大级别惩罚按空头周期数分档；mtf_n=None 时回退旧语义，保证历史回放可复现
     if mtf_n is None:
         mtf_pen = -0.12 if mtf_down else 0.0
     else:
         mtf_pen = -0.12 if mtf_n >= 2 else (-_CFG["mtf_one_pen"] if mtf_n == 1 else 0.0)
-    p = _clip(0.5 + mtf_pen + pos_adj + mom_adj + vol_adj + noise_pen - gap_decay,
+    p = _clip(0.5 + mtf_pen + pos_adj + mom_adj + vol_adj + noise_pen + exh_pen - gap_decay,
               0.30, 0.70)
     # 箱体收缩：站于箱体之内且箱体高度不足 range_squeeze·ATR ⇒ 方向未定，禁止加仓
     box = res_prev - sup_prev
@@ -526,10 +615,11 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
     mtf_n = int(m_down) + int(w_down)
     mtf_down = bool(mtf_n)                     # 保留 or 语义，仅用于破位/硬止损分支
     mom_up = _mom_up(daily, 3)                 # 日线动量确认：原策略完全缺失的正向项
+    exhaust = _upper_shadow_exhaust(daily)     # 第 14 步：放量长上影阴线 + 未收复其高点 ⇒ 衰减
 
     tp = _target_position(close, sup_prev, res_prev, gap_lower, gap_upper,
                           atr, mtf_down, shrink, expand, total_value, gap_age,
-                          mtf_n=mtf_n, mom_up=mom_up)
+                          mtf_n=mtf_n, mom_up=mom_up, exhaust=exhaust)
 
     def _order_px(side: int) -> float:
         """申报价：side +1 买入 / −1 卖出（**成交触发位，非成交价**）。
@@ -588,6 +678,7 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
              "eff_buy_band": round(eff_buy_band, 4), "eff_sell_band": round(eff_sell_band, 4),
              "vol_shrink": shrink, "vol_expand": expand, "mtf_down": mtf_down,
              "mtf_n": mtf_n, "mom_up": mom_up, "mom_adj": round(tp["mom_adj"], 3),
+             "exhaust": exhaust,
              "cooldown_mult": cooldown_mult, "add_scale": round(add_scale, 2),
              "cash": cash, "total_value": total_value}
 
@@ -932,6 +1023,74 @@ def _selfcheck() -> bool:
     ok = ok and ok_drift
     print("[%s] 边界(超配未达减仓带): %s pi_gap=%s under_target=%s"
           % ("OK" if ok_drift else "FAIL", dd["decision"], s_.get("pi_gap"), s_.get("under_target")))
+    # 第 14 步回归样本（真实 sz.301299 04-18…05-08 逐日回放，复现本轮实盘失败模式）：
+    # 轻仓 + 冲高衰竭 ⇒ 不得停在「超配未达带」的惰性持有。对照差分（monthly=[] 时）：
+    #   修补前：p=0.58（仅 pos_adj +0.08）⇒ edge=+0.10 ⇒ 不进 edge≤0 分支；Δπ≈−4%
+    #           < eff_sell_band 12% ⇒ 持有（即把回撤全额留在账上）；
+    #   修补后：exhaust=True ⇒ p=0.50 ⇒ edge=−0.05 ≤ 0 ⇒ 清仓（**无需任何仓位前提**）。
+    # 该差分只在轻仓时可见（300 股时两条路径都指向卖出），故必须用 light 仓位数做样本。
+    ex_daily = [dict(open=53.78, high=54.19, low=52.95, close=53.18, volume=1207500),
+                dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
+                dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
+                dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
+                dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
+                dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100),
+                dict(open=54.97, high=56.06, low=53.83, close=53.84, volume=1306800),
+                dict(open=52.59, high=54.40, low=52.59, close=53.83, volume=1089400),
+                dict(open=54.84, high=55.88, low=53.86, close=55.21, volume=1883000),
+                dict(open=55.80, high=57.00, low=55.51, close=56.96, volume=1671900),
+                dict(open=58.61, high=59.84, low=56.11, close=56.61, volume=2227500),
+                dict(open=56.67, high=57.78, low=56.67, close=57.45, volume=1686800)]
+    ex_weekly = [dict(open=53.97, high=54.99, low=51.66, close=53.18),
+                 dict(open=52.95, high=55.78, low=52.33, close=54.93),
+                 dict(open=54.97, high=56.06, low=52.59, close=55.21),
+                 dict(open=55.80, high=59.84, low=55.51, close=57.45)]
+    ex_ctx = dict(kline=dict(daily=ex_daily, weekly=ex_weekly, monthly=[]),
+                  account=dict(cash=104571.0 - 100 * 54.19, total_value=104571.0,
+                               position=dict(symbol="sz.301299", quantity=100,
+                                             cost_price=54.19, market_value=100 * 54.19)))
+    dx = decide(ex_ctx)
+    sx = dx.get("featureSnapshot") or {}
+    ok_exh = (sx.get("exhaust") is True and dx["decision"] == DECISION_SELL)
+    ok = ok and ok_exh
+    print("[%s] 第14步回归(轻仓+冲高衰竭): %s exhaust=%s p=%s edge=%s pi_cur=%s"
+          % ("OK" if ok_exh else "FAIL", dx["decision"], sx.get("exhaust"),
+             sx.get("p"), sx.get("edge"), sx.get("pi_cur")))
+    # 第 15 步回归样本（真实 04-21…05-09 逐日回放；两处缺陷必须同修才能翻转决策）：
+    #   只修确认窗口 ⇒ exhaust=True、p=0.34，但 b 仍 3.07 ⇒ edge=+0.33 仍不退出；
+    #   只修靶位折价 ⇒ exhaust=False（上影线在 daily[-3]）⇒ 折价根本不生效；
+    #   同修 ⇒ p=0.34、target=58.13、b=1.67、edge=−0.09 ≤ 0 ⇒ 清仓 300 股。
+    # 注意 weekly 只有 2 根时 _mtf_down 返回 False，故 monthly 必须给满 3 根（mtf_n=1），
+    # 否则 p 少扣 −0.05、edge 回升至 +0.04 又会被推到「准入未过 ⇒ 持有」。
+    d509 = [dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
+            dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
+            dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
+            dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
+            dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100),
+            dict(open=54.97, high=56.06, low=53.83, close=53.84, volume=1306800),
+            dict(open=52.59, high=54.40, low=52.59, close=53.83, volume=1089400),
+            dict(open=54.84, high=55.88, low=53.86, close=55.21, volume=1883000),
+            dict(open=55.80, high=57.00, low=55.51, close=56.96, volume=1671900),
+            dict(open=58.61, high=59.84, low=56.11, close=56.61, volume=2227500),
+            dict(open=56.67, high=57.78, low=56.67, close=57.45, volume=1686800),
+            dict(open=57.43, high=57.43, low=56.10, close=56.10, volume=1315200)]
+    w509 = [dict(open=54.97, high=56.06, low=52.59, close=55.21),
+            dict(open=55.80, high=59.84, low=55.51, close=56.10)]
+    m509 = [dict(open=66.29, high=71.42, low=58.56, close=60.09),
+            dict(open=60.15, high=60.97, low=43.85, close=55.21),
+            dict(open=55.80, high=59.84, low=55.51, close=56.10)]
+    ctx509 = dict(kline=dict(daily=d509, weekly=w509, monthly=m509),
+                  account=dict(cash=87336.0, total_value=104166.0,
+                               position=dict(symbol="sz.301299", quantity=300,
+                                             cost_price=54.19, market_value=16830.0)))
+    d9 = decide(ctx509)
+    s9 = d9.get("featureSnapshot") or {}
+    ok9 = (s9.get("exhaust") is True and d9["decision"] == DECISION_SELL
+           and d9["tradeQuantity"] == 300)
+    ok = ok and ok9
+    print("[%s] 第15步回归(05-09 衰竭清仓): %s qty=%s exhaust=%s p=%s b=%s edge=%s"
+          % ("OK" if ok9 else "FAIL", d9["decision"], d9["tradeQuantity"],
+             s9.get("exhaust"), s9.get("p"), s9.get("b"), s9.get("edge")))
     print("契约守卫 + 冒烟：%s" % ("全部通过" if ok else "存在失败项"))
     return ok
 

@@ -18,7 +18,7 @@ flowchart TD
 
 ### n4 (start)
 
-default agent 驱动 stock-trade 交易游戏工作流
+default agent 驱动 stock-trade 交易游戏工作流记录开始时间和 完成时间
 
 1. 了解玩法: 虚拟账户¥10万+真实行情逐日推进; 每轮决策{买入·卖出·持有·不建仓}, /api/step 成交后按后续行情结算, 盈亏反馈复盘反传 textron
 2. 调 GET /api/health 探活

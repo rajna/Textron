@@ -49,18 +49,28 @@ export function stripFunctionBlocks(text: string): string {
  *   danglingRefs   = 悬空引用出现次数（同一符号在同节点重复出现按次数计）；
  *   danglingSymbols = 悬空符号去重集合。
  * 比较历史值请用 danglingPair（与 4→17→27→33 的既有台账同口径）。
+ *
+ * 2026-09-17 n8 第十九轮 R9（口径源缺陷）：函数块的**落盘位置在 `<content>` 之外** ——
+ * `node_io.writeNodeHtml` / `writeNodeFunction` 都把 `<function symbol=...>` 追加在 `</content>` 之后，
+ * 而 `readNodeContent` 只截取 `<content>…</content>` ⇒ 只从 content 里收集 alive 时**恒为空集**，
+ * `symbolsAlive` 恒 0 ⇒ 所有引用被判悬空。实测：stock_alpha 磁盘 9 个闭合块却报 symbolsAlive=0、
+ * L0::node_0/node_1 共 56/58 条 `[fn:σ]` 引用却只报 danglingPairs=4。
+ * 修法：调用方传 `fnSymbols`（readNodeFunctions 结果）。**不传时行为 ≡ 旧实现**（单侧风险）。
  */
-export function scanDanglingFnRefs(nodes: { id: string; content: string }[]): {
+export function scanDanglingFnRefs(nodes: { id: string; content: string; fnSymbols?: string[] }[]): {
   symbolsAlive: number;
   danglingPairs: number;
   danglingRefs: number;
   danglingSymbols: string[];
   refsTotal: number;
+  fnBlocksOnDisk: number;
   perNode: { id: string; danglingPairs: number }[];
 } {
   const alive = new Set<string>();
+  let fnBlocksOnDisk = 0;
   for (const n of nodes) {
     for (const m of String(n.content || "").matchAll(/<function\s+symbol="([^"]+)"/g)) alive.add(m[1]);
+    for (const s of n.fnSymbols || []) { if (s) { alive.add(s); fnBlocksOnDisk++; } }
   }
   const refRe = /[\[⟨]fn:([A-Za-z_][A-Za-z0-9_]*)[\]⟩]/g;
   const danglingSymbols = new Set<string>();
@@ -82,7 +92,7 @@ export function scanDanglingFnRefs(nodes: { id: string; content: string }[]): {
     }
     perNode.push({ id: n.id, danglingPairs: nodePairs });
   }
-  return { symbolsAlive: alive.size, danglingPairs, danglingRefs, danglingSymbols: [...danglingSymbols].sort(), refsTotal, perNode };
+  return { symbolsAlive: alive.size, danglingPairs, danglingRefs, danglingSymbols: [...danglingSymbols].sort(), refsTotal, fnBlocksOnDisk, perNode };
 }
 
 export function buildTfidfIndex(net: { hyperparams: { layers: number[] }; path: string }): {

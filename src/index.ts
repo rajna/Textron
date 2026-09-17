@@ -49,7 +49,7 @@ import { shannonEntropy, wordEntropy, isTruncated, isTemporalSummary, isMetaInst
 import { lastUserMessageText, rebuildToolsFromMessages, rebuildToolsFromMessagesDetailed, rebuildThinkingFromMessages,
          rebuildThinkingFromMessagesDetailed } from "./lib/round_snapshot";
 import type { ToolsFidelityStats, ThinkingFidelityStats } from "./lib/round_snapshot";
-import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNodeFunction, writeNodeFunction,
+import { readNodeContent, compressNodeName, readNodeName, writeNodeHtml, readNodeFunction, readNodeFunctions, writeNodeFunction,
          validateKnowledgeCrystal, intraLayerOrthogonalityCheck, NODE_FN_BLOCK_MAX,
          isNgramFragmentContent, isNgramFragmentName, contextSimilarity, prepareContextLine } from "./lib/node_io";
 import { normalizeMergeFragment, mergeDistinctContentFragments,
@@ -3172,13 +3172,16 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         const _l = dir.slice(6);
         for (const f of fs.readdirSync(path.join(net.path, dir)).filter((f) => /^node_\d+\.html$/.test(f))) {
           const fp = path.join(net.path, dir, f);
-          _fnNodes.push({ id: `L${_l}::${f.replace(".html", "")}`, content: readNodeContent(fp) || "" });
+          // 2026-09-17 n8 第十九轮 R9：函数块不在 content 里（写在 </content> 之后），
+          // 必须显式带上 readNodeFunctions 的符号，否则 signalsAlive 恒 0（口径源缺陷）。
+          _fnNodes.push({ id: `L${_l}::${f.replace(".html", "")}`, content: readNodeContent(fp) || "", fnSymbols: readNodeFunctions(fp).map((b) => b.symbol) });
         }
       }
       const _scan = scanDanglingFnRefs(_fnNodes);
       recordMonitorEvent({
         type: "trace", action: "fn_ref_dangling", taskFamily,
         symbolsAlive: _scan.symbolsAlive, danglingPairs: _scan.danglingPairs, danglingRefs: _scan.danglingRefs,
+        fnBlocksOnDisk: _scan.fnBlocksOnDisk,
         danglingSymbols: _scan.danglingSymbols.slice(0, 24), danglingSymbolCount: _scan.danglingSymbols.length,
         refsTotal: _scan.refsTotal, perNode: _scan.perNode.filter((p) => p.danglingPairs > 0),
       });

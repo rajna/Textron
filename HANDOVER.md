@@ -36,7 +36,41 @@
 
 ---
 
-# ✦ 最近更新（2026-09-17 19:55 UTC / 本地 09-18 03:55）：n8 **第十九轮** —— 运行期验收 `14f5961`（证据制保留判据 + 悬空口径代码化）。**R9 = 口径函数的采集源缺陷**：`scanDanglingFnRefs` 只从 `readNodeContent`（`<content>…</content>`）收集存活符号，而 `<function symbol=…>` 块**写在 `</content>` 之外**（`writeNodeHtml` 在 `</content>` 后拼 `fnHtml`、`writeNodeFunction` 文件末尾 append）⇒ **`symbolsAlive` 恒 0**（stock_alpha / normal 两网旧口径一律 0）⇒ 全部引用被判悬空 ⇒ F4''「4-6 ≤ 35」是**假达标**，该指标对函数块存活毫无判别力。**实施 `741788a`**（可选 `fnSymbols` 采集源 + `fnBlocksOnDisk` 字段 + 调用点接 `readNodeFunctions`；不传时行为 ≡ 旧实现）；测试 **18/18**。
+# ✦ 最近更新（2026-09-18 04:50）：n8 **第二十一轮** —— **R10 = 离域清洗判据死指标**（`cleanseTargets` 恒空 + LLM `mode` 被丢弃）⇒ 实施 `e9076f0`（事件记真实候选/mode/兜底 + 新增违规告警 + 离线审计脚本）
+
+> 触发：guard n8 第二十一轮（用户经 default→guard 下发「完成 2 次交易推进」）。窗口 = `_events.jsonl` UTC `20:30–20:45`（549 事件 / 9 `propagate_done` / 3 stock_alpha 反传 entered / 8 `trajectory_tools_fidelity` / 5 `agent_end_backward_skipped` / 2 `fn_ref_dangling`）。
+
+## 一、本轮验收（n6 产物生效性 / 轨迹保真 / 是否需回滚）
+- **trade.py（n6 两轮迭代，已 commit `01fb2e2`）：自检 12/12 全通过**，含两处新回归样本 —— 第14步「轻仓+冲高衰竭 ⇒ 卖出（`exhaust=True p=0.5 edge=-0.2 pi_cur=0.052`）」、第15步「05-09 衰竭清仓 300 股（`p=0.34 b=1.667 edge=-0.093`）」。**判别力自带差分**：300 股时修补前后同为卖出（无差分、修复不可证），只有轻仓样本才翻转 ⇒ 回归夹具必须选在判据边界（上一轮已固化）。第15步的两处缺陷（确认窗口只看 `daily[-2]` / 靶位取已被放量长上影否定的 `res_prev=59.84`）**必须同修才能翻转决策**（仅①⇒p 降但 b 仍 3.07、edge 仍正；仅②⇒exhaust 未触发）⇒ 属「两处独立缺陷互相掩盖」型。
+- **生效取证**：备份 `.bak-exhaust-20260918-043643` / `.bak-step15-20260918-044025` 落盘 = 两次迭代真发生。**「是否更差」暂不可判**（清仓后无持仓、无后续实盘样本）；**回滚判据（登记）**：若出现 `exhaust=True` 清仓后 3 日内最高价 > 清仓价 + `1.5·ATR`，则回滚 `target_cap_atr`（⟨fn:rollback_gate_by_net_effect⟩）。
+- **轨迹采集（无静默 slice）**：8 次 `trajectory_tools_fidelity`，`entries` 0–55、`inputChars` 最大 35,472、`outputChars` 最大 124,913、`droppedOldest` 全 0；`inputTruncated` 2 / `outputTruncated` 2 = `clipWithMark` 尾标式界内截断（cap 4000/8000），**非常数 slice 回潮**（对照第十四轮 180c/640c/24 条）。
+- **反传触发/沉淀**：交易轮 3 次 entered（20:38:17 `reward=-0.7` /quality 0.3 low/ `nodesUpdated=1` `L1::node_1` + `highentropy_function_persisted pressure_weak_signal_gate` 1017c；20:40:48 第二轮素材 `raw_prompt 5543c`；20:42:39 guard 本轮自反传）。**但决策轮 HE 仍丢**：`agent_end_backward_skipped{no_pending_match}` ×2（20:35:33 / 20:39:24，`hasHighEntropy=true`）⇒ 待办 #13 第五轮复现（复盘轮部分补偿）。
+- **抽象融合质量（欠佳，客观）**：stock_alpha 三次 `apply` 的 `nodesMerged=0–1`、`edgesUpdated=0`、`nodesAdded=0`；`L2/L3` 无更新 ⇒ 抽象层本轮未提升。
+- **噪音/悬空**：`fn_ref_dangling` = **79 pairs / 103 refs / symbolsAlive 6 / fnBlocksOnDisk 7** ≙ 第十九轮基线（未恶化未改善）；`L0::node_0/node_1` 残留工程域引用（`emit_workflow_note`×4、`classify_reply_failure`、`turn_based_step_driver`、`check_write_gate_invariants`、`archive_receipt_insights_once`、`rollback_gate_by_net_effect`），`L1::node_1` 含 `sender_step_loop_orchestrate` / `sender_advance_with_gate_regression` ⇒ 待办 #16 原地。
+
+## 二、R10 根因（>95% 置信度，字面取证）
+1. **死指标**：`semantic_backward_goal_cleanse` 的 `cleanseTargets` **结构性恒为空** —— `src/index.ts` 中 `const cleanseTargets = new Set<string>()`（2026-09-15 有意移除 forceOverwrite「抹掉好知识的直接通道」后**未同步事件语义**）⇒ `cleansedNodes` 恒空，该字段对「离域是否被清洗」零判别力，且容易被误读为「清洗已执行」（硬性约束 11/12 的反面样本：指标存在但采集源注定为空）。
+2. **mode 被丢弃 ⇒ 程序侧无法分辨真清洗**：LLM 的 `mode`（replace=整段覆盖 / merge=keep⏎delta）在 `normalize` 消费后不再透传；而 prompt 规则 0(a) 明写「离域候选清洗必须 OVERWRITE」。实测候选被 **merge** 更新 ⇒ 离域内容**继续追加留存**；同时 (a2) 的「非空候选必须至少覆盖一个」被 `covered = 键是否存在` 满足（**不看 mode**）⇒ 确定性兜底清洗不触发（`fallbackApplied=''`）⇒ 离域治理在「已覆盖」的假象下空转。
+3. **离线重放（本轮真实样本）**：`tests/goal_cleanse_mode_audit.py` → 候选 4（`L1::node_1 goalSim=0.0164` / `L3::node_0 0.0186` / `L1::node_0` / `L0::node_1`），mode = `merge/merge/(no_update)/(no_update)` ⇒ **违规 2 例**，判据有判别力。副证：**全部候选 goalSim ≤0.019**（网络内容与 goal 词面近乎无交集）⇒ goalSim 排序会把真交易节点一并标为离域 ⇒ 「LLM 是唯一语义判据、程序侧禁止据 goalSim 强制覆写」的历史结论**继续成立**，本轮不动写入策略。
+
+## 三、实施 `e9076f0`（需 `/reload`；纯观测 + 告警，无拦截）
+- `mode` 透传（两处 `out.node_updates[k]`，不影响 content 合成）；`semantic_backward_goal_cleanse` 新增 `candidates` / `candidateModes` / `cleanseViolationCount` / `fallbackApplied`（真实值，取代恒空字段作判据）；新增事件 **`semantic_backward_goal_cleanse_violation{off_goal_candidate_updated_without_replace}`**。
+- **不放宽也不新增拦截**：不重开 forceOverwrite、不改 `covered` 判据（改它会重新打开「程序强制覆写」这条被否决的通道）—— 违规只告警（硬性约束 2/7/10）。
+- 语法自检 `node --experimental-strip-types --check src/index.ts` = 0；离线审计 exit 0（无样本时记 `no_offgoal_sample` 不判失败 = 硬性约束 12 的假阴性防护）。测试脚本放 `tests/`（硬性约束 9）。
+
+## 四、下一轮判据（F-A/F-B/F-C）
+- **F-A（生效）**：窗口出现 `semantic_backward_goal_cleanse` 且 `candidates` 非空 ∧ `candidateModes` 键集 == `candidates`；`cleanseViolationCount` == 离线脚本重算值（±0）。
+- **F-B（假阴性防护）**：候选全 `mode=replace` 时 violation 必须 0；无候选 ⇒ 记 `no_offgoal_sample` 跳过而非失败。
+- **F-C（对应待办 #13）**：`agent_end_backward_skipped{no_pending_match}` 仍 >0 ⇒ 交易决策 HE 仍丢，须走「pending 无匹配 ⇒ 入栈 + self-backward（reward 标 `unattributed`，禁由 HE 驱动 reward）」。
+
+## 五、P0 排序变化
+1. **#13 `no_pending_match` 丢 HE**（第五轮复现，交易轮学习直接损失）→ 最高杠杆。
+2. **#16 跨域污染**（L0/L1 工程块残留）—— 本轮新增因果：被污染节点**必然**被判为离域候选，而判离域后又只能 merge ⇒ 与 R10 形成闭环（污染自我加固）。
+3. **#20 函数槽淘汰优先级**：`L1::node_1` 现有 4 个 fn 引用（2 交易 + 2 编排）⇒ 容量 2 下交易函数仍有被编排函数顶掉的现实风险。
+
+---
+
+# ✦ 前一轮（2026-09-17 19:55 UTC / 本地 09-18 03:55）：n8 **第十九轮** —— 运行期验收 `14f5961`（证据制保留判据 + 悬空口径代码化）。**R9 = 口径函数的采集源缺陷**：`scanDanglingFnRefs` 只从 `readNodeContent`（`<content>…</content>`）收集存活符号，而 `<function symbol=…>` 块**写在 `</content>` 之外**（`writeNodeHtml` 在 `</content>` 后拼 `fnHtml`、`writeNodeFunction` 文件末尾 append）⇒ **`symbolsAlive` 恒 0**（stock_alpha / normal 两网旧口径一律 0）⇒ 全部引用被判悬空 ⇒ F4''「4-6 ≤ 35」是**假达标**，该指标对函数块存活毫无判别力。**实施 `741788a`**（可选 `fnSymbols` 采集源 + `fnBlocksOnDisk` 字段 + 调用点接 `readNodeFunctions`；不传时行为 ≡ 旧实现）；测试 **18/18**。
 
 > 触发：guard n8 第十九轮。窗口 = `_events.jsonl` UTC `18:45:30–19:42:45`（830 事件 / 18 `propagate_done` / 8 `semantic_backward_entered` / 8 `semantic_backward_apply` / 4 `highentropy_function_persisted` / 15 `trajectory_tools_fidelity` / 8 `node_write_downgraded_to_merge` / 1 `node_write_refused_keep_better` / 1 `semantic_backward_function_off_goal`）。三件套**本轮已加载 `14f5961`**（`node_write_downgraded_to_merge` 8 次 + `fn_ref_dangling` 8 次首现即为证）。
 
@@ -347,7 +381,7 @@
 | 10 | **`/reload` 后验证 content 结构化提取修复**：任意 turn 的 tools 字段含真实工具输出文本(trade_result/portfolio JSON)而非 `[object Object]`；可用 grep 轨迹 tools 字段计数 `[object Object]` 归零断言 | ⏳ src 已改未 reload |
 | 11 | **R1 运行期验收**（`00dc022`）：merge 后同层不得出现与宿主逐字相同的副本节点；`_node_history` 可见「clear→(无 overflow)」序列 | ⏳ 待 n9 重启 |
 | 12 | **R2 运行期验收**（`7b6862b`）：`semantic_backward_entered.learningPromptSource=="raw_prompt"` 且 `rawPromptChars>0`、`task_prompt_restored.rawPromptRestored≥1` | ⏳ 待 n9 重启 |
-| 13 | **`no_pending_match` 丢 HE**（第十七轮 2 次 `agent_end_backward_skipped{no_pending_match}` + 2 次 `highentropy_missing_at_agent_end{raw_operational_trace}`）：pending 无匹配时应入栈/补 self-backward（reward 须标 `unattributed`，禁由 HE 驱动 reward） | ⏳ 未修（最高杠杆） |
+| 13 | **`no_pending_match` 丢 HE**（第十七/十九/二十一轮共 5 次复现；第二十一轮 ×2 = 20:35:33 决策轮 / 20:39:24 清仓轮，`hasHighEntropy=true`）：pending 无匹配时应入栈/补 self-backward（reward 须标 `unattributed`，禁由 HE 驱动 reward） | ⏳ 未修（最高杠杆，第五轮） |
 | 14 | ~~**轨迹工具侧仍 slice**~~（`rebuildToolsFromMessages` input 180c / output 640c / `maxEntries=24` shift）| ✅ 已修 `db33ba8`，第十六轮验收：129 `tool_call` 恰 180c = **0**、`entries` 达 39、`inputChars` 12,434 |
 | 15 | **事件缺 writer pid / extension md5**：多进程共享 `_events.jsonl` 时无法区分未重启旧进程写入（第十轮口径污染） | ⏳ 未修 |
 | 16 | **工程语料污染 stock_alpha**：`layer_0/node_0` 正文残留 guard 会话 HE（`571205a(~16:0x)…`）且 merge 拼接无句界保护（半句截断/首尾互吃） | ⏳ 未修 |
@@ -355,6 +389,7 @@
 | 18 | **配对源根治（R6 剩余面）**：`allPendingTasks` 为何含陈旧/已出栈项（第十七轮仍见 `matchedTaskTs` = `18:33:28Z`/`18:35:42Z`/`18:35:55Z`，窗口基线 `18:48:13Z`）；`matched.rawUserPrompt` 为空时应**改选** activeTask。判据：`matchedTaskTs` 不再早于窗口起点 10min+ | ⏳ 未修 |
 | 19 | **悬空 `[fn:σ]`**：✅ 口径采集源已修（`741788a`：`symbolsAlive` 恒 0 的根因 = 函数块写在 `</content>` 之外）；**真基线 stock_alpha 79 pairs / 103 refs（symbolsAlive 6）**。剥离 content 引用的策略待 G1 基线稳固后再决；**存量悬空仍禁手工清理** | ⏳ 部分 |
 | 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
+| 22 | **R10 离域清洗判据运行期验收**（`e9076f0`，需 `/reload`）：`semantic_backward_goal_cleanse.candidates` 非空 ∧ `candidateModes` 键集==candidates ∧ `cleanseViolationCount`==离线脚本重算；反证：`candidates` 恒空或与 `nodeUpdatesKeys` 无关 ⇒ 判据未接线 | ⏳ 待 reload |
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
 
 ---

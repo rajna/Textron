@@ -331,6 +331,128 @@ export default function (pi: ExtensionAPI) {
   const SSE_CLIENTS = new Set<http.ServerResponse>();
   const PORT = parseInt(process.env.TEXTRON_MONITOR_PORT || "8766", 10);
 
+  // ── 端口注册表（2026-09-18 端口漂移治理）────────────────────────────
+  // 病灶：monitor server 每进程一份，端口 = 8766 起 + EADDRINUSE 静默递增；
+  //   · 关 TUI（SIGHUP）→ pi graceful shutdown → session_shutdown → server.close()
+  //     端口立即失效，而进程可能仍存活 ⇒ 「TUI 关了但还在」= 浏览器持续刷死端口；
+  //   · 多 TUI 并存时端口与「启动顺序」强绑定（仅首个拿 8766），关掉 8766 那个后
+  //     其余进程不会迁移 ⇒ 活着的面板反而没有入口 ⇒ 体验为「掉线/换端口」。
+  // 修法（单侧增量，不改变任何既有监听行为）：成功 listen 后把 {pid,port,cname,tty,cwd}
+  //   写入 ~/.textron/_monitor_ports.json，并把 _monitor_latest.txt 指向最近活跃入口；
+  //   session_shutdown / process.exit 时摘除自身条目并转移指针；条目带 updatedAt 心跳。
+  //   【硬杀鲁棒性】非 TTY 下 SIGTERM 可能走 emergencyTerminalExit，跳过 session_shutdown，
+  //   故同时挂 process.on("exit")（同步可跑，SIGKILL 除外）；残留条目由下一个注册者 prune。
+  const MONITOR_REGISTRY_PATH = path.join(TEXTRON_HOME, "_monitor_ports.json");
+  const MONITOR_LATEST_PATH = path.join(TEXTRON_HOME, "_monitor_latest.txt");
+  const MONITOR_PID = process.pid;
+  /** cname 优先从 argv 解析（与扩展加载顺序无关，spawn 脚本总是显式传 --cname），
+   *  回退 pi.getFlag，最后 agent-<pid>。延后到 listen 回调求值（此时所有扩展已加载）。 */
+  function monitorCname(): string {
+    try {
+      const argv = process.argv;
+      for (let i = 0; i < argv.length - 1; i++) {
+        if (argv[i] === "--cname") return String(argv[i + 1] || "") || `agent-${MONITOR_PID}`;
+        if (argv[i].startsWith("--cname=")) return argv[i].slice(8) || `agent-${MONITOR_PID}`;
+      }
+    } catch {}
+    try {
+      const f = (pi as any).getFlag?.("cname");
+      if (f && String(f)) return String(f);
+    } catch {}
+    return `agent-${MONITOR_PID}`;
+  }
+
+  function monitorRegistryRead(): Record<string, any> {
+    const raw = readJson<Record<string, any>>(MONITOR_REGISTRY_PATH, {});
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  }
+
+  /** 剔除已死进程条目：注册表只保留「pid 仍存活」的条目，避免陈旧端口误导。 */
+  function monitorEntryPrune(reg: Record<string, any>, keepPid: number): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(reg)) {
+      const pid = Number(k);
+      if (!Number.isFinite(pid)) continue;
+      if (pid === keepPid) { out[k] = v; continue; }
+      let alive = true;
+      try { process.kill(pid, 0); } catch { alive = false; }
+      if (alive) out[k] = v;
+    }
+    return out;
+  }
+
+  function monitorLatestLine(port: number | string, cname: string, pid: number | string): string {
+    return `${port}\t${cname}\t${pid}\t${new Date().toISOString()}\n`;
+  }
+
+  function registerMonitorPort(port: number) {
+    try {
+      ensureDir(TEXTRON_HOME);
+      const cname = monitorCname();
+      const reg = monitorEntryPrune(monitorRegistryRead(), MONITOR_PID);
+      reg[String(MONITOR_PID)] = {
+        pid: MONITOR_PID, port, cname,
+        cwd: process.cwd(), tty: process.env.TTY || "",
+        startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      writeJson(MONITOR_REGISTRY_PATH, reg);
+      fs.writeFileSync(MONITOR_LATEST_PATH,
+        monitorLatestLine(port, cname, MONITOR_PID), "utf-8");
+      // 心跳：刷新自身 updatedAt，使读取方能区分「刚退出」与「早已死透」（unref 不阻退出）
+      if (!monitorHeartbeat) {
+        monitorHeartbeat = setInterval(() => { touchMonitorPort(); }, 30_000);
+        try { (monitorHeartbeat as any).unref?.(); } catch {}
+      }
+    } catch (e) { dlog("MONITOR", "register port failed", { err: String(e) }); }
+  }
+
+  let monitorHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let monitorUnregistered = false;
+
+  function touchMonitorPort() {
+    if (monitorUnregistered) return;
+    try {
+      const reg = monitorRegistryRead();
+      const me = reg[String(MONITOR_PID)];
+      if (!me) return;
+      me.updatedAt = new Date().toISOString();
+      reg[String(MONITOR_PID)] = me;
+      writeJson(MONITOR_REGISTRY_PATH, reg);
+    } catch {}
+  }
+
+  function unregisterMonitorPort() {
+    if (monitorUnregistered) return;
+    monitorUnregistered = true;
+    try {
+      if (monitorHeartbeat) { clearInterval(monitorHeartbeat); monitorHeartbeat = null; }
+      const reg = monitorEntryPrune(monitorRegistryRead(), -1);
+      delete reg[String(MONITOR_PID)];
+      writeJson(MONITOR_REGISTRY_PATH, reg);
+      const cur = fs.existsSync(MONITOR_LATEST_PATH)
+        ? fs.readFileSync(MONITOR_LATEST_PATH, "utf-8") : "";
+      if (cur.split("\t")[2] === String(MONITOR_PID)) {
+        const rest = Object.values(reg) as any[];
+        if (rest.length) {
+          rest.sort((a, b) => Number(a.pid) - Number(b.pid));
+          const top = rest[rest.length - 1];
+          fs.writeFileSync(MONITOR_LATEST_PATH,
+            monitorLatestLine(top.port, top.cname, top.pid), "utf-8");
+        } else {
+          fs.writeFileSync(MONITOR_LATEST_PATH, "", "utf-8");
+        }
+      }
+    } catch (e) { dlog("MONITOR", "unregister port failed", { err: String(e) }); }
+  }
+
+  // 硬杀/异常退出兜底：exit 事件可跑同步 IO（SIGKILL 除外）
+  process.on("exit", () => { try { unregisterMonitorPort(); } catch {} });
+  // 【必需】非 TTY / 未被 pi 接管信号时，SIGTERM/SIGHUP 会走内核默认终止而**不触发** exit 事件
+  // （实测：无 handler 时 registry 条目残留）。此处只追加监听，不改变 pi 自身的 graceful 流程。
+  for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
+    try { process.on(sig, () => { try { unregisterMonitorPort(); } catch {} }); } catch {}
+  }
+
   function broadcast(data: Record<string, unknown>) {
     const eventType = data.type || "message";
     const msg = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -1057,7 +1179,8 @@ export default function (pi: ExtensionAPI) {
     server.listen(port, () => {
       server.removeListener("error", onError);
       actualPort = port;
-      log(`Textron monitor: http://localhost:${port}`);
+      registerMonitorPort(port);
+      log(`Textron monitor: http://localhost:${port} (${monitorCname()})`);
     });
   }
   tryListen(PORT, 0);
@@ -1066,6 +1189,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     server.close();
+    unregisterMonitorPort();
     // Clean up all SSE clients
     for (const res of SSE_CLIENTS) {
       try { res.end(); } catch {}

@@ -6,6 +6,30 @@
 
 ---
 
+# ✦ default 侧改进（2026-09-18 04:25）：monitor **端口漂移/掉线**治理 —— 端口注册表 + 固定分配 + 读侧工具
+
+> 触发：用户报「textron live web 总是掉线或换端口」。归因链全部落代码取证，非猜测。
+
+## 病灶（三层，均可复现）
+1. **server 是每进程一份**：`src/index.ts` `PORT=8766`、`tryListen(PORT,0)`、`MAX_PORT_ATTEMPTS=100`（EADDRINUSE 即 `port+1` 静默递增）；`pi.on("session_shutdown")` 里 `server.close()` + SSE `res.end()` ⇒ **关 TUI 那一刻端口即失效**（pi 对 SIGHUP 不硬退，走 `shutdown({fromSignal:true})` → emit `session_shutdown`，见 `interactive-mode.js:3306-3318`）——**掉线 ≠ 进程死**，进程常常还在。
+2. **端口与启动顺序强绑定**：多 TUI 并存时仅首个拿 8766，其余锁死 8767+，关掉 8766 那个后**其余进程不迁移** ⇒ 活着的面板反而没有入口。实测分配热力：**8766×606 / 8767×303 / 8768×104 / 8769×60 / 8770×46 … 至 8799**（1025 次分配）；**241/368** 个会话出现过多端口，极端一个会话出现 **15 个端口**（8766→8780，因同一会话被反复 resume 而旧进程未退）。
+3. **无端口发现机制**：只有 `appendEntry` 日志（无文件可查）⇒ 浏览器无法判断哪个端口还活着，只能猜 ⇒ 体验即「掉线/换端口」。
+
+## 两个新发现的硬事实（实测，可复算）
+- **非 TTY 下 SIGTERM 不会触发 `process.on("exit")`**：无信号 handler 时内核默认终止，exit 回调不跑 ⇒ 注册表条目残留（实测：加 exit hook 后 SIGTERM 仍残留）。**必须显式监听 `SIGTERM/SIGHUP/SIGINT`** 才可靠（`SIGKILL` 不可捕获，只能靠下述 prune 兜底）。
+- **prune 时机决定收敛**：条目残留由**下一个注册者**在写表时按 `process.kill(pid,0)` 清理（实测通过：`kill -9` 后新实例注册即抹掉死条目）。
+
+## 实施（三处，需 `/reload` 或重启 pi 生效）
+- **`src/index.ts`**：①`~/.textron/_monitor_ports.json` 注册表（`pid/port/cname/cwd/tty/startedAt/updatedAt`）+ `_monitor_latest.txt` 指向最近活跃入口；②`monitorCname()` **优先从 `process.argv` 解析 `--cname`**（与扩展加载顺序无关，实测 `pi --cname porttest` → `cname: "porttest"`；`pi.getFlag` 在 textron 早于 local-coms 加载时取不到）；③30s 心跳刷新 `updatedAt`（`unref` 不阻退出）；④摘除路径三保险 = `session_shutdown` + `process.on("exit")` + `SIGTERM/SIGHUP/SIGINT`；⑤注册时顺带 prune 死 pid。
+- **`~/.pi/agent/bin/pi-coms-spawn`**（备份 `.bak-portfix-20260918-042123`）：按 cname **固定端口** `guard 8801 / sender 8802 / worker 8803 / stock-coder 8804 / 其他 8800`，显式 `TEXTRON_MONITOR_PORT` 优先；dry-run 行打印 `monitor_port=`（实测三件套 `--cname` 与端口一一对应）。
+- **新增 `~/.pi/agent/bin/textron-monitor-ports`**（读侧工具）：以「pid 存活 ∧ 端口真在 LISTEN（lsof）」双重校验列活端口、自动清理死条目、打印推荐入口；`--json` / `--clean-only` / `--stale N`。
+
+## 验证
+- esbuild 转译 OK（0 处 `MONITOR_CNAME` 残留）；端到端 4 组：**注册**（registry 出现 `{11185:('porttest',8899)}`、latest 指向之）→ **SIGTERM 摘除**（registry `{}`、latest 清空、端口释放）→ **kill -9 残留** → **新实例注册 prune 收敛**（只剩 `{11138:prunetest@8899, 11185:prunetest2@8897}`）。
+- 副作用：`pi --help` 这类一次性启动**也会**监听 monitor（实测 `--help` 即在 8767 留过条目）⇒ 固定端口后这些短命实例会与同 cname 的长驻实例抢同号；因单进程内 `tryListen` 只跑一次、且 EADDRINUSE 仍会 +1，行为安全但排障时需知悉。
+
+---
+
 # ✦ 最近更新（2026-09-17 19:55 UTC / 本地 09-18 03:55）：n8 **第十九轮** —— 运行期验收 `14f5961`（证据制保留判据 + 悬空口径代码化）。**R9 = 口径函数的采集源缺陷**：`scanDanglingFnRefs` 只从 `readNodeContent`（`<content>…</content>`）收集存活符号，而 `<function symbol=…>` 块**写在 `</content>` 之外**（`writeNodeHtml` 在 `</content>` 后拼 `fnHtml`、`writeNodeFunction` 文件末尾 append）⇒ **`symbolsAlive` 恒 0**（stock_alpha / normal 两网旧口径一律 0）⇒ 全部引用被判悬空 ⇒ F4''「4-6 ≤ 35」是**假达标**，该指标对函数块存活毫无判别力。**实施 `741788a`**（可选 `fnSymbols` 采集源 + `fnBlocksOnDisk` 字段 + 调用点接 `readNodeFunctions`；不传时行为 ≡ 旧实现）；测试 **18/18**。
 
 > 触发：guard n8 第十九轮。窗口 = `_events.jsonl` UTC `18:45:30–19:42:45`（830 事件 / 18 `propagate_done` / 8 `semantic_backward_entered` / 8 `semantic_backward_apply` / 4 `highentropy_function_persisted` / 15 `trajectory_tools_fidelity` / 8 `node_write_downgraded_to_merge` / 1 `node_write_refused_keep_better` / 1 `semantic_backward_function_off_goal`）。三件套**本轮已加载 `14f5961`**（`node_write_downgraded_to_merge` 8 次 + `fn_ref_dangling` 8 次首现即为证）。
@@ -364,6 +388,10 @@
 12. **口径代码化 ≠ 口径正确**（第十九轮新增；触发：`scanDanglingFnRefs` 上线后 F4''「悬空 4-6 ≤ 35」看起来达标，实则 `symbolsAlive` 8/8 恒 0 —— 函数块写在 `</content>` 之外而采集只读 content ⇒ 指标对函数块存活零判别力，真实基线 `stock_alpha` 79 pairs / 103 refs）。
     - **规则**：跨轮指标的采集函数（硬性约束 11）上线后，必须先对**至少一个真实网络**做一次**离线基线核对**（只读、不改盘），并断言「存活集合非空 ∧ 与独立人工抽样一致」；**结构性零值**（如 `symbolsAlive=0`、`refsTotal=0`、`injectedCount=0`）一律先判**采集源缺陷**，不得当作"改善"记入台账。
     - **推论**：口径改动后若无离线基线，指标数值的跨轮变化**不可解释为质量变化**（第三轮"降低"实为测量面缩小）。
+13. **进程内可观测资源必须可自证身份**（第二十轮 default 侧新增；触发：monitor 端口每进程一份 + `EADDRINUSE` 静默 +1 + 无发现机制 ⇒ 多 TUI 并存时端口与启动顺序强绑定，用户只能靠猜端口 ⇒ 「掉线/换端口」）。
+    - **规则**：任何「每进程一份」的对外资源（监听端口 / 临时文件 / 单例句柄）上线时必须带**名片**（`pid + 身份 + 资源号 + startedAt/updatedAt`）写入固定注册表，并提供**读侧校验工具**（以「pid 存活 ∧ 资源真在监听」为准，不得只信注册表）；身份字段要**从 `argv` 取值**而非依赖扩展加载顺序（`pi.getFlag('cname')` 在早加载的扩展里取不到）。
+    - **退出路径必须三保险**：`session_shutdown`（优雅） + `process.on("exit")`（同步兜底） + **显式 `SIGTERM/SIGHUP/SIGINT` 监听**——实测非 TTY 下无信号 handler 时 SIGTERM **不触发** `exit` 事件，条目必残留；`SIGKILL` 不可捕获，只能靠「下一个注册者 prune + 读侧 `kill -0` 校验」收敛。
+    - **推论**：跨进程资源的「存活」判定权在**读者**手里，不在写者；只写不验的注册表等于新噪音。
 
 ---
 

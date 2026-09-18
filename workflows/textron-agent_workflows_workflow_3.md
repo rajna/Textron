@@ -38,7 +38,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n6 (prompt)
 
-1. default-> guard:通知：guard 调 coms_send 向 sender 下发指令「开始交易游戏：完成2次交易推进」，不要指定股票和日期 简单通知就完成任务了。
+1. default -> guard -> sender：guard 调 `coms_send` 向 sender 下发：`开始交易游戏：读取 /Users/rama/textron-agent/workflows/textron-agent_workflows_workflow_3.md，严格执行 n6 第 2-12 步，完成 2 次交易推进；API、请求体和 trade.py 路径均以该段为准，不要搜索代码库，不指定股票和日期。`
 2. 验证：sender 调 GET http://127.0.0.1:7860/api/health 确认 UI 服务在线；
 3. 执行：sender 调 POST http://127.0.0.1:7860/api/enter 进入交易游戏
 4. 取：sender 调 GET http://127.0.0.1:7860/api/prompt?session_id={session_id}，取 data.prompt 决策提示词(含当前价/涨跌幅/持仓组合)

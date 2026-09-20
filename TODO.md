@@ -217,3 +217,13 @@ Textron 就是这个思想的工程原型：
 | 4 | 引用路由加权：citation count 影响 PageRank/路由得分 | ⏳ 待实现 | P1 |
 | 5 | 符号质量评估：4项标准（引用率/存活率/正reward率/衍生数） | ⏳ 待定义 | P2 |
 | 6 | Transformer 架构改造方案（第3节）| 💡 概念阶段 | P3 |
+
+## 五、workflow_3/n8 第二十三轮遗留待办（2026-09-21 guard 登记，来源 HANDOVER 第十三节）
+
+| # | 任务 | 状态 | 优先级 |
+|---|------|------|--------|
+| 7 | B1/B2 验证 MERGE_OVERFLOW_CAP 生效（**前置=三件套 /reload**）：下次反传后 `stock_alpha L0::node_0` ≤12000c、`" \| "` 片段数自 107 下行；勿在未 reload 时误判修复无效 | ⏳ 待验证 | P0 |
+| 8 | R2 函数块淘汰剥离 content 内 `[fn:σ]` 引用：`persistHighEntropyFunction` 的 `onEvicted` 现只记事件；fn_ref_dangling 已达 danglingPairs=50/refs=64，突破 F4' 上限 33（P0-1 前半句暂缓期已到期） | ⏳ 已到期未做 | P0 |
+| 9 | R3 lift/split 自然触发观察：解挂条件=下一次**实质性交易增量轮**（非回执/bookkeeping 轮）；回执轮 keep 属合理行为，guard 手动触发 lift 属捷径必拒 | ⏳ 待样本 | P1 |
+| 10 | R4 JSON 截断守卫：LLM 输出达预算截断 + repair 放行残缺 content（实证 diagDirectParseErr position 2268）；候选=content 尾部半词检测拒写 keep_better | ⏳ 待实现 | P1 |
+| 11 | 回执类轮（`function_off_goal=true`）过度写入 goal 域节点（本轮 L0 被重写 ≥3 次/2 次 `node_write_downgraded_to_merge`）；候选方案=该类轮只记事件禁写节点，**须先解与 rule0 MUST-CLEANSE 的互斥**（P0-5 病灶复现） | ⏳ 待设计 | P1 |

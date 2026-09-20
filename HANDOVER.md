@@ -672,3 +672,44 @@
 - 代码:`src/index.ts`(文本真实路径;`~/.pi/agent/extensions/textron/index.ts` 为**软链**指向此处)。
 - 备份:`~/.pi/agent/extensions/textron/index.ts.bak-abstraction-20260921_012923`(改前,319978 字节)。
 - 编译:`esbuild` bundle **359.4 kb** 通过。
+
+## 十三、第二十四轮(2026-09-21,guard n8 侧)：merge 融合溢出硬上限 —— 掐断 L0 单调膨胀失控环（R1）
+
+### 13.1 触发与取证（guard 审计轮实证）
+
+交易工作流闭环后 guard 按四判据验收反传链，发现：本轮 5 次 backward 的 `node_actions` **全 keep**、
+`merge_action_lifted` 未触发；量化指纹 **`L0::node_0` content = 89,474c / 107 个 `" | "` 片段 / 最大单片段 3963c**
+（HANDOVER 十二轮记载 67,364c ⇒ 恶化 +33%）；`fn_ref_dangling` danglingPairs=50 / danglingRefs=64
+（突破 F4' 上限 33）。根因清单（置信度分级）：
+
+| # | 病灶 | 根因 | 置信度 |
+|---|---|---|---|
+| R1 | L0 膨胀 89,474c | **失控正反馈环**：`NODE_CONTENT_MAX_CHARS=0` ⇒ merge 路径 `contentLimit=MAX_SAFE_INTEGER` ⇒ 溢出分流永不触发；旧文越大 → LLM 单次重写输出（~2-3KB,受输出预算约束）恒小于旧文 → `scoreNew<scoreOld` 恒 downgrade → `mergeContent=old+" | "+new` 全量拼接（旧文无 `\|` 时 `mergeDistinctContentFragments` 的整串 containment 检查必败 ⇒ 去重失效）→ 每轮净增 2-3KB。实测 107 片段即 107 次 downgrade 拼接 | 92% ✅ |
+| R2 | dangling 64 对 | `persistHighEntropyFunction` 的 `onEvicted` 淘汰函数块只记事件、不剥 content 内 `[fn:σ]` 引用（十二轮 P0-1 前半句已知暂缓）；F4' 上限 33 已破 ⇒ **暂缓期到期** | 100% ✅（代码级） |
+| R3 | lift/split 未触发 | 回执轮 keep 合理 vs rule0 清洗吸收 lift 职责,两候选无对照样本不可分 | 60% ⏸ 挂起 |
+| R4 | JSON 截断（position 2268） | 输出预算截断 + repair 放行残缺 content；盘面未见半词残段 | 85% 边缘,低优先 |
+
+**方法论教训**：guard 曾提议「手动触发一次显式 lift/split」——被否决。lift/split 的语义判断归反传
+LLM、结构归程序（十二轮设计原则 1），guard 手动构造 lift 是绕过机制的捷径且污染会话视角。
+
+### 13.2 实施（commit `d9a87b2`，改前现场 commit `a8031f3`）
+
+`src/index.ts` `applySemanticNodeUpdates` merge 路径：
+
+- **新增 `MERGE_OVERFLOW_CAP = 12000`**（≈13×读取注入上限 900c、≈4×单次 LLM 重写预算）。
+- `contentLimit` 表达式改为：`NODE_CONTENT_MAX_CHARS > 0 ? NODE_CONTENT_MAX_CHARS : (forcedReplace ? MAX_SAFE_INTEGER : MERGE_OVERFLOW_CAP)` —— **仅融合拼接产物受限**；`forcedReplace`/`isCleanse` 是 LLM 全量重写,长度天然受输出预算约束,**豁免**。
+- 超限时复用既有 overflow 分流（`addDynamicNode` 搬至同层新节点）——**不拒绝 LLM 输出**（长度不作准入条件,守十二轮原则 3）,只做结构归位。
+- 治愈机制：被分流节点恢复「LLM 够得着重写」的体量 ⇒ replace 语义重新可达 ⇒ 失控环掐断;存量 89KB 将在下次 merge 时一次性分流归位（= P0-3 的程序侧结构归位,语义重整仍留 LLM lift/split）。
+
+### 13.3 验收
+
+- 新套件 `tests/test_merge_overflow_cap.ts` **8/8**（T1 源码守卫 cap 存在+replace 豁免+旧缺陷表达式移除 / T2 病灶复现 无分隔符旧文全量拼接 / T3 20 轮有界性模拟：cap 侧 12000c 恒界+分流 12959c,无 cap 对照组失控 2.1×cap）。
+- 回归 6 套件全绿：`lift_merge 42` / `lift_overflow_dup 15` / `content_limit_zero ALL` / `fn_block_survival 9` / `lift_jump 18` / `retention_increment 31`;`esbuild --platform=node` bundle `LOAD_OK`。
+- 改动文件 `src/index.ts` 为**符号链接**（extension 自动同步,硬性约束 8 无需 cp）;测试放 `tests/`（硬性约束 9）。
+
+### 13.4 下一轮验收断言 + 遗留
+
+- **B1**：下一次反传后 `L0::node_0` content ≤ 12,000c（存量分流落地）且 `_node_history` 出现溢出分流记录。
+- **B2**：`" | "` 片段数自 107 下行。
+- **B3**：R3 解挂条件——下一次**实质性交易增量轮**（非回执/bookkeeping 轮）观察 lift/split 是否自然触发;回执类轮（`function_off_goal=true`）重写 goal 域节点 ≥2 次/轮的过度写入仍待治（候选：该类轮只记事件禁写节点,须先解决与 rule0 MUST-CLEANSE 的互斥）。
+- **遗留**：R2 剥离引用（P0-1 前半句）已到期未做;R4 截断守卫未做。

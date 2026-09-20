@@ -70,3 +70,16 @@ sender-> guard: sender 是唯一负责通知 guard 的角色，在推进计数�
    - 需要额外参数时放 `--` 之后，例如 `-- --thinking high`。
 3. 验证：`coms_list` 中三个 agent 的 `model` 字段应等于当前会话模型（即 `$PI_MODEL`）；若显示 settings.json 的 defaultModel（如 glm-5.3-flash）说明有人手写了裸 osascript 命令 —— Terminal.app 新窗口不继承 `PI_*`，必须走脚本。
 4. 失败排查：`PI_COMS_DRY_RUN=1` 只打印 AppleScript 不执行，可直接核对命令行里的 `--provider/--model`。
+
+## 运行记录
+
+### 2026-09-21 轮（default 驱动）
+- 起止：23:11 启动三件套 → 03:10 n8 闭环，总耗时约 4 小时
+- 交易：step85 卖出 sz.301299 止损（质量分 57.2）→ trade.py v18；step86 买入 sz.301151 @15.95 成交 15.47（质量分 38.1）→ v19；总资产 ¥104,571（+4.57%）
+- n8 交付：根因分级 R1 92%✅（L0 膨胀失控环→MERGE_OVERFLOW_CAP=12000 已修，commit d9a87b2）/ R2 100%✅（dangling 64 对，记录待修）/ R3 60%⏸挂起 / R4 85%边缘；HANDOVER 第十三节（ea7053a）
+- 过程异常：三件套 02:14 被外部重启过一轮（started_at 变更），重启后 sender enter→continue 自动接续，未丢进度——健壮性符合预期
+
+### 时间优化点（下轮参考）
+1. 单 step 循环 10~25 分钟，瓶颈在 worker 决策 LLM 往返与复盘更新 trade.py（约 40 分钟/轮）：复盘元分析可限缩为「只改被证伪的函数」而非全文件重读重写
+2. default 轮询 saves 间隔 5 分钟足够；无需查询 sender（忙时不回包，浪费一条消息）
+3. n8 根因分析+修复+回归测试耗时约 1.5 小时，属合理深度，但 R2（dangling 64 对）应在本轮顺手修，避免下轮重复取证

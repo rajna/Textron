@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/textron-logo.png" alt="Textron logo" width="120">
+</p>
+
 # Textron
 
 > **Trainable Textual Neural Network for Agent Context Optimization**

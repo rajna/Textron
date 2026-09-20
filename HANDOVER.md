@@ -23,6 +23,8 @@
 | 待办 21（函数侧域闸） | ✅ LLM 输出 `function_off_goal:false`（字段出现，非缺失） | `semantic_backward_llm_raw_response` |
 | 待办 18（配对源陈旧） | ❌ 复现：`semantic_backward_entered.matchedTaskTs=2026-09-17T20:40:59Z`（早于窗口 3 天，远超 10min 判据）；`taskPromptPatch="matched"` ∧ `taskPromptPatchedRawChars=0`（补丁分支仍不走） | `ts=15:25:17.557Z` |
 | 待办 13（丢 HE） | 本轮 `no_pending_match` 未复现；但出现新变体 `agent_end_backward_skipped.reason="no_assistant_content"`（sender 首次回空文本 = local-coms `empty_assistant_text` 场景，`hasMatch=true`） | `ts=15:22:14Z` |
+| **编排层：worker 链路（第二十二轮补）** | ❌ **sender 全程跳过 worker 自执行**：workflow 第 5/6/7/9/10 步（sender→worker 发 prompt / worker 出决策 / worker 回传 / sender 发反馈 / worker 复盘并更新 trade.py）**全链未发生** ⇒ worker 三日未激活、**trade.py 本轮零迭代**（详见第六节） | `_last_state.worker.json` mtime `09-18 04:40` vs sender/guard `09-20 23:29`；`coms_send` 全窗口无 `target:worker`；sender 轨迹 `15:24:14 cat > /tmp/run_decide.py` + `15:24:38/15:24:51 curl .../api/step` |
+| **空仓 3 候选 prompt（第二十二轮补）** | ⚠️ **接口层 ✅ / 消费层 ❌**：`/api/prompt` → `data.stock_options` 存在、prompt 9107c、含 3 只（`sz.301299`×6 + `sh.688757` + `sh.603052`）、`【日K】/【周K】/【月K】` 各 3 段、含 `stock_code` + "选定 1 只"、单一 prompt（无 `prompts` 数组）——空仓稿已生效；但决策只回 1 个 `stock_code`（=当前股）且下游（worker/trade.py）未被调用 ⇒ **3 只候选"生成了但未被消费"** | 实测 `curl /api/prompt?session_id=ff5b7ae0f07a`（空仓态 `¥104,415 / ¥0`） |
 
 ## 二、本轮根因 **R11（单变量）：候选枚举侧与写入侧使用两套互斥判据，且无仲裁**
 
@@ -57,6 +59,37 @@
 - **#18（仍为高杠杆）**：`matchedTaskTs` 陈旧 3 天已第二次取证；`taskPromptPatch="matched"` ∧ `rawPromptPatchedRawChars=0` ⇒ 反传的"任务侧"用的是旧任务原文。
 - **#13 变体**：`agent_end_backward_skipped{reason:"no_assistant_content"}`（`hasMatch=true`）——空回包场景下 reward 与 HE 双丢，须补 self-backward（reward 标 `unattributed`，禁由 HE 驱动）。
 - **#26（新增，观测项）**：单轮反传 `userPromptChars=213740`（≈21 万字符）且 `durationMs=60301` —— 预算/裁剪未见上限，成本与超时风险未量化。
+
+## 六、编排层取证（第二十二轮补，2026-09-20 23:45）：**sender 跳过 worker 自执行 ⇒ trade.py 零迭代；空仓 3 候选"生成但未消费"**
+
+### 6.1 契约（白纸黑字，非推测）
+`workflows/workflow.md` 第 43–51 行、`workflow_3.md` 第 44–52 行定义的角色链：
+步骤 4 sender 取 prompt → **5 sender `coms_send` 发 `data.prompt` 给 worker** → **6 worker 出决策 JSON（可用工具 `trade.py`）** → **7 worker `coms_send` 回传决策** → 8 sender `POST /api/step` → **9 sender 取 `/api/trade_quality` 发反馈给 worker** → **10 worker 复盘 + 元分析 + 更新 `trade.py` 函数体（输入输出不变）** → 11 sender 计数未满 2 则回第 4 步 → 12 sender 通知 guard。
+【收件人边界】worker 只与 sender 交互，禁直接通知 guard 或其他 agent。
+
+### 6.2 实际行为（三重证据，可复算）
+1. **`coms_send` 全窗口无 worker**：`15:00–15:30` 全部 `coms_send` = `default→guard` / `guard→sender` ×2 / `guard→sender`(目录告知)，**无一条 `target:worker`**。
+2. **worker 三日未激活**：`~/.textron/_last_state.worker.json` mtime = `2026-09-18 04:40`，而 `_last_state.sender.json` / `.guard.json` = `2026-09-20 23:29`；worker 侧无本轮任何 `_trajectories`/`agent_end` 事件。
+3. **sender 包攬了 worker 的职责**：`15:22:52–15:25:02` 的 tool_call 可见 `grep -rl "api/step" ~/.pi`、`grep -l "...api/step" ~/.pi/agent/sessions/*.jsonl`（库级检索）、`cat > /tmp/run_decide.py`（自建脚本 import `trade.py::decide`）、`cat /tmp/order.json && curl .../api/step` ×2 —— **自探索→自决策→自下单**。
+
+### 6.3 后果（为何算严重而非风格问题）
+- **`trade.py` 本轮零迭代**：步骤 10（worker 对 trade.py 做元分析并**改进函数体**）是整个 workflow 的**进化回路**，被跳过 ⇒ 两回合零变动后无任何策略修正。
+- **决策无第二视角**：sender 既取 prompt 又出决策（自证），"决策者/执行者/反思者"分离失效 ⇒ 交易质量数据（`/api/trade_quality` 58.1）失去独立归因。
+- **全盘探索重现（硬性约束 10 新形态）**：根因不是"子 agent 不听话"而是**通知里未携带角色链边界**——`guard→sender` 的指令全文只有「开始交易游戏：完成2次交易推进。」⇒ 与约束 10 的成因描述完全同构（**指令抽象 = 把"接下来该找谁做"的判断成本转嫁给子 agent**）。
+
+### 6.4 空仓 3 候选：接口层✅ / 消费层❌
+| 层次 | 结果 | 取证 |
+|---|---|---|
+| 接口层 | ✅ 已生效 | `data.stock_options` 存在；prompt 9107c；`sz.301299`×6 + `sh.688757` + `sh.603052`；日/周/月各 3 段；含 `stock_code` + `"选定 1 只"`；`data` 无 `prompts` 数组（单一 prompt 口径成立） |
+| 消费层 | ❌ 未消费 | 决策只回 1 个 `stock_code`（=当前股 sz.301299）；worker 未启动 ⇒ `trade.py::decide(ctx)` 的 `ctx.current_stock` 仍是单股；**无任何"候选比较"证据** ⇒ 无法区分"三只中择优"与"默认沿用当前股" |
+| 判据化缺口 | — | 决策 JSON 缺 `stock_options_considered` / `why_this_stock` 类字段 ⇒ 空仓稿的正确性**不可客观校验**（与硬性约束 11 同型：无法形成时间座标） |
+
+### 6.5 下一轮验收断言（I 组）
+- **I1**：本轮内 `coms_send` 存在 `target:worker` ≥ 2（步骤 5）且 `worker→sender` 回传 ≥ 2（步骤 7）。
+- **I2**：`_last_state.worker.json` mtime 落在本轮窗口内；`trade.py` 的 git diff 非空 **或** worker 显式给出"无需修改"的理由（否则进化回路仍断）。
+- **I3（防伪）**：sender 的 `POST /api/step` 前必须存在 worker 的决策回包（按 `msgId` 配对）；不得以"命令过长/耗时"为由退回自执行。
+- **I4**：`guard→sender` 指令必须**逐字携带** 5→12 步角色链（含"决策必须来自 worker"与 trade.py 路径），否则不许下发。
+- **I5**：空仓轮决策 JSON 含所选 `stock_code` **且** prompt 内候选数 > 1 时，必须有候选对比证据（否则记"择优不可核"）。
 
 ---
 
@@ -482,6 +515,8 @@
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
 | 25 | **R11 仲裁层缺失（第二十二轮新增，最高杠杆）**：分流只让"候选侧判离域 ∧ 写入侧判在域"可见，**未仲裁** ⇒ 离域内容仍在累积（`L1::node_1` 24062c；`layer_0/node_0` 166KB、`layer_0/node_1` 174KB、`layer_1/node_1` 50KB）。仲裁判据须用 **LLM 语义判据**（同轮已输出 `function_off_goal`）而非词面余弦——**与 #20 合并实施**。判据：`judgmentConflictCount` 出现后，#20 的淘汰/清洗应由 LLM 给出的域标签驱动，且节点字符数**不再单调增长** | ⏳ 未修（与 #20 合并） |
 | 26 | **反传 prompt 体量无上限（第二十二轮新增，观测）**：单轮 `semantic_backward_llm_input.userPromptChars=213740`（≈21 万字符）、`durationMs=60301`；预算参数已走 `buildBudgetParams()`（守约束 4），但无"输入体量/耗时"上限与告警。判据：超阈值（如 >120k）时落告警事件，先观测再定阈 | ⏳ 未修（观测） |
+| 27 | **编排退化：sender 跳过 worker 自执行（第二十二轮补，高杠杆）** —— workflow 第 5/6/7/9/10 步全链未发生：无 `coms_send target:worker`、`_last_state.worker.json` mtime 停留在 09-18 04:40、sender 自建 `/tmp/run_decide.py` 并自调 `/api/step`。后果：**`trade.py` 本轮零迭代（进化回路断）** + 决策无第二视角 + sender 为自执行而库级检索（约束 10 新形态）。根治在**指令侧**：通知必须逐字携带 5→12 步角色链（详见第六节 6.5 的 I1–I4） | ⏳ 未修（最高杠杆） |
+| 28 | **空仓 3 候选"生成但未消费"（第二十二轮补）**：`/api/prompt` 接口层 ✅（3 只标的 + 日/周/月各 3 段 + `stock_code` + "选定 1 只"，单一 prompt）；但决策只回 1 个 `stock_code`、下游未消费 ⇒ 无候选对比证据，无法区分"择优"与"默认沿用当前股"。修法：决策 JSON 增 `stock_options_considered` / `why_this_stock`，否则该 feature 不可客观校验 | ⏳ 未修 |
 
 ---
 
@@ -529,6 +564,11 @@
     - **推论 1**：判据的中间量只进日志、出不了函数（拿不到旧文/新文就无对账依据）⇒ 必然不可对账；判据结论必须作为**结构化返回值**随流程上行。
     - **推论 2**：**词面判据不得单独给"离域"定性**（同 R8：符号化专业增量与 goal 的 2-gram 重合天然稀疏）；域标签须由 LLM 语义判定给出（同轮 `function_off_goal` 已在同一决策里），与待办 20 同源。
     - **推论 3**：跨轮只允许引用**真违规**作台账；混入冲突会让指标值变化不可解释（约束 11/12 的直接推论）。
+15. **通知类指令必须携带「角色链边界」，否则子 agent 会用自执行补齐（第二十二轮补新增；触发：`guard→sender` 指令全文仅「开始交易游戏：完成2次交易推进。」⇒ sender 跳过 workflow 第 5/6/7/9/10 步（worker 全链）自探索+自决策+自下单，worker 三日未激活、`trade.py` 本轮零迭代，并为自执行做了库级 `grep -rl "api/step" ~/.pi` 检索**）。
+    - **规则**：下发任何多角色工作流时，指令必须**逐字携带「谁做哪一步 + 禁止谁做哪一步 + 决策产物路径」**（例："第 5 步 sender 把 prompt 发 worker；第 6 步 **决策必须由 worker 产出**，可用工具 `workflows/trade.py`；第 10 步 worker 才可改 `trade.py`；第 8 步才由 sender 下单"）。既不写清下游角色，又不给步骤编号，等于把"接下来该找谁"的判断成本转嫁给子 agent——**这是约束 10 的根因，而非子 agent 不听话**。
+    - **推论 1**：**"任务已完成"≠"流程已执行"** —— 验收必须同时核**产物**（`trade.py` 是否有 diff）与**路径**（`coms_send` 是否出现指定的角色对、目标 agent 的状态文件 mtime 是否落在窗口内）。只看终态（step 80→82）会把单点执行误判为成功。
+    - **推论 2**：子 agent 的**自执行永远"能完成任务"** ⇒ 不能用结果好坏判定编排是否成立；只能用**角色对证据**（谁调了谁、谁的 pid/state 动了）判定。
+    - **推论 3**：接口层生效（如空仓 3 候选）不等于被消费——**feature 上线必须同时交代"谁读它、读到后拿什么字段做判断"**，否则就是"生成了但无人消费"（不可客观校验）。
 
 ---
 

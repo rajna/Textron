@@ -93,6 +93,25 @@
 
 > **运维事实（本轮回执验证，避免下次误判）**：`coms_send` 返回的 `hops: 0` **不代表未送达**——同 project 内直投时跳数可为 0（本轮 `727730ef` hops=0，但 sender 完整回执了该纠偏消息的 5→12 步全文）。判定送达的凭据是**对方回执内容**（或 `coms_await` 结果），不是 `hops` 字段；同理 `~/.pi/coms/projects/<p>/agents/*.json` 只是 agent 注册表，已消费的消息不在其中，**不能拿"搜不到 msg_id"当未送达证据**。
 
+### 6.6 复跑验收：I 组**首次全通过**（2026-09-20 23:53，guard 下发逐字角色链后）
+
+| 断言 | 结果 | 证据（可复算） |
+|---|---|---|
+| I1 `target:worker` | ✅ | `coms_send` 15:36:57 `"target":"worker"`（步骤5 原文整份转发 prompt）；worker 侧收到 **6** 条 `【sender → worker｜…】`（步骤5/步骤9×2/步骤9重试×2/步骤10提醒），窗 15:36:57–15:51:52 |
+| I2 下游活跃 + 产物 | ✅ | `_last_state.worker.json` mtime `09-18 04:40` → `23:46:22` → `23:51:00`；`trade.py` **229 insertions / 26 deletions**（md5 `a57a644d…` → `e44dbcbf…`，AST 通过，新增 `_failed_breakout()` 假突破过滤 + 自检断言 `ok_fb`） |
+| I3 防伪配对 | ✅ | **worker 回包先于下单**：worker `agent_end` 15:39:38（taskType=`A股三选一建仓决策`）→ sender 下单 15:39:39（`/tmp/order_step_a.json`）；worker `agent_end` 15:50:59（`A股持仓轮持有决策`）→ sender 下单 15:51:02（`order_step_b.json`） |
+| I5 空仓候选对比 | ✅ | worker 首轮 `taskType=A股三选一建仓决策`（3 只候选真被 worker 处理，非 sender 默认沿用） |
+| 计数 | ✅ | step_index `82 → 84`（买入 300 股 → 持有） |
+
+> **I3 取证方式修正（重要）**：worker→sender 的决策回传走 **reply 通道**（local-coms 自动回传），**不是**显式 `coms_send` ⇒ 统计 `"target":"sender"` 会得 **0**（本轮实测 0），易误判 I3 失败。**正确判据 = `worker 的 agent_end（带具体 taskType）ts < sender /api/step 调用 ts`**，并辅以订单文件命名差异（`order_step_a/b.json`）。
+
+**本轮反传指标（三次）**：reward `0.3 / 0 / -0.2`、nodesUpdated `1/2/3`、nodesMerged `1/0/2`、edgesUpdated `3/0/0`、nodesAdded `1/0/0`。负 reward 出现在浮亏扩大那步 ⇒ **reward 与账户方向一致（非恒正/恒零），属健康信号**。`cleanseViolationCount = 1/2/3` 且 `judgmentConflictCount` **字段不存在** ⇒ H2 反证命中（R11 未 `/reload`，符合预期）。
+
+### 6.7 复跑暴露的新问题（本轮新增）
+- **#29 约束 10 残留**：仍出现库级检索 `15:40:50 grep -rln "api/step" /Users/rama`、`15:46:59 grep -rl "api/step" /Users/rama/Documents /Users/rama/projects /Users/rama/textron-agent/UI`（虽加 `timeout 40/60/90`）⇒ 限时是**缓解不是修复**；指令里的"禁止库级检索"未与"直接读 `workflows/API.md`（绝对路径）"绑定，子 agent 仍在“找不到样例”时退化为扫描。
+- **#30 待办 14 回归**：`trajectory_tools_fidelity` 本轮 `inputTruncated=1/2`、`outputTruncated=1/2`（15:39/15:46/15:51 三处）⇒ 第十六轮验收的 `inputTruncated=0` 不再成立，工具侧 slice 截断回归。
+- **#31 coms 投递超时导致反馈重发**：步骤9 反馈两次“发送超时→重发”（15:41:51、15:51:44）⇒ 同一反馈可能被 worker 处理两次，反向依赖“重复无害”；须补幂等键（同 URL 已有“幂等键落在已落地事实”经验，此处需上行到 coms 层或反馈文本带头）。
+
 ---
 
 # ✦ 最近更新（2026-09-20 20:15）：① stock-trade **空仓多标的决策稿 + 按 `stock_code` 成交**（7860 已重启生效）｜② Textron `autoBackward` **作用域崩溃修复**（需 `/reload`；24 次实证，并据此**修正 R10 结论**）
@@ -518,7 +537,10 @@
 | 25 | **R11 仲裁层缺失（第二十二轮新增，最高杠杆）**：分流只让"候选侧判离域 ∧ 写入侧判在域"可见，**未仲裁** ⇒ 离域内容仍在累积（`L1::node_1` 24062c；`layer_0/node_0` 166KB、`layer_0/node_1` 174KB、`layer_1/node_1` 50KB）。仲裁判据须用 **LLM 语义判据**（同轮已输出 `function_off_goal`）而非词面余弦——**与 #20 合并实施**。判据：`judgmentConflictCount` 出现后，#20 的淘汰/清洗应由 LLM 给出的域标签驱动，且节点字符数**不再单调增长** | ⏳ 未修（与 #20 合并） |
 | 26 | **反传 prompt 体量无上限（第二十二轮新增，观测）**：单轮 `semantic_backward_llm_input.userPromptChars=213740`（≈21 万字符）、`durationMs=60301`；预算参数已走 `buildBudgetParams()`（守约束 4），但无"输入体量/耗时"上限与告警。判据：超阈值（如 >120k）时落告警事件，先观测再定阈 | ⏳ 未修（观测） |
 | 27 | **编排退化：sender 跳过 worker 自执行（第二十二轮补，高杠杆）** —— workflow 第 5/6/7/9/10 步全链未发生：无 `coms_send target:worker`、`_last_state.worker.json` mtime 停留在 09-18 04:40、sender 自建 `/tmp/run_decide.py` 并自调 `/api/step`。后果：**`trade.py` 本轮零迭代（进化回路断）** + 决策无第二视角 + sender 为自执行而库级检索（约束 10 新形态）。根治在**指令侧**：通知必须逐字携带 5→12 步角色链（详见第六节 6.5 的 I1–I4） | ⏳ 未修（最高杠杆） |
-| 28 | **空仓 3 候选"生成但未消费"（第二十二轮补）**：`/api/prompt` 接口层 ✅（3 只标的 + 日/周/月各 3 段 + `stock_code` + "选定 1 只"，单一 prompt）；但决策只回 1 个 `stock_code`、下游未消费 ⇒ 无候选对比证据，无法区分"择优"与"默认沿用当前股"。修法：决策 JSON 增 `stock_options_considered` / `why_this_stock`，否则该 feature 不可客观校验 | ⏳ 未修 |
+| 28 | **空仓 3 候选"生成但未消费"（第二十二轮补）**：`/api/prompt` 接口层 ✅（3 只标的 + 日/周/月各 3 段 + `stock_code` + "选定 1 只"，单一 prompt）；但决策只回 1 个 `stock_code`、下游未消费 ⇒ 无候选对比证据，无法区分"择优"与"默认沿用当前股"。修法：决策 JSON 增 `stock_options_considered` / `why_this_stock`，否则该 feature 不可客观校验 ｜ **6.6 复跑已部分满足**：worker 首轮 `taskType=A股三选一建仓决策` ⇒ 候选真被处理，但决策 JSON 仍缺对比字段 | ⏳ 部分 |
+| 29 | **约束 10 残留（复跑实测）**：子 agent 仍发库级 `grep -rln "api/step" /Users/rama/Documents /Users/rama/projects`（加 `timeout 40/60/90` 限时）⇒ 限时只是缓解。修法：指令必须把"禁扫描"与"**直接 cat 指定绝对路径**（`workflows/API.md`）"写成一条可执行动作，而非分开两条纪律 | ⏳ 未修 |
+| 30 | **待办 14 回归**：`trajectory_tools_fidelity.inputTruncated/outputTruncated` 本轮非 0（1/2、1/2，三处）⇒ 第十六轮 `inputTruncated=0` 基线已回退。判据：同一指标非零即回归，不回扫只记时间序列 | ⏳ 未修（回归） |
+| 31 | **coms 投递超时致反馈重发**：步骤9 反馈两次"发送超时→重发"（15:41:51、15:51:44）⇒ 同一反馈可能被 worker 处理两次，系统反向依赖"重复无害"。修法：反馈文本带幂等头（上轮已落地的"幂等键=决策四元组+同源 msg_id"须上提到 coms/反馈层） | ⏳ 未修 |
 
 ---
 

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Textron · 运行架构 Dashboard</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1600px;height:1740px;overflow:hidden}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    color:#eef0f8;
+    background:
+      radial-gradient(1200px 800px at 12% 0%, rgba(148,160,205,.55), transparent 55%),
+      radial-gradient(900px 700px at 85% 105%, rgba(40,46,70,.9), transparent 60%),
+      linear-gradient(135deg,#7d87a9 0%, #4b5473 34%, #333a54 62%, #232839 100%);
+    position:relative;
+  }
+  .mono{font-family:"SF Mono",Menlo,Consolas,monospace}
+  /* ---------- top bar ---------- */
+  .topbar{height:76px;display:flex;align-items:center;padding:0 28px;gap:22px;
+    border-bottom:1px solid rgba(255,255,255,.09)}
+  .logo{width:46px;height:46px;border-radius:12px;background:#f2f4fb;padding:5px;object-fit:contain}
+  .hostchip{display:flex;align-items:center;gap:12px}
+  .avatar{width:40px;height:40px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#ffe9b8,#c98d4e 60%,#5b3a22);
+    display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#4a2d15}
+  .hostchip b{font-size:15px;font-weight:600;display:block}
+  .hostchip small{font-size:12px;color:rgba(238,240,248,.55)}
+  .topsearch{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .searchbox{width:290px;height:42px;border-radius:21px;background:rgba(16,20,34,.28);
+    border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;padding:0 18px;gap:10px;
+    color:rgba(238,240,248,.5);font-size:13.5px}
+  .bell{width:42px;height:42px;border-radius:50%;background:rgba(16,20,34,.28);
+    border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:16px}
+  /* ---------- layout ---------- */
+  .shell{display:flex;height:1664px}
+  .rail{width:78px;display:flex;flex-direction:column;align-items:center;padding:26px 0 20px;gap:30px;
+    border-right:1px solid rgba(255,255,255,.08)}
+  .rail .r-ic{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:19px;color:rgba(238,240,248,.65)}
+  .rail .r-ic.on{background:#f2f4fb;color:#38405e;box-shadow:0 6px 18px rgba(10,14,26,.35)}
+  .rail .spacer{margin-top:auto}
+  .rail .me{width:46px;height:46px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#ffd9a8,#b06f3a 65%,#4a2d15);
+    border:2px solid rgba(255,255,255,.5)}
+  .main{flex:1;padding:30px 30px 26px 38px;display:flex;flex-direction:column;min-width:0}
+  .side{width:470px;border-left:1px solid rgba(255,255,255,.09);padding:30px 30px 26px 30px;
+    display:flex;flex-direction:column;gap:0}
+  /* ---------- header stats ---------- */
+  .head{display:flex;align-items:flex-start;gap:40px}
+  h1{font-size:52px;font-weight:700;letter-spacing:.5px;line-height:1.12}
+  h1 .dim{color:rgba(238,240,248,.62);font-weight:600}
+  .stats{margin-left:auto;display:flex;gap:46px;padding-top:10px}
+  .stat small{display:block;font-size:13px;color:rgba(238,240,248,.55);margin-bottom:5px}
+  .stat b{font-size:17px;font-weight:600;color:#eef0f8}
+  .stat b .num{font-size:22px;font-weight:700}
+  .hr{height:1px;background:rgba(255,255,255,.14);margin:22px 0 0}
+  /* ---------- graph ---------- */
+  .canvaswrap{flex:1;position:relative;min-height:0}
+  svg.graph{position:absolute;inset:0;width:100%;height:100%}
+  .tag{position:absolute;background:#d9f24e;color:#252c14;font-size:13px;padding:5px 12px;border-radius:3px;
+    font-family:"SF Mono",Menlo,monospace;box-shadow:0 4px 14px rgba(10,14,26,.4)}
+  .tag.pink{background:#c9d4ff}
+  /* ---------- pipeline cards ---------- */
+  .pipe{display:flex;gap:22px;align-items:flex-end;margin-top:6px}
+  .pcard{border-radius:6px;padding:14px 18px 16px;background:rgba(20,26,44,.34);
+    border:1px solid rgba(255,255,255,.10);width:250px;position:relative}
+  .pcard .st{position:absolute;top:-15px;left:0;font-size:12.5px;padding:4px 10px;border-radius:3px;
+    font-family:"SF Mono",Menlo,monospace;color:#252c14;background:#fff}
+  .pcard .st.b{background:#b9c6f2}
+  .pcard .st.g{background:rgba(20,26,44,.6);color:rgba(238,240,248,.75);border:1px solid rgba(255,255,255,.14)}
+  .pcard h4{font-size:17px;font-weight:600;display:flex;align-items:center;gap:10px}
+  .pcard h4 .dot{width:9px;height:9px;border-radius:50%;background:#d9f24e;box-shadow:0 0 10px #d9f24e}
+  .pcard p{font-size:12.5px;color:rgba(238,240,248,.5);margin-top:9px}
+  .pcard.big{width:330px;background:rgba(35,44,74,.5);border-color:rgba(255,255,255,.16);
+    display:flex;justify-content:space-between;align-items:flex-start}
+  .pcard.big .tm{font-family:"SF Mono",Menlo,monospace;font-size:14px;color:rgba(238,240,248,.8);margin-top:2px}
+  /* ---------- comparison band ---------- */
+  .compare{display:flex;gap:40px;margin-top:28px;padding-top:24px;border-top:1px solid rgba(255,255,255,.14)}
+  .cmp{flex:1;min-width:0}
+  .cmp h3{font-size:18px;font-weight:650}
+  .cmp .sub{font-size:12px;color:rgba(238,240,248,.5);margin-top:4px}
+  .legend{display:flex;gap:22px;font-size:12.5px;margin:12px 0 0;color:rgba(238,240,248,.8)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+  .cmp table.t{margin-top:10px;font-size:12.5px}
+  .cmp table.t td:first-child{color:rgba(238,240,248,.5);font-weight:400}
+  .cmp table.t .tx{color:#d9f24e}
+  /* ---------- README concept map ---------- */
+  .map{margin-top:14px}
+  .mrow{display:grid;grid-template-columns:96px 26px 1fr auto;align-items:center;gap:10px;
+    padding:12px 0;border-bottom:1px dashed rgba(255,255,255,.16);font-size:13px}
+  .mrow .nn{color:rgba(238,240,248,.6);font-weight:600}
+  .mrow .arr{color:#d9f24e;font-size:15px}
+  .mrow .tx{color:#eef0f8}
+  .mrow .viz{display:flex;align-items:center;gap:6px;color:rgba(238,240,248,.45);font-size:10px}
+  .viz .nd{width:11px;height:11px;border-radius:50%;background:#dfe6ff;box-shadow:0 0 8px rgba(223,230,255,.7)}
+  .viz .nd:nth-child(2){width:8px;opacity:.7}.viz .nd:nth-child(3){width:6px;opacity:.45}
+  .viz .wbar{position:relative;width:86px;height:6px;border-radius:3px;
+    background:linear-gradient(90deg,#ff5f7e,#3a4158 50%,#d9f24e)}
+  .viz .wbar b{position:absolute;left:62%;top:-3px;width:3px;height:12px;border-radius:2px;background:#fff}
+  .viz .ly{width:20px;height:3px;border-radius:2px;background:#8fa2d8}
+  .viz .ly:nth-child(2){width:28px}.viz .ly:nth-child(3){width:16px}.viz .ly:nth-child(4){width:24px}
+  .viz.fwd i{width:8px;height:8px;border-radius:50%;background:#dfe6ff;opacity:.9}
+  .viz.fwd i:nth-child(2){opacity:.7}.viz.fwd i:nth-child(3){opacity:.5}.viz.fwd i:nth-child(4){opacity:.35}
+  .viz.fwd em{color:#d9f24e;font-style:normal}
+  .viz.bwd em{color:#7fd8ff;font-style:normal}
+  .viz.bwd i{width:8px;height:8px;border-radius:50%;background:#7fd8ff;opacity:.35}
+  .viz.bwd i:nth-child(4){opacity:.7}.viz.bwd i:nth-child(5){opacity:.9}
+  .viz .cvg{display:flex;align-items:flex-end;gap:4px;height:28px}
+  .viz .cvg b{width:8px;border-radius:2px;background:#d9f24e;opacity:.95}
+  .viz .cvg b:nth-child(2){opacity:.75}.viz .cvg b:nth-child(3){opacity:.55}.viz .cvg b:nth-child(4){opacity:.4}
+  /* ---------- vs agentic RL ---------- */
+  .lane{margin-top:12px;padding:12px 14px;border-radius:8px;background:rgba(20,26,44,.32);
+    border:1px solid rgba(255,255,255,.1)}
+  .lane.rl{border-color:rgba(143,162,216,.4)}
+  .lane.txl{border-color:rgba(217,242,78,.45)}
+  .lane .lt{font-size:11.5px;font-family:"SF Mono",Menlo,monospace;display:inline-block;
+    padding:2px 9px;border-radius:3px;margin-bottom:9px;font-weight:600}
+  .rl .lt{background:#8fa2d8;color:#1c2338}
+  .txl .lt{background:#d9f24e;color:#252c14}
+  .chain{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:12px}
+  .chain .cstep{padding:6px 10px;border-radius:5px;background:rgba(255,255,255,.07);
+    border:1px solid rgba(255,255,255,.12);color:rgba(238,240,248,.85)}
+  .rl .cstep.hot{background:rgba(143,162,216,.22);border-color:rgba(143,162,216,.5)}
+  .txl .cstep.hot{background:rgba(217,242,78,.14);border-color:rgba(217,242,78,.5);color:#d9f24e}
+  .chain .ca{color:rgba(238,240,248,.35);font-size:13px}
+  .lane .loop{margin-top:8px;font-size:11px;color:rgba(238,240,248,.5)}
+  .rl .loop em{color:#8fa2d8;font-style:normal}
+  .txl .loop em{color:#d9f24e;font-style:normal}
+  .pairs{margin-top:16px}
+  .prow{display:grid;grid-template-columns:112px 1fr;gap:12px;align-items:center;
+    padding:9px 0;border-bottom:1px dashed rgba(255,255,255,.14);font-size:11.5px}
+  .prow .pl{color:rgba(238,240,248,.55)}
+  .pbars{display:flex;flex-direction:column;gap:5px}
+  .pb{display:flex;align-items:center;gap:9px}
+  .pb i{height:8px;border-radius:4px;flex:none}
+  .pb.rl i{background:#8fa2d8}
+  .pb.tx i{background:#d9f24e}
+  .pb span{color:rgba(238,240,248,.55);font-size:10.5px;white-space:nowrap}
+  .slogan{font-size:15px;line-height:1.7;color:rgba(238,240,248,.85);font-weight:500}
+  /* ---------- side panels ---------- */
+  .side h3{font-size:19px;font-weight:650}
+  .side .sub{font-size:12.5px;color:rgba(238,240,248,.5);margin-top:4px}
+  .live{float:right;background:#d9f24e;color:#252c14;font-family:"SF Mono",Menlo,monospace;
+    font-size:12.5px;padding:4px 12px;border-radius:3px}
+  table.t{width:100%;border-collapse:collapse;margin-top:16px;font-size:13.5px}
+  table.t th{text-align:left;font-weight:500;color:rgba(238,240,248,.45);font-size:12px;
+    padding-bottom:8px;border-bottom:1px dashed rgba(255,255,255,.22)}
+  table.t td{padding:12px 0;border-bottom:1px dashed rgba(255,255,255,.16)}
+  table.t td:last-child,table.t th:last-child{text-align:right}
+  .pill-ok,.pill-run,.pill-wait{display:inline-flex;align-items:center;gap:7px}
+  .pill-ok::before{content:"";width:7px;height:7px;border-radius:50%;background:#ff5f7e}
+  .pill-run::before{content:"";width:7px;height:7px;border-radius:50%;background:#d9f24e}
+  .pill-wait{width:15px;height:15px;border-radius:50%;display:inline-block;
+    border:2px dashed rgba(238,240,248,.5);animation:spin 6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .viewbtn{margin-top:18px;height:52px;border-radius:26px;background:#f4f6fc;color:#252b40;
+    display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:650;
+    box-shadow:0 8px 22px rgba(10,14,26,.35)}
+  .sec{border-top:1px solid rgba(255,255,255,.12);margin-top:26px;padding-top:22px}
+  .kv{margin-top:14px;font-size:13.5px}
+  .kv .row{display:flex;justify-content:space-between;padding:11px 0;
+    border-bottom:1px dashed rgba(255,255,255,.16)}
+  .kv .row small{color:rgba(238,240,248,.45)}
+  .kv .row b{font-weight:600}
+  .chart{margin-top:14px;height:96px;position:relative}
+  .chart .x{display:flex;justify-content:space-between;font-size:11px;color:rgba(238,240,248,.4);margin-top:6px}
+  .formula{margin-top:14px;display:flex;align-items:center;gap:14px}
+  .formula .f{font-family:"SF Mono",Menlo,monospace;font-size:14px;color:#d9f24e;
+    background:rgba(20,26,44,.4);border:1px solid rgba(255,255,255,.12);padding:9px 14px;border-radius:6px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .chip{font-size:11.5px;padding:5px 11px;border-radius:14px;color:rgba(238,240,248,.75);
+    background:rgba(20,26,44,.38);border:1px solid rgba(255,255,255,.14)}
+  .chip b{color:#d9f24e;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <img class="logo" src="src/textron-logo.png" alt="Textron">
+  <div class="hostchip">
+    <div class="avatar">π</div>
+    <div><b>pi · coding agent</b><small>宿主运行时 · 9 个生命周期钩子</small></div>
+    <span style="color:rgba(238,240,248,.4);font-size:13px">▾</span>
+  </div>
+  <div class="topsearch">
+    <div class="searchbox">⌕&nbsp; 搜索节点 / 任务族 / 权重</div>
+    <div class="bell">🔔</div>
+  </div>
+</div>
+
+<div class="shell">
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="head">
+      <h1>Textron 运行架构<br><span class="dim">可训练的文本节点图</span></h1>
+      <div class="stats">
+        <div class="stat"><small>本轮 LLM 预算</small><b><span class="num">1200</span> tok</b></div>
+        <div class="stat"><small>激活节点 / 上限</small><b><span class="num">84</span> / 128</b></div>
+        <div class="stat"><small>逐轮收敛</small><b><span class="num">92</span>%</b></div>
+      </div>
+    </div>
+    <div class="hr"></div>
+
+    <div class="canvaswrap">
+      <svg class="graph" viewBox="0 0 980 560" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="6" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="18"/>
+          </filter>
+          <radialGradient id="web" cx="50%" cy="50%">
+            <stop offset="0%" stop-color="rgba(220,230,255,.5)"/>
+            <stop offset="100%" stop-color="rgba(220,230,255,0)"/>
+          </radialGradient>
+        </defs>
+
+        <!-- nebula web background -->
+        <g filter="url(#soft)" opacity=".5">
+          <ellipse cx="330" cy="215" rx="260" ry="90" fill="url(#web)"/>
+          <ellipse cx="660" cy="260" rx="240" ry="80" fill="url(#web)"/>
+        </g>
+
+        <!-- ============ forward edges (weight = width/brightness) ============ -->
+        <g fill="none" stroke="#dfe6ff" filter="url(#glow)">
+          <path d="M95,270 C160,220 180,160 240,150" stroke-width="3" opacity=".9"/>
+          <path d="M95,270 C170,320 190,340 240,330" stroke-width="1.2" opacity=".35"/>
+          <!-- routing -> L0 -->
+          <path d="M240,150 C300,120 320,110 380,105" stroke-width="2.6" opacity=".85"/>
+          <path d="M240,150 C300,170 330,180 380,190" stroke-width="2" opacity=".6"/>
+          <path d="M240,330 C310,320 330,250 380,240" stroke-width="1" opacity=".28"/>
+          <!-- L0 -> L1 (MoE top-K: two bright, one dim dashed) -->
+          <path d="M380,105 C450,110 470,150 540,160" stroke-width="3.4" opacity=".95"/>
+          <path d="M380,190 C450,190 470,175 540,170" stroke-width="2.8" opacity=".8"/>
+          <path d="M380,240 C450,240 480,260 540,265" stroke-width="1" opacity=".25" stroke-dasharray="4 6"/>
+          <path d="M540,160 C600,150 620,140 680,140" stroke-width="2.4" opacity=".7"/>
+          <path d="M540,265 C600,250 620,200 680,190" stroke-width="1.6" opacity=".45"/>
+          <!-- L1/L2 -> compile -->
+          <path d="M680,140 C730,150 740,190 780,205" stroke-width="2.6" opacity=".8"/>
+          <path d="M680,190 C730,195 745,200 780,210" stroke-width="2.2" opacity=".7"/>
+          <!-- compile -> execute -->
+          <path d="M780,210 C820,220 830,240 865,250" stroke-width="3.6" opacity=".95"/>
+        </g>
+
+        <!-- ============ backward loop (dashed, cyan) ============ -->
+        <g fill="none" stroke="#7fd8ff" stroke-dasharray="7 7" opacity=".85" filter="url(#glow)">
+          <path d="M865,262 C880,340 800,420 640,440 C460,462 300,455 210,430" stroke-width="2"/>
+          <path d="M210,430 C150,412 140,360 168,300" stroke-width="1.6"/>
+        </g>
+        <polygon points="865,254 858,268 872,268" fill="#7fd8ff" opacity=".9" transform="rotate(180 865 261)"/>
+        <polygon points="168,304 161,290 175,290" fill="#7fd8ff" opacity=".9"/>
+
+        <!-- backward loop nodes: judge → 获得奖励(独立一环) → ledger 落盘 -->
+        <g filter="url(#glow)">
+          <circle cx="795" cy="415" r="7"  fill="#7fd8ff"/>
+          <circle cx="640" cy="440" r="11" fill="#d9f24e"/>
+          <circle cx="430" cy="452" r="8"  fill="#7fd8ff"/>
+        </g>
+        <text x="640" y="480" text-anchor="middle" font-size="14" fill="#d9f24e" font-weight="600">获得奖励 · 独立环节</text>
+        <text x="430" y="500" text-anchor="middle" font-size="12" fill="rgba(238,240,248,.6)"
+              font-family="SF Mono,Menlo,monospace">semanticBackward → Δ 落盘 weights.json.ledger</text>
+
+        <!-- ============ nodes ============ -->
+        <g filter="url(#glow)">
+          <circle cx="95"  cy="270" r="11" fill="#ffffff"/>
+          <circle cx="240" cy="150" r="9"  fill="#eef2ff"/>
+          <circle cx="240" cy="330" r="6"  fill="#8f9ab8" opacity=".7"/>
+          <circle cx="380" cy="105" r="8"  fill="#ffffff"/>
+          <circle cx="380" cy="190" r="7"  fill="#dfe6ff"/>
+          <circle cx="380" cy="240" r="5"  fill="#8f9ab8" opacity=".6"/>
+          <circle cx="540" cy="160" r="9"  fill="#ffffff"/>
+          <circle cx="540" cy="265" r="6"  fill="#9aa5c4" opacity=".7"/>
+          <circle cx="680" cy="140" r="7"  fill="#e8edff"/>
+          <circle cx="680" cy="190" r="7"  fill="#e8edff"/>
+          <circle cx="780" cy="207" r="10" fill="#ffffff"/>
+          <circle cx="868" cy="256" r="12" fill="#d9f24e"/>
+        </g>
+
+        <!-- node labels -->
+        <g font-size="13.5" fill="rgba(238,240,248,.85)">
+          <text x="95"  y="300" text-anchor="middle">任务输入</text>
+          <text x="240" y="128" text-anchor="middle">任务族路由</text>
+          <text x="240" y="360" text-anchor="middle" fill-opacity=".55">未命中族·冷启动</text>
+          <text x="380" y="80"  text-anchor="middle">L0 · attention 打分</text>
+          <text x="540" y="135" text-anchor="middle">L1 · 加权传播</text>
+          <text x="680" y="115" text-anchor="middle">L2 · 精炼节点</text>
+          <text x="780" y="180" text-anchor="middle">上下文编译</text>
+          <text x="868" y="290" text-anchor="middle" fill="#d9f24e" font-weight="600">Agent 执行</text>
+        </g>
+        <text x="540" y="292" text-anchor="middle" font-size="12" fill="rgba(238,240,248,.5)">低权重边被抑制</text>
+
+        <!-- backward labels -->
+        <text x="822" y="390" text-anchor="middle" font-size="13" fill="#7fd8ff">反馈配对 · judge</text>
+        <text x="148" y="384" text-anchor="middle" font-size="13" fill="#7fd8ff">下一轮前向</text>
+        <text x="148" y="402" text-anchor="middle" font-size="13" fill="#7fd8ff">用新权重</text>
+      </svg>
+
+      <div class="tag mono" style="left:36%;top:26%">MoE top-K 门控 π(w)</div>
+      <div class="tag pink mono" style="left:66%;top:56%">lift-merge · 逐层容量闸</div>
+    </div>
+
+    <!-- pipeline cards -->
+    <div class="pipe">
+      <div class="pcard">
+        <div class="st mono">Completed</div>
+        <h4><span class="dot"></span>检索 · 打分 · 门控</h4>
+        <p>ngram-cos 拓扑召回 → L0 注意力打分 → top-K 选边</p>
+      </div>
+      <div class="pcard big">
+        <div>
+          <div class="st b mono">In Progress</div>
+          <h4><span class="dot"></span>编译注入 → 执行</h4>
+          <p>layerCaps 截断 → 编译进 prompt → pi agent 干活</p>
+        </div>
+        <div class="tm">00:24:38</div>
+      </div>
+      <div class="pcard">
+        <div class="st g mono">Pending</div>
+        <h4>反馈 → 获得奖励 → 落盘收敛</h4>
+      </div>
+    </div>
+
+    <!-- ============ comparison band ============ -->
+    <div class="compare">
+      <div class="cmp" style="max-width:660px">
+        <h3>Textron vs Agentic RL</h3>
+        <div class="sub">同样「从反馈中学习」，参数载体与成本差几个数量级</div>
+        <svg width="100%" viewBox="0 0 660 570" style="margin-top:6px">
+          <defs>
+            <marker id="ahB" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+              <polygon points="0 0,7 3.5,0 7" fill="#8fa2d8"/></marker>
+            <marker id="ahR" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><polygon points="0 0,7 3.5,0 7" fill="#ff5f7e"/></marker>
+            <marker id="ahC" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><polygon points="0 0,7 3.5,0 7" fill="#7fd8ff"/></marker>
+            <marker id="ahY" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+              <polygon points="0 0,7 3.5,0 7" fill="#d9f24e"/></marker>
+            <filter id="gl2" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="4" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+
+          <!-- ======== network diagrams ======== -->
+          <text x="160" y="16" text-anchor="middle" font-size="13" fill="#8fa2d8" font-weight="600">神经网络 · Agentic RL 训练对象</text>
+          <text x="500" y="16" text-anchor="middle" font-size="13" fill="#d9f24e" font-weight="600">Textron 文本节点图 · 训练对象</text>
+          <text x="20" y="46" font-size="10.5" fill="rgba(238,240,248,.5)">前向 x → ŷ ▸</text>
+
+          <!-- dense weighted edges -->
+          <g><line x1="55" y1="110" x2="125" y2="90" stroke="#8fa2d8" stroke-width="1.22" opacity="0.3"/><line x1="55" y1="110" x2="125" y2="120" stroke="#8fa2d8" stroke-width="0.94" opacity="0.22"/><line x1="55" y1="110" x2="125" y2="150" stroke="#8fa2d8" stroke-width="1.74" opacity="0.47"/><line x1="55" y1="110" x2="125" y2="180" stroke="#8fa2d8" stroke-width="0.82" opacity="0.18"/><line x1="55" y1="110" x2="125" y2="210" stroke="#8fa2d8" stroke-width="1.56" opacity="0.41"/><line x1="55" y1="150" x2="125" y2="90" stroke="#8fa2d8" stroke-width="1.29" opacity="0.32"/><line x1="55" y1="150" x2="125" y2="120" stroke="#8fa2d8" stroke-width="0.79" opacity="0.17"/><line x1="55" y1="150" x2="125" y2="150" stroke="#8fa2d8" stroke-width="1.51" opacity="0.39"/><line x1="55" y1="150" x2="125" y2="180" stroke="#8fa2d8" stroke-width="0.76" opacity="0.16"/><line x1="55" y1="150" x2="125" y2="210" stroke="#8fa2d8" stroke-width="1.39" opacity="0.36"/><line x1="55" y1="190" x2="125" y2="90" stroke="#8fa2d8" stroke-width="0.81" opacity="0.17"/><line x1="55" y1="190" x2="125" y2="120" stroke="#8fa2d8" stroke-width="0.85" opacity="0.19"/><line x1="55" y1="190" x2="125" y2="150" stroke="#8fa2d8" stroke-width="1.38" opacity="0.35"/><line x1="55" y1="190" x2="125" y2="180" stroke="#8fa2d8" stroke-width="2.02" opacity="0.55"/><line x1="55" y1="190" x2="125" y2="210" stroke="#8fa2d8" stroke-width="0.9" opacity="0.2"/><line x1="125" y1="90" x2="195" y2="90" stroke="#8fa2d8" stroke-width="1.06" opacity="0.25"/><line x1="125" y1="90" x2="195" y2="120" stroke="#8fa2d8" stroke-width="1.7" opacity="0.45"/><line x1="125" y1="90" x2="195" y2="150" stroke="#8fa2d8" stroke-width="2.22" opacity="0.61"/><line x1="125" y1="90" x2="195" y2="180" stroke="#8fa2d8" stroke-width="1.62" opacity="0.43"/><line x1="125" y1="90" x2="195" y2="210" stroke="#8fa2d8" stroke-width="1.33" opacity="0.34"/><line x1="125" y1="120" x2="195" y2="90" stroke="#8fa2d8" stroke-width="2.26" opacity="0.63"/><line x1="125" y1="120" x2="195" y2="120" stroke="#8fa2d8" stroke-width="0.77" opacity="0.16"/><line x1="125" y1="120" x2="195" y2="150" stroke="#8fa2d8" stroke-width="2.07" opacity="0.57"/><line x1="125" y1="120" x2="195" y2="180" stroke="#8fa2d8" stroke-width="1.16" opacity="0.28"/><line x1="125" y1="120" x2="195" y2="210" stroke="#8fa2d8" stroke-width="0.93" opacity="0.21"/><line x1="125" y1="150" x2="195" y2="90" stroke="#8fa2d8" stroke-width="0.89" opacity="0.2"/><line x1="125" y1="150" x2="195" y2="120" stroke="#8fa2d8" stroke-width="1.19" opacity="0.29"/><line x1="125" y1="150" x2="195" y2="150" stroke="#8fa2d8" stroke-width="2.01" opacity="0.55"/><line x1="125" y1="150" x2="195" y2="180" stroke="#8fa2d8" stroke-width="0.99" opacity="0.23"/><line x1="125" y1="150" x2="195" y2="210" stroke="#8fa2d8" stroke-width="1.63" opacity="0.43"/><line x1="125" y1="180" x2="195" y2="90" stroke="#8fa2d8" stroke-width="1.72" opacity="0.46"/><line x1="125" y1="180" x2="195" y2="120" stroke="#8fa2d8" stroke-width="1.3" opacity="0.33"/><line x1="125" y1="180" x2="195" y2="150" stroke="#8fa2d8" stroke-width="1.58" opacity="0.41"/><line x1="125" y1="180" x2="195" y2="180" stroke="#8fa2d8" stroke-width="0.8" opacity="0.17"/><line x1="125" y1="180" x2="195" y2="210" stroke="#8fa2d8" stroke-width="0.8" opacity="0.17"/><line x1="125" y1="210" x2="195" y2="90" stroke="#8fa2d8" stroke-width="1.03" opacity="0.24"/><line x1="125" y1="210" x2="195" y2="120" stroke="#8fa2d8" stroke-width="1.79" opacity="0.48"/><line x1="125" y1="210" x2="195" y2="150" stroke="#8fa2d8" stroke-width="1.38" opacity="0.35"/><line x1="125" y1="210" x2="195" y2="180" stroke="#8fa2d8" stroke-width="1.2" opacity="0.3"/><line x1="125" y1="210" x2="195" y2="210" stroke="#8fa2d8" stroke-width="1.64" opacity="0.43"/><line x1="195" y1="90" x2="265" y2="110" stroke="#8fa2d8" stroke-width="1.43" opacity="0.37"/><line x1="195" y1="90" x2="265" y2="150" stroke="#8fa2d8" stroke-width="1.18" opacity="0.29"/><line x1="195" y1="90" x2="265" y2="190" stroke="#8fa2d8" stroke-width="1.97" opacity="0.54"/><line x1="195" y1="120" x2="265" y2="110" stroke="#8fa2d8" stroke-width="1.82" opacity="0.49"/><line x1="195" y1="120" x2="265" y2="150" stroke="#8fa2d8" stroke-width="1.09" opacity="0.26"/><line x1="195" y1="120" x2="265" y2="190" stroke="#8fa2d8" stroke-width="1.62" opacity="0.43"/><line x1="195" y1="150" x2="265" y2="110" stroke="#8fa2d8" stroke-width="1.54" opacity="0.4"/><line x1="195" y1="150" x2="265" y2="150" stroke="#8fa2d8" stroke-width="2.1" opacity="0.58"/><line x1="195" y1="150" x2="265" y2="190" stroke="#8fa2d8" stroke-width="1.87" opacity="0.5"/><line x1="195" y1="180" x2="265" y2="110" stroke="#8fa2d8" stroke-width="1.16" opacity="0.28"/><line x1="195" y1="180" x2="265" y2="150" stroke="#8fa2d8" stroke-width="2.27" opacity="0.63"/><line x1="195" y1="180" x2="265" y2="190" stroke="#8fa2d8" stroke-width="0.89" opacity="0.2"/><line x1="195" y1="210" x2="265" y2="110" stroke="#8fa2d8" stroke-width="1.37" opacity="0.35"/><line x1="195" y1="210" x2="265" y2="150" stroke="#8fa2d8" stroke-width="1.91" opacity="0.52"/><line x1="195" y1="210" x2="265" y2="190" stroke="#8fa2d8" stroke-width="0.94" opacity="0.22"/></g>
+          <!-- layer bars -->
+          <g fill="none" stroke="rgba(143,162,216,.35)" stroke-dasharray="3 5">
+            <line x1="55" y1="76" x2="55" y2="224"/><line x1="125" y1="60" x2="125" y2="240"/>
+            <line x1="195" y1="60" x2="195" y2="240"/><line x1="265" y1="76" x2="265" y2="224"/>
+          </g>
+          <g><circle cx="55" cy="110" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="55" cy="150" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="55" cy="190" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="125" cy="90" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="125" cy="120" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="125" cy="150" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="125" cy="180" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="125" cy="210" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="195" cy="90" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="195" cy="120" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="195" cy="150" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="195" cy="180" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="195" cy="210" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="265" cy="110" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="265" cy="150" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/><circle cx="265" cy="190" r="7" fill="#1b2136" stroke="#aebcf0" stroke-width="1.4"/></g>
+          <text x="160" y="252" text-anchor="middle" font-size="10.5" fill="rgba(238,240,248,.5)">层 0 · 层 1 · 层 2 · 层 3 — 权重 = 数十亿浮点 · 不可读</text>
+          <!-- backprop arrow -->
+          <path d="M272,200 C240,250 90,255 48,208" fill="none" stroke="#ff5f7e" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#ahR)"/>
+          <text x="160" y="278" text-anchor="middle" font-size="11" fill="#ff5f7e">∇ 反向传播 · 全量参数更新 · 每轮 ~10³ 交互 · GPU 管线 · 会遗忘</text>
+
+          <!-- ======== Textron graph ======== -->
+          <text x="362" y="46" font-size="10.5" fill="rgba(238,240,248,.5)">前向：打分 → 沿边传播 ▸</text>
+          <g stroke-width="1.6" fill="none">
+            <line x1="415" y1="112" x2="465" y2="86"  stroke="#d9f24e" opacity=".95" stroke-width="2.4"/>
+            <line x1="415" y1="112" x2="465" y2="146" stroke="#d9f24e" opacity=".5"/>
+            <line x1="415" y1="176" x2="465" y2="146" stroke="#d9f24e" opacity=".8"/>
+            <line x1="415" y1="176" x2="465" y2="208" stroke="#ff5f7e" stroke-dasharray="5 4"/>
+            <line x1="515" y1="86"  x2="562" y2="112" stroke="#d9f24e" opacity=".6"/>
+            <line x1="515" y1="146" x2="562" y2="112" stroke="#d9f24e" opacity=".9" stroke-width="2.2"/>
+            <line x1="515" y1="146" x2="562" y2="176" stroke="#d9f24e" opacity=".55"/>
+            <line x1="515" y1="208" x2="562" y2="176" stroke="#d9f24e" opacity=".75"/>
+          </g>
+          <g font-size="9" font-family="SF Mono,Menlo,monospace">
+            <text x="428" y="90"  fill="#d9f24e">+0.54</text>
+            <text x="428" y="196" fill="#ff5f7e">−0.30 抑制</text>
+            <text x="524" y="120" fill="#d9f24e">+0.71</text>
+          </g>
+          <!-- text node cards -->
+          <g>
+            <g id="tcard">
+              <rect x="380" y="98"  width="36" height="28" rx="5" fill="#20261a" stroke="#d9f24e" stroke-width="1.3"/>
+              <rect x="385" y="105" width="24" height="2.6" rx="1.3" fill="#d9f24e" opacity=".8"/>
+              <rect x="385" y="111" width="16" height="2.6" rx="1.3" fill="#d9f24e" opacity=".5"/>
+              <rect x="385" y="117" width="21" height="2.6" rx="1.3" fill="#d9f24e" opacity=".35"/>
+            </g>
+            <use href="#tcard" x="0" y="64"/>
+            <use href="#tcard" x="70" y="-26"/><use href="#tcard" x="70" y="34"/><use href="#tcard" x="70" y="94"/>
+            <use href="#tcard" x="147" y="0"/><use href="#tcard" x="147" y="64"/>
+          </g>
+          <text x="500" y="252" text-anchor="middle" font-size="10.5" fill="rgba(238,240,248,.5)">节点 = HTML 文本 · 边权 ∈ [−1,1] · 稀疏可读 · 文件即参数</text>
+          <!-- backward arrow -->
+          <path d="M575,200 C545,252 420,256 392,208" fill="none" stroke="#7fd8ff" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#ahC)"/>
+          <text x="500" y="278" text-anchor="middle" font-size="11" fill="#7fd8ff">judge → 独立奖励 → 只写 Δ ledger · 每轮 1 条反馈 · 零基建 · 按族隔离</text>
+
+          <!-- VS badge -->
+          <circle cx="330" cy="150" r="17" fill="#232839" stroke="rgba(255,255,255,.35)"/>
+          <text x="330" y="155" text-anchor="middle" font-size="12" fill="#eef0f8" font-weight="700">VS</text>
+
+          <!-- ======== pictogram row 1: interactions ======== -->
+          <line x1="10" y1="308" x2="650" y2="308" stroke="rgba(255,255,255,.14)"/>
+          <text x="10" y="330" font-size="12" fill="rgba(238,240,248,.55)">每轮所需交互</text>
+          <g fill="#8fa2d8">
+            <circle cx="22"  cy="352" r="3.2"/><circle cx="40"  cy="352" r="3.2"/><circle cx="58"  cy="352" r="3.2"/><circle cx="76"  cy="352" r="3.2"/><circle cx="94"  cy="352" r="3.2"/><circle cx="112" cy="352" r="3.2"/><circle cx="130" cy="352" r="3.2"/><circle cx="148" cy="352" r="3.2"/><circle cx="166" cy="352" r="3.2"/>
+            <circle cx="22"  cy="368" r="3.2"/><circle cx="40"  cy="368" r="3.2"/><circle cx="58"  cy="368" r="3.2"/><circle cx="76"  cy="368" r="3.2"/><circle cx="94"  cy="368" r="3.2"/><circle cx="112" cy="368" r="3.2"/><circle cx="130" cy="368" r="3.2" opacity=".7"/><circle cx="148" cy="368" r="3.2" opacity=".5"/><circle cx="166" cy="368" r="3.2" opacity=".3"/>
+            <circle cx="22"  cy="384" r="3.2"/><circle cx="40"  cy="384" r="3.2"/><circle cx="58"  cy="384" r="3.2"/><circle cx="76"  cy="384" r="3.2"/><circle cx="94"  cy="384" r="3.2" opacity=".7"/><circle cx="112" cy="384" r="3.2" opacity=".5"/><circle cx="130" cy="384" r="3.2" opacity=".3"/><circle cx="148" cy="384" r="3.2" opacity=".2"/><circle cx="166" cy="384" r="3.2" opacity=".15"/>
+          </g>
+          <text x="186" y="372" font-size="11" fill="#8fa2d8">×1000+ · GPU</text>
+          <circle cx="382" cy="368" r="10" fill="#d9f24e" filter="url(#gl2)"/>
+          <text x="404" y="372" font-size="11" fill="#d9f24e">×1 · 反馈即训练</text>
+
+          <!-- ======== pictogram row 2: update target ======== -->
+          <line x1="10" y1="408" x2="650" y2="408" stroke="rgba(255,255,255,.14)"/>
+          <text x="10" y="430" font-size="12" fill="rgba(238,240,248,.55)">单次更新对象</text>
+          <g fill="#8fa2d8">
+            <rect x="20" y="440" width="10" height="10" rx="2" opacity=".9"/><rect x="35" y="440" width="10" height="10" rx="2" opacity=".6"/><rect x="50" y="440" width="10" height="10" rx="2" opacity=".8"/><rect x="65" y="440" width="10" height="10" rx="2" opacity=".5"/><rect x="80" y="440" width="10" height="10" rx="2" opacity=".7"/><rect x="95" y="440" width="10" height="10" rx="2" opacity=".9"/><rect x="110" y="440" width="10" height="10" rx="2" opacity=".4"/>
+            <rect x="20" y="455" width="10" height="10" rx="2" opacity=".5"/><rect x="35" y="455" width="10" height="10" rx="2" opacity=".8"/><rect x="50" y="455" width="10" height="10" rx="2" opacity=".4"/><rect x="65" y="455" width="10" height="10" rx="2" opacity=".7"/><rect x="80" y="455" width="10" height="10" rx="2" opacity=".9"/><rect x="95" y="455" width="10" height="10" rx="2" opacity=".5"/><rect x="110" y="455" width="10" height="10" rx="2" opacity=".7"/>
+            <rect x="20" y="470" width="10" height="10" rx="2" opacity=".7"/><rect x="35" y="470" width="10" height="10" rx="2" opacity=".4"/><rect x="50" y="470" width="10" height="10" rx="2" opacity=".8"/><rect x="65" y="470" width="10" height="10" rx="2" opacity=".6"/><rect x="80" y="470" width="10" height="10" rx="2" opacity=".5"/><rect x="95" y="470" width="10" height="10" rx="2" opacity=".8"/><rect x="110" y="470" width="10" height="10" rx="2" opacity=".3"/>
+          </g>
+          <text x="136" y="462" font-size="11" fill="#8fa2d8">数十亿浮点 · 黑箱不可读</text>
+          <g fill="#d9f24e">
+            <rect x="360" y="440" width="72" height="5" rx="2.5"/>
+            <rect x="360" y="451" width="98" height="5" rx="2.5" opacity=".8"/>
+            <rect x="360" y="462" width="54" height="5" rx="2.5" opacity=".6"/>
+            <rect x="360" y="473" width="84" height="5" rx="2.5" opacity=".45"/>
+          </g>
+          <text x="472" y="462" font-size="11" fill="#d9f24e">可读文本行 · 可审计 · 目录可拷贝</text>
+
+          <!-- ======== pictogram row 3: failure suppression ======== -->
+          <line x1="10" y1="496" x2="650" y2="496" stroke="rgba(255,255,255,.14)"/>
+          <text x="10" y="518" font-size="12" fill="rgba(238,240,248,.55)">失败抑制</text>
+          <g fill="#8fa2d8">
+            <rect x="22" y="528" width="14" height="36" rx="3" opacity=".9"/>
+            <rect x="44" y="540" width="14" height="24" rx="3" opacity=".7"/>
+            <rect x="66" y="550" width="14" height="14" rx="3" opacity=".5"/>
+            <rect x="88" y="556" width="14" height="8"  rx="3" opacity=".35"/>
+            <rect x="110" y="559" width="14" height="5" rx="3" opacity=".2"/>
+          </g>
+          <text x="136" y="548" font-size="11" fill="#8fa2d8">惩罚被慢慢冲淡</text>
+          <line x1="360" y1="546" x2="470" y2="546" stroke="rgba(255,255,255,.4)"/>
+          <rect x="380" y="546" width="16" height="34" rx="3" fill="#d9f24e" filter="url(#gl2)"/>
+          <text x="404" y="566" font-size="11" fill="#d9f24e">w &lt; 0 · 即时生效</text>
+          <text x="360" y="538" font-size="9" fill="rgba(238,240,248,.4)">0</text>
+        </svg>
+      </div>
+      <div class="cmp">
+        <h3>神经网络 ↔ Textron 逐项映射</h3>
+        <div class="sub">神经网络里的每个概念，都有一个可读写的文本对应物</div>
+        <div class="map">
+          <div class="mrow"><span class="nn">神经元</span><span class="arr">⟶</span>
+            <span class="tx">文本节点 · 任意内容 HTML 文件</span><span class="viz"><i class="nd"></i><i class="nd"></i><i class="nd"></i></span></div>
+          <div class="mrow"><span class="nn">权重</span><span class="arr">⟶</span>
+            <span class="tx">边权 ∈ [−1, 1] · 正=激发 负=抑制</span>
+            <span class="viz"><span class="wbar"><b></b></span><em>−1</em><em>+1</em></span></div>
+          <div class="mrow"><span class="nn">层</span><span class="arr">⟶</span>
+            <span class="tx">节点层 · 无预定义类型，功能由训练涌现</span><span class="viz"><i class="ly"></i><i class="ly"></i><i class="ly"></i><i class="ly"></i></span></div>
+          <div class="mrow"><span class="nn">前向传播</span><span class="arr">⟶</span>
+            <span class="tx">LLM 打分 → 沿边传播 → 编译 prompt</span>
+            <span class="viz fwd"><i></i><i></i><i></i><i></i><em>▸</em></span></div>
+          <div class="mrow"><span class="nn">反向传播</span><span class="arr">⟶</span>
+            <span class="tx">任务反馈 → 更新权重 → 填充节点</span>
+            <span class="viz bwd"><em>◂</em><i></i><i></i><i></i><i></i></span></div>
+          <div class="mrow"><span class="nn">收敛</span><span class="arr">⟶</span>
+            <span class="tx">同族任务 prompt 越用越短、越用越准</span>
+            <span class="viz"><span class="cvg"><b style="height:26px"></b><b style="height:17px"></b><b style="height:11px"></b><b style="height:7px"></b></span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= SIDE ================= -->
+  <div class="side">
+    <h3>前向传播机制</h3>
+    <div style="clear:both"></div>
+    <table class="t">
+      <tr><th>层</th><th>动作</th><th>状态</th></tr>
+      <tr><td>L0</td><td>LLM attention 打分</td><td><span class="pill-ok">已激活</span></td></tr>
+      <tr><td>L1</td><td>top-K 加权传播</td><td><span class="pill-run">传播中</span></td></tr>
+      <tr><td>L2</td><td>name distill 精炼</td><td><span class="pill-wait"></span></td></tr>
+    </table>
+    <div class="viewbtn">查看完整生命周期</div>
+
+    <div class="sec">
+      <h3 style="float:none">反向传播 <span class="live">Live</span></h3>
+      <div class="sub">每轮结束自动学习 · 不手改参数</div>
+      <div class="kv">
+        <div class="row"><small>任务族 family</small><b class="mono">~/.textron/{family}/</b></div>
+        <div class="row"><small>经验层写入</small><b class="mono">Δ ledger · {delta,n}</b></div>
+        <div class="row"><small>负权护城河</small><b>失败边被抑制 w&lt;0</b></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h3>收敛速度</h3>
+      <div class="sub">|Δw| 逐轮衰减 · 越学越稳</div>
+      <div class="chart">
+        <svg width="100%" height="96" viewBox="0 0 410 96" preserveAspectRatio="none">
+          <g fill="rgba(210,220,250,.42)">
+            <rect x="4"   y="14" width="8" height="82" rx="4"/>
+            <rect x="30"  y="34" width="8" height="62" rx="4"/>
+            <rect x="56"  y="22" width="8" height="74" rx="4"/>
+            <rect x="82"  y="48" width="8" height="48" rx="4"/>
+            <rect x="108" y="40" width="8" height="56" rx="4"/>
+            <rect x="134" y="58" width="8" height="38" rx="4"/>
+            <rect x="160" y="50" width="8" height="46" rx="4"/>
+            <rect x="186" y="66" width="8" height="30" rx="4"/>
+            <rect x="212" y="60" width="8" height="36" rx="4"/>
+            <rect x="238" y="72" width="8" height="24" rx="4"/>
+            <rect x="264" y="68" width="8" height="28" rx="4"/>
+            <rect x="290" y="78" width="8" height="18" rx="4"/>
+            <rect x="316" y="74" width="8" height="22" rx="4"/>
+            <rect x="342" y="82" width="8" height="14" rx="4"/>
+            <rect x="368" y="80" width="8" height="16" rx="4"/>
+            <rect x="394" y="86" width="8" height="10" rx="4"/>
+          </g>
+          <g fill="#d9f24e">
+            <circle cx="8"   cy="10" r="3.6"/>
+            <circle cx="60"  cy="18" r="3.6"/>
+            <circle cx="112" cy="36" r="3.6"/>
+            <circle cx="216" cy="56" r="3.6"/>
+            <circle cx="346" cy="78" r="3.6"/>
+          </g>
+        </svg>
+        <div class="x"><span>轮 1</span><span>轮 4</span><span>轮 8</span><span>轮 12</span><span>轮 16</span></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h3>有效权重</h3>
+      <div class="formula">
+        <div class="f">w = (1−α)·prior + α·Δ</div>
+        <svg width="120" height="52" viewBox="0 0 120 52">
+          <path d="M4,48 C30,46 44,18 116,6" fill="none" stroke="#d9f24e" stroke-width="2.4"/>
+          <text x="60" y="52" font-size="10" fill="rgba(238,240,248,.5)" font-family="SF Mono,Menlo,monospace">α 半衰</text>
+        </svg>
+      </div>
+      <div class="chips">
+        <span class="chip"><b>域闸</b> 族隔离</span>
+        <span class="chip"><b>容量闸</b> layerCaps</span>
+        <span class="chip"><b>预算</b> llm_budget</span>
+        <span class="chip"><b>JSON 抢救</b> repair</span>
+        <span class="chip"><b>反馈防伪</b> 配对 judge</span>
+        <span class="chip"><b>审计</b> 七层日志</span>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h3>可观测</h3>
+      <div class="kv">
+        <div class="row"><small>监控面板</small><b class="mono">:8766 · SSE 实时图</b></div>
+        <div class="row"><small>实战服务</small><b class="mono">:7860 · 交易闭环</b></div>
+        <div class="row"><small>多 Agent coms</small><b>boss / planner / coder / guard</b></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="slogan">不是又一套 prompt 模板，<br>而是一个<b style="color:#d9f24e">外置化的文本参数空间</b>。</div>
+      <div class="mono" style="margin-top:12px;font-size:11.5px;color:rgba(238,240,248,.45)">
+        $ pi install textron-agent</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

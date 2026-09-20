@@ -276,131 +276,6 @@ _CFG: Dict[str, float] = {
     #                           只能降级为折半执行（实测代价：单周期空头一票否决 kelly 0.281 ≫ π_cur 0.156
     #                           的方向信号，结算价高于决策日收盘 ⇒ 机会成本）
     "veto_half": 0.5,         # 折半执行系数：π_exec = π_cur + half·Δπ
-    # ── 第 14 步纠错（本局第 2 轮实测，亏损 −405 元 / −0.39%）────────────────────
-    #   失败模式：「无信号 ⇒ 持有」被当成零成本的中性选项。实盘：05-08 收 57.45，
-    #   日线缩量小阳（168.7 万 < 221.8 万）收复前日收盘，我判为「弱信号、等确认」
-    #   ⇒ 输出持有；次日回落至 56.10，300 股浮亏由 +978 降至 +573，持仓敞口全额计入账户。
-    #   根因一（定价缺陷）：形态学上 05-07 已是「放量长上影阴线」——冲高回落比
-    #     (high−close)/(high−low) = (59.84−56.61)/3.73 = 0.87、收阴、量 222.8 万 ≈ 1.5×
-    #     前 4 日均量 148.8 万，即放量上攻被抛压打回；05-08 高点 57.78 < 59.84 ⇒ 反抽未能
-    #     收复上影高点，上攻失败被第二次确认。原 p 公式对该组合**完全不敏**（vol_adj 的
-    #     expand/shrink 二值均不命中 ⇒ 0），使 edge 停在 +0.006 ≈ 0 的「零期望区」。
-    #   根因二（触发滞后）：存量减仓此前只有三条路径——破 sup_prev / −8% 硬止损 / Δπ ≤ −12%，
-    #     即必须先积累 12% 超配漂移才轮到减仓；轻仓（π_cur≈5%）时 Δπ=−4.5% 永远够不着门槛
-    #     ⇒ 退化为「超配未达带时持有」的惰性持有。
-    #   修正：把上述两个确认纳入 p（exhaust_pen），使衰竭证据直接令 edge 转负，把退出由
-    #     「仓位漂移触发」升级为「期望为负触发」——**无需任何 12% 超配前置条件**。
-    #   判别力实测（同一 05-08 数据，仅持股数不同）：300 股时修补前后同为卖出（无差分）；
-    #     100 股时修补前持有（Δπ=−4.5% > −12%）、修补后卖出（edge +0.006 → −0.146）⇒
-    #     差分可观测，且正是本轮失败模式本身。禁用边界：若次日收复前一日最高价则不算衰竭
-    #     （避免把「回踩后再创新高」误杀）；仅用 daily[-2]/daily[-1]，无未来函数。
-    "exhaust_pen": 0.08,     # 冲高衰竭扣分：放量长上影阴线 + 次日未收复其高点 ⇒ p 下修
-    "exhaust_fall_frac": 0.5,  # 冲高回落比门槛 (high−close)/(high−low)，高于此值视为上攻被打回
-    "exhaust_vol_mult": 1.3,   # 上影日的量能门槛（×前 4 日均量），保证是「放量」而非缩量假阴
-    # ── 第 15 步纠错（本局第 2 轮实测，本轮盈利 +249 元 / +0.24%）───────────────────
-    #   实盘：05-09 光头阴线收 56.10（-2.35%，收于当日最低、量缩至 131.5 万），我输出
-    #   卖出 300 股 @54.88；D+1 开盘 56.93 且盘中回落至 54.88 以下 ⇒ 申报落入区间、
-    #   撮合价 = max(申报 54.88, 开盘 56.93) = 56.93 ⇒ 以高于前收盘 1.48% 的价格清仓。
-    #   复盘发现 trade.py 在同一数据上仍输出「持有」（与上轮同一处回退），两个缺陷：
-    #   ①**确认窗口只有 1 日**：exhaust 只查 daily[-2]，而 05-09 视角下上影阴线在 daily[-3]
-    #     （05-07），导致 exhaust=False ⇒ 漏报。真实衰竭链是「放量长上影 → 反抽未收复 →
-    #     第三日光头阴线」，跨度可达 2 日，必须用滑动窗口遍历而非只看前一根。
-    #   ②**靶位取已失效的压力位**：res_prev=59.84 正是被 05-07 长上影否定、05-08 未收复的
-    #     位置，把它当靶位得 b=3.07 ⇒ edge=+0.71，掩盖 p=0.42<p_gate 的准入否决 ⇒
-    #     决策从卖出翻成持有。靶位折价到 close+1.0·ATR（58.13）后 b=1.67、edge 转负 -0.09。
-    #   判别力实测：仅修 ①（窗口）不够（p 降但 edge 仍正）；仅修 ②（折价）也不够（exhaust
-    #     未触发）；**两者必须同时**才能翻转决策 ⇒ 属「两处独立缺陷互相掩盖」型 bug。
-    "exhaust_confirm_bars": 2, # 衰竭确认窗口：在最近 2 根阴线中找放量长上影，看其后是否收复
-    "target_cap_atr": 1.0,    # 衰竭（exhaust）时靶位封顶 = close + 该值·ATR：已失效的压力位不配当赔率锚
-    # ── 第 16 步纠错（本局第 3 轮实盘：买入 sz.301299 300 股 @58.07，D+1 收 56.69，
-    #   浮亏 −414、总资产 104,415→104,001，trade_quality 59.5/100）─────────────
-    #   事实链（D=05-14）：收 58.74、high 59.74 > res_prev 59.25（**日内穿刺前高**）但
-    #     close 58.74 **未站上** 59.25；量 276.6 万 = 1.55×前 5 日均量 178.6 万（放量）。
-    #     D+1=05-15：开 58.07、高 58.40、低 56.67、收 56.69（−3.49%）⇒「放量冲高、收盘被
-    #     压回箱体内」是**供给证据**，不是突破确认。
-    #   失败根因（策略层，非运气、非报价）：p 公式对「日内穿刺前高、收盘被压回」**完全不敏**
-    #     ——pos_adj 只在 close > res_prev 时给 +0.06，穿刺失败既不加也不减；唯一防线只剩
-    #     squeeze，而 squeeze 在决策时被人工以「high 已越上沿 = 正在突破」为由覆盖掉 ⇒ 建仓即亏。
-    #   元教训：squeeze 是用历史实测标定的硬否决，**不得用单根 K 线的 high 穿刺去覆盖**；
-    #     箱体上沿的日内穿刺在 A 股是典型假突破，突破须由**收盘价**确认（收盘价才是当日多空
-    #     结算价，high 只是瞬时供给被吃掉又吐回的痕迹）。覆盖一项硬否决需第二个独立样本。
-    #   修正（三条，互相独立、不可被 Δπ 覆盖）：
-    #     ① 新增独立证据 failed_breakout = high>res_prev ∧ close<res_prev ∧ 量≥阈值；
-    #     ② 进入 p（−fb_pen），使其即便在 squeeze 不成立时也压低期望 ⇒ 退出/拒入由「期望」而非
-    #        「形态命名」驱动；
-    #     ③ 空仓侧硬否决 + 契约守卫断言 buy_blocked_by_false_breakout ⇒ 即便覆盖 squeeze 也拦不住。
-    #   与 exhaust 的分工（**禁止合并成一条扣分**，避免同一形态被重复计罚）：
-    #     · failed_breakout：high>前高 ∧ close<前高 ∧ 放量（跨「前高」这一结构位的失败）；
-    #     · exhaust：放量长上影**阴线**（(high−close)/(high−low)≥0.5）+ 后续未收复其高点
-    #       （单根 K 线内部的冲高回落 + 次日确认）。
-    #   边界：close ≥ res_prev（真突破成立，收盘确认）时不惩罚；量未达门槛（缩量上影）不算。
-    "fb_pen": 0.06,          # 假突破（日内穿刺前高、收盘被压回）+放量 ⇒ p 下修
-    "fb_vol_mult": 1.35,     # 假突破的放量门槛（×前 5 日均量），与 boom day/放量阳线口径一致
-    # ── 第 17 步纠错（本轮第 2/2 次推进：持有 300 股未换手，05-16 收 56.08，浮亏 −414→−597）──
-    #   事实：05-15 是**缩量光头阴线**——收 56.69 ≈ 当日低 56.67（close_pos =
-    #   (56.69−56.67)/(58.40−56.67) = 0.01），即尾盘无承接、全天由卖方主导。
-    #   盲点：原 p 的六个组成项（mtf_pen/pos_adj/mom_adj/vol_adj/noise_pen/exh/fb）中
-    #   **没有任何一项度量「收盘质量」**——pos_adj 只看收盘相对 sup/res 的位置，不看它在
-    #   **当日区间**内的位置 ⇒ 「收在最低的阴线」与「收在最高的阳线」可以拿到同样的 p
-    #   （05-15 的 p=0.47 就是此盲点的产物）。
-    #   抽象（本轮最重要的方法论转向）：形态命名（放量阳线/缩量回调/长上影）是**离散的、
-    #   可被事后解释绕开的**；应改为连续度量 close_pos = (close−low)/(high−low) ∈ [0,1]，
-    #   把「尾盘强弱」这一唯一真实的日内信息（收盘价=当日多空结算价）纳入定价。
-    #   只罚不奖（asymmetric）的三条理由：
-    #     ① 证据方向只在低端（两次实亏都发生在弱收盘侧），高端尚无第二独立样本
-    #        （L0 原则：形态加分项须待第二独立样本再标定权重）；
-    #     ② 对称修正会**翻转第 14 步回归样本**（05-08 close_pos=0.70 会拿到 +0.016 ⇒
-    #        p 0.50→0.52 ⇒ edge 由 −0.17 转 +0.38 ⇒ 衰竭清仓失效）——风险项必须在回归
-    #        夹具上无副作用；③ 只罚符合「不确定性打折」的保守原则：无证据不给奖励。
-    #   互斥边界：exhaust 与 failed_breakout 已成立时不再叠加（同一根 K 线的弱势不得双扣）。
-    "cl_pos_pen": 0.05,      # 收盘贴当日最低（close_pos ≤ 阈值）⇒ p 下修
-    "cl_pos_thresh": 0.20,   # close_pos 触发阈值（收在区间下沿 20% 以内）
-    # ── 迭代纪律（第 17 步确诊，写给未来的自己与 guard）─────────────────────────
-    #   区分「策略缺陷」与「方差成本」的**唯一判据 = 用事前可得信息重算该决策的期望符号**：
-    #     · 05-14 建仓是**缺陷**：放量穿刺前高而收盘被压回（fb 证据），事前就可算出该形态
-    #       的 p 应下修 ⇒ 期望本应为负 ⇒ 修（第 16 步已修）；
-    #     · 05-15 持有是**成本而非缺陷**：p=0.47 > (win+flat)/(win-loss)=0.4 ⇒ 事前期望
-    #       E=20·0.47−10 = −0.6 > −2（卖出锁定 −2）⇒ 持有在打分框架下仍是正确动作，亏损属方差。
-    #   禁令：**不得用单次结果回头改阈值、也不得把「持有」升级为硬性卖出规则**——那正是
-    #     「单次结果≠规律」所禁止的过拟合，且会把策略推向高频换手（每次换手都需重新抓一次
-    #     入场时点，风报比反而下降）。本步只补「事前确实缺失的信息维度」（收盘质量），
-    #     不因盈亏方向调参数。
-# ── 第 18 步（复盘 score 57.2/100：止损正确但三类机会成本病灶）─────────────────
-#   实测事实：①入场偏早（05-14 穿刺未收-buy，2 日即破位，action_lag=-7.03）；
-#   ②下跌段不作为占比 1.0、mfe_giveback=279.87（浮盈全额回吐后才由结构破位兜底退出）；
-#   ③资金利用率仅 12.9%（0 分），buy&hold 超额 +1.55 ⇒ 防御有余、机会成本失控。
-#   同时 expectancy 2.50 满分、兑现率 92.57%、盈亏不对称 3.77 优 ⇒ 退出质量是长板，
-#   缺的是「利润保护的前置化」与「确认后的仓位容量」。
-#   元规则：证据强度必须同时驱动**时机**（入场须方向确认事件）与**容量**（动态风险预算），
-#   且利润保护先于结构破位触发（回吐锁），而非等止损兜底。
-"mfe_window": 5,          # 利润回吐检测窗口（近 5 根 bar 的最高价为 MFE 代理）
-"mfe_min_runup_pct": 0.025,  # 峰值浮盈 ≥2.5% 才算「有过利润」（低于此无回吐可锁）
-"mfe_giveback_atr": 1.2,  # 从峰值回撤 ≥1.2·ATR 视为回吐成立
-"mfe_close_pos": 0.35,    # 回吐日收盘须贴当日区间下沿（close_pos ≤ 0.35）
-"rb_base": 2.5,           # 动态风险预算基准（%），与旧 risk_budget_pct 等值
-"rb_mom_bonus": 1.0,      # 日线动量向上加成
-"rb_mtf0_bonus": 1.0,     # 月/周无空头加成
-"rb_expand_bonus": 0.5,   # 量能扩张加成
-"rb_max": 5.0,            # 动态风险预算上限（防御态回落到 rb_base，敞口不因激励放大）
-"kelly_boost_mult": 1.25, # 强确认 regime 下 clipped-kelly 提振系数（对冲 clip 的保守偏置）
-"kelly_boost_edge": 0.25, # 触发 kelly 提振的 edge 门槛
-# ── 第 19 步（第2轮复盘 score 38.1：timing 24 分 entry_pos_pct=75.47、excess_vs_bh=-41.39、
-#   inaction_ratio 仍 1.0；长板 expectancy 2.50/不对称 3.77/disposition_gap -0.52 优）────
-#   元规则一（评分维度冲突的处置）：action_lag（第18步纠偏方向）与 entry_pos_pct 天然互斥
-#   ——「收盘确认突破」必然买在区间偏高位置，被单次评分在两方向来回拉扯＝过拟合。
-#   修正不是退回未确认入场（会复现 05-14 穿刺病灶），而是**追高分位折价＋回踩补足双通道**：
-#   突破日只建半仓试错，余量等回踩企稳时由 Δπ 带机制自动补足，平均买点下移而不牺牲确认。
-#   元规则二（止盈事前化）：_mfe_giveback 是「派发确认后」的事后锁；阶梯化为止盈
-#   **浮盈激活的移动保护**：≥1·ATR 激活保本垫、≥2·ATR 激活峰值 trail——只上移止损、
-#   不主动兑现（保住 disposition/不对称长板），同时给 inaction_ratio 干净的行动出口：
-#   回落到保护线即离场，不再干等派发形态。
-"pos_win": 10,           # 入场分位窗口（10 日高低区间）
-"buy_chase_pos": 0.75,   # 入场分位 ≥0.75 视为追高区：突破道首笔折价
-"buy_chase_scale": 0.5,  # 追高折价系数（首笔半仓，余量留回踩道补足）
-"be_trigger_atr": 1.0,   # 浮盈 ≥1.0·ATR 激活保本垫（stop ≥ cost+be_pad·ATR）
-"be_pad_atr": 0.1,       # 保本垫厚度（略高于成本，覆盖磨损）
-"trail_trig_atr": 2.0,   # 浮盈 ≥2.0·ATR 激活峰值 trail（stop ≥ peak−trail_lock·ATR）
-"trail_lock_atr": 1.5,   # 峰值 trail 回撤容忍度（吃趋势，不因噪音下车）
 }
 
 
@@ -476,154 +351,11 @@ def _mom_up(daily: Sequence[KLineBar], n: int = 3) -> bool:
     return len(cl) >= n and all(cl[i] < cl[i + 1] for i in range(len(cl) - 1))
 
 
-def _upper_shadow_exhaust(daily: Sequence[KLineBar]) -> bool:
-    """冲高衰竭（顶部结构）判定：前一日「放量长上影阴线」+ 当日未收复其最高价。
-
-    两条**独立**确认，缺一不可（单条皆为常见噪音，组合才是结构证据）：
-      ① 供给证据（滑动窗口内的 prior  bar，k=1…exhaust_confirm_bars）：冲高回落比
-         (high−close)/(high−low) ≥ exhaust_fall_frac，且收阴（close < open），
-         且量 ≥ exhaust_vol_mult × 其前 4 日均量；
-      ② 确认证据（prior 之后**到当日为止**的每一根）：最高价 < prior 最高价 ⇒ 反抽未收复上影高点。
-    语义：①说明上攻被抛压打回，②说明后续买盘不足以推翻该结论 ⇒「弱信号」应按 p 下修处理，
-    而非按「无信号」处理（无信号=中性=持有，是本文件第 14 步纠错的失败模式）。
-    第 15 步将确认窗口由 1 日扩到 exhaust_confirm_bars 日：真实衰竭链
-    「放量长上影 → 反抽未收复 → 第三日光头阴线」跨度可达 2 日，只看 daily[-2] 会漏报
-    （05-09 视角下上影阴线位于 daily[-3]）。滑动窗口遍历 k，取首个成立者即为衰竭。
-    仅用到决策日收盘前的历史 bar，无未来函数。
-    """
-    if len(daily) < 6:
-        return False
-    for k in range(1, int(_CFG["exhaust_confirm_bars"]) + 1):
-        idx = len(daily) - 1 - k
-        start = idx - 4
-        if idx <= 0 or start < 0 or k >= len(daily):
-            break
-        prior = daily[idx]
-        pr_high = float(prior.get("high") or 0.0)
-        pr_low = float(prior.get("low") or 0.0)
-        pr_open = float(prior.get("open") or 0.0)
-        pr_close = float(prior.get("close") or 0.0)
-        rng = pr_high - pr_low
-        if rng <= 0 or pr_close >= pr_open:            # 非阴线 ⇒ 无「冲高回落」可言
-            continue
-        ref_vols = [float(b.get("volume") or 0.0) for b in daily[start:idx]]
-        ref_vol = (sum(ref_vols) / len(ref_vols)) if ref_vols else 0.0
-        pr_vol = float(prior.get("volume") or 0.0)
-        if ref_vol <= 0 or pr_vol < _CFG["exhaust_vol_mult"] * ref_vol:
-            continue
-        if (pr_high - pr_close) / rng < _CFG["exhaust_fall_frac"]:
-            continue
-        confirm = daily[idx + 1:]                     # prior 之后到当日为止的全部 bar
-        if confirm and all(float(b.get("high") or 0.0) < pr_high for b in confirm):
-            return True
-    return False
-
-
-def _failed_breakout(daily: Sequence[KLineBar], res_prev: float,
-                     vol_mult: Optional[float] = None) -> bool:
-    """假突破（箱体上沿「日内穿刺、收盘被压回」+ 放量）= 供给证据。
-
-    这是第 16 步实盘亏损的直接病灶：05-14 high 59.74 > res_prev 59.25、close 58.74 < 59.25、
-    量 1.55×前 5 日均量，D+1 即 −3.49%。原 p 公式对此**完全不敏**（pos_adj 只奖励
-    close > res_prev 的真突破，穿刺失败不给任何惩罚），唯一防线 squeeze 又允许被
-    「high 已越上沿」单根证据覆盖 ⇒ 必须把它做成独立证据并独立否决。
-
-    判定边界（三条全真才成立，缺一不可）：
-      ① high > res_prev      —— 当日确实冲到/越过前 3 日高点（有需求方出现）；
-      ② close < res_prev     —— 收盘价（当日多空结算价）未能站上，即供给把价格压回；
-      ③ vol ≥ fb_vol_mult×前 5 日均量 —— 是「放量被打回」而非无量假阴/无事发生。
-    反向边界：close ≥ res_prev（收盘确认的真突破）不惩罚；缩量上影归 exhaust 的辖区
-    （见 _upper_shadow_exhaust），两条证据**不合并扣分**，避免同一形态被重复计罚。
-    仅消费决策日收盘前的 bar，无未来函数。
-    """
-    mult = _CFG["fb_vol_mult"] if vol_mult is None else float(vol_mult)
-    if len(daily) < 6 or res_prev <= 0:
-        return False
-    last = daily[-1]
-    hi = float(last.get("high") or 0.0)
-    cl = float(last.get("close") or 0.0)
-    if hi <= res_prev or cl >= res_prev:
-        return False
-    ref = [float(b.get("volume") or 0.0) for b in daily[-6:-1]]
-    ref_vol = (sum(ref) / len(ref)) if ref else 0.0
-    vol = float(last.get("volume") or 0.0)
-    return bool(ref_vol > 0 and vol >= mult * ref_vol)
-
-
-def _risk_budget_pct(mtf_n: int, mom_up: bool, expand: bool) -> float:
-    """动态风险预算（第 18 步）：基准 2.5%，按独立确认项加分（动量/无大级别空头/量能扩张），
-    上限 5%。回应「资金利用率 12.9%（0 分）」：确认项越多 ⇒ 止损被扫概率越低 ⇒ 同一
-    账户风险预算可承载更大仓位；防御态（有周期空头且无动量）回落基准值，敞口不因激励放大。"""
-    rb = _CFG["rb_base"]
-    if mom_up:
-        rb += _CFG["rb_mom_bonus"]
-    if mtf_n == 0:
-        rb += _CFG["rb_mtf0_bonus"]
-    if expand:
-        rb += _CFG["rb_expand_bonus"]
-    return min(rb, _CFG["rb_max"])
-
-
-def _mfe_giveback(daily: Sequence[KLineBar], cost: float) -> bool:
-    """利润回吐锁（第 18 步）：近 mfe_window 根内最高价曾给出显著浮盈（≥mfe_min_runup_pct），
-    而今从该峰值回撤 ≥mfe_giveback_atr·ATR，且收盘贴当日区间下沿（close_pos≤mfe_close_pos）、
-    日线动量未向上 ⇒ 派发特征，锁定剩余利润离场。仅消费决策日前 bar，无未来函数。
-    与 exhaust（放量长上影）/failed_breakout（穿刺前高）互补，覆盖「缓跌回吐」形态——
-    后两者都是单日强供给证据，本项捕捉「利润被缓慢磨掉」的分布退出。"""
-    if len(daily) < 6 or cost <= 0:
-        return False
-    win = daily[-int(_CFG["mfe_window"]):]
-    peak = max(float(b.get("high") or 0.0) for b in win)
-    cl = float(daily[-1].get("close") or 0.0)
-    hi = float(daily[-1].get("high") or 0.0)
-    lo = float(daily[-1].get("low") or 0.0)
-    close_pos = ((cl - lo) / (hi - lo)) if hi > lo else 1.0
-    if peak / cost - 1.0 < _CFG["mfe_min_runup_pct"]:
-        return False                      # 从未有过像样浮盈，无回吐可锁
-    atr = _atr(daily, int(_CFG["atr_window"]))
-    if peak - cl < _CFG["mfe_giveback_atr"] * atr:
-        return False                      # 回撤未达噪音阈值，属正常波动
-    if close_pos > _CFG["mfe_close_pos"]:
-        return False                      # 收盘不弱 ⇒ 未现派发
-    return not _mom_up(daily, 3)
-
-
-def _entry_confirmed(daily: Sequence[KLineBar], res_prev: float,
-                     gap_lower: Optional[float], expand: bool, mom_up: bool,
-                     close: float) -> bool:
-    """入场方向确认（第 18 步）：至少一项独立证据成立——
-    ① 收盘站上前高（收盘确认的真突破）；② 放量收复缺口下沿；③ 日线动量向上。
-    对应复盘病灶 action_lag=-7.03（05-14 穿刺未收即买、2 日破位）：L0 双通道原则——
-    只动 p 不动 r 的「贴近结构位」不算入场证据，宁等确认、不接飞刀。"""
-    if mom_up:
-        return True
-    if res_prev > 0 and close > res_prev:
-        return True
-    if expand and gap_lower is not None and close >= gap_lower:
-        return True
-    return False
-
-
-def _entry_pos_pct(daily: Sequence[KLineBar], window: int = 10) -> float:
-    """入场分位（第 19 步）：当日收盘在近 window 根高低区间中的位置 ∈ [0,1]。
-    对应评分口径 entry_pos_pct：≥buy_chase_pos 视为追高区——突破道首笔折价，
-    余量留给回踩道（close 回落至突破位附近企稳时由 Δπ 带自动补足）。"""
-    win = daily[-int(window):]
-    lo = min(float(b.get("low") or 0.0) for b in win)
-    hi = max(float(b.get("high") or 0.0) for b in win)
-    cl = float(daily[-1].get("close") or 0.0)
-    return (cl - lo) / (hi - lo) if hi > lo else 0.5
-
-
 def _target_position(close: float, sup_prev: float, res_prev: float,
                      gap_lower: Optional[float], gap_upper: Optional[float],
                      atr: float, mtf_down: bool, shrink: bool, expand: bool,
                      total_value: float, gap_age: Optional[int] = None,
-                     mtf_n: Optional[int] = None, mom_up: bool = False,
-                     exhaust: bool = False, failed_breakout: bool = False,
-                     close_pos: Optional[float] = None,
-                     risk_budget_pct: Optional[float] = None,
-                     kelly_boost: bool = False) -> Dict[str, float]:
+                     mtf_n: Optional[int] = None, mom_up: bool = False) -> Dict[str, float]:
     """目标仓位函数 π* = f(赔率 b, 胜率 p, 结构性止损距离 r, 风险预算, 机会成本)。
 
     返回 dict: risk(止损距离) / b(赔率) / p(胜率) / edge(单位风险期望) /
@@ -657,11 +389,6 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
         target = gap_upper                          # 缺口未回补 → 回补目标（赔率锚）
     else:
         target = max(res_prev, close + 1.5 * atr)
-    # 衰竭靶位折价（第 15 步）：若 res_prev 已被「放量长上影 + 后续未收复」否定，它就不再是
-    # 可达靶位。把它继续当赔率锚会系统性高估 b（05-09 实测 b=3.07 ⇒ edge=+0.71，恰好掩盖
-    # p=0.42 < p_gate 的准入否决，使决策从「卖出」翻成「持有」）。折价口径取 close+1.0·ATR。
-    if exhaust:
-        target = min(target, close + _CFG["target_cap_atr"] * atr)
     b = _clip((target - close) / risk, 0.5, 4.0)
 
     # 缺口回补动能的时间衰减：未回补的交易日越多，「必回补」的先验越弱
@@ -679,40 +406,21 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
     # 噪音带惩罚：若结构距离（close−sup_prev）不足 1·ATR，止损实际被摆进当日噪音区，
     # 胜率必须打折——「止损被 floor 拉到更远处」意味着真实风险大于结构距离，不能当白赚
     noise_pen = -0.06 if (atr > 0 and (close - sup_prev) < 1.0 * atr) else 0.0
-    # 冲高衰竭惩罚（第 14 步）：见 _CFG["exhaust_pen"] 旁的失败模式记录。要在**存量端**
-    # 生效，唯一干净的入口就是把 p 压下去使 edge 转负 —— 退出路径从「Δπ ≤ −12% 超配漂移」
-    # 变为「edge ≤ 0 负期望」，后者不含任何仓位前提，故轻仓同样能触发。
-    exh_pen = -_CFG["exhaust_pen"] if exhaust else 0.0
-    # 假突破惩罚（第 16 步）：见 _CFG["fb_pen"] 旁的实盘记录。它回答的是「前高被日内穿刺、
-    # 收盘却被压回」这一类**结构位失败**，与 exhaust 的「单根 K 线长上影 + 未收复」互补。
-    fb_pen = -_CFG["fb_pen"] if failed_breakout else 0.0
-    # 收盘质量惩罚（第 17 步）：close_pos = (close−low)/(high−low)。
-    # 与 exhaust / failed_breakout 互斥：同一根 K 线的弱势只计一次，避免双扣。
-    cl_pen = 0.0
-    if (close_pos is not None and not exhaust and not failed_breakout
-            and close_pos <= _CFG["cl_pos_thresh"]):
-        cl_pen = -_CFG["cl_pos_pen"]
     # 大级别惩罚按空头周期数分档；mtf_n=None 时回退旧语义，保证历史回放可复现
     if mtf_n is None:
         mtf_pen = -0.12 if mtf_down else 0.0
     else:
         mtf_pen = -0.12 if mtf_n >= 2 else (-_CFG["mtf_one_pen"] if mtf_n == 1 else 0.0)
-    p = _clip(0.5 + mtf_pen + pos_adj + mom_adj + vol_adj + noise_pen + exh_pen + fb_pen
-              + cl_pen - gap_decay, 0.30, 0.70)
+    p = _clip(0.5 + mtf_pen + pos_adj + mom_adj + vol_adj + noise_pen - gap_decay,
+              0.30, 0.70)
     # 箱体收缩：站于箱体之内且箱体高度不足 range_squeeze·ATR ⇒ 方向未定，禁止加仓
     box = res_prev - sup_prev
     squeeze = bool(box > 0 and box < _CFG["range_squeeze"] * atr and sup_prev <= close <= res_prev)
 
     edge = p * b - (1.0 - p)                      # 单位风险期望收益（赔率单位）
     kelly = edge / b if edge > 0 else 0.0
-    rb = float(risk_budget_pct) if risk_budget_pct is not None else float(_CFG["risk_budget_pct"])
-    pi_risk_cap = ((total_value * rb / 100.0) / risk) * close / total_value
-    # 第 18 步 kelly 提振：p/b 的 clip(0.30,0.70)/clip(0.5,4.0) 在强确认 regime 下系统性
-    # 低估 edge（保守偏置）；当 edge≥kelly_boost_edge 且入场方向确认成立时允许
-    # kelly_boost_mult 倍 clipped-kelly（仍受 pi_risk_cap/π_max 双封顶），直接回应
-    # 「资金利用率 12.9%（0 分）」的机会成本病灶。
-    kb = _CFG["kelly_boost_mult"] if (kelly_boost and edge >= _CFG["kelly_boost_edge"]) else 1.0
-    raw = min(kelly * kb, pi_risk_cap, _CFG["pi_max"])          # 未被机会成本项抬升前的原始最优
+    pi_risk_cap = ((total_value * _CFG["risk_budget_pct"] / 100.0) / risk) * close / total_value
+    raw = min(kelly, pi_risk_cap, _CFG["pi_max"])          # 未被机会成本项抬升前的原始最优
     pi_star = _clip(raw, 0.0, _CFG["pi_max"])
     # ── 准入层 / 配额层解耦（关键顺序） ────────────────────────────────
     #   准入层（admit）只回答「**该不该放**」：三闸门 AND
@@ -738,10 +446,8 @@ def _target_position(close: float, sup_prev: float, res_prev: float,
             "kelly": kelly, "pi_risk_cap": pi_risk_cap, "pi_star": pi_star,
             "binding": binding, "stop": stop, "trail_ok": trail_ok,
             "gap_decay": gap_decay, "squeeze": squeeze, "floor_on": floor_on,
-            "admit": admit, "fb_pen": fb_pen, "failed_breakout": bool(failed_breakout),
-            "cl_pen": cl_pen, "close_pos": (round(close_pos, 3) if close_pos is not None else None),
-            "mom_adj": mom_adj, "mtf_pen": mtf_pen,
-            "rb_pct": rb, "kelly_mult": kb}
+            "admit": admit,
+            "mom_adj": mom_adj, "mtf_pen": mtf_pen}
 
 
 def _decide_core(ctx: TradeContext) -> TradeDecision:
@@ -770,25 +476,15 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
                         避免取整后跌破阈值使换手沦为负期望）」与「π* 对应持股上界」约束。
                     (d) 减仓量 = 当前持股 − π* 折算的目标持股（向上取整到整百），
                         不再用 Δπ·总值 折算（向下取整会停在半仓不表态区）。
-        申报（申报价 ≠ 成交价；第 16 步用实盘校准，**废弃旧的「[low, high] 闭区间闸门」说法**）：
-                    D 收盘出决策 → D+1 成交，实测模型为
-                      买入：成交条件 = 申报价 ≥ D+1 low；成交价 = min(申报价, D+1 开盘)
-                      卖出：成交条件 = 申报价 ≤ D+1 high；成交价 = max(申报价, D+1 开盘)
-                    证据：D=05-14 报买 60.14（高于 D+1 全部价位），D+1 成交价 58.07 = 当日开盘，
-                    且当日 high 58.40 < 60.14 仍**未失效** ⇒ 闸门不含「申报≤high」；反例（第 13 步）
-                    报买 55.21 遇向上跳空失效 ⇒ 闸门含「申报≥low」。
-                    推论：抬价**不改变成交价**（开盘价压住），仅把成交窗口由 low≤close 扩到
-                    low≤申报 ⇒ 唯一效果是覆盖「强势跳空日(low>close)」，属净收益；而低开下跌日
-                    low≤close 恒真 ⇒ **无论报价高低都会成交**。结论：报价层无法提供下跌保护，
-                    「跌日报价高就不成交」是伪安全（第 16 步的修正因此落在 p 与硬否决，不是带宽）。
-                    仓位折算仍锚定最近收盘价；双向宽容带 band=max(0.6·ATR, 2%·close) 保留。
+        申报（申报价 ≠ 成交价）：D 收盘出决策 → D+1 以 D+1 价格成交，tradePrice 只决定
+                    「申报是否落入 D+1 的 [low, high]」。锚定 D 收盘的固定申报价遇跳空即整笔
+                    失效（第 13 步实测：55.21 锚价在 D+1 向上跳空日失效）⇒ 改为双向宽容带
+                    band=max(0.6·ATR, 2%·close) 触发（买 +band / 卖 −band），动量方向再追加
+                    0.3·ATR；撮合式 min(买)/max(卖) 保证「抬高触发位不抬高成交价」，故本修正只
+                    提高可成交率、不引入新赔率损失；仓位折算仍锚定最近收盘价。
         最小有效换手 = (score_cost_pct/100) / (ATR/close)：覆盖一次「零变动」固定失分所需的最小仓位变动，
                     防止小额换手在逐日评分下成为负期望动作
-        风控（第 18 步起四层，先于仓位带判定）：close < 前3日低点（结构止损）／
-                    浮亏 ≤ −8% 且月/周空头（硬止损）／edge ≤ 0（负期望）／
-                    MFE 回吐锁（曾有浮盈 → 自峰值回撤 ≥1.2·ATR + 弱收盘 + 动量未向上）→ 清仓。
-        入场准入（第 18 步新增第四闸门）：准入三闸门之外，建仓/加仓还须至少一项
-                    方向确认事件（收盘站上 res_prev／放量收复缺口下沿／日线动量向上）。
+        风控：close < 前3日低点 或 浮亏 ≤ −8% 且月/周空头 或 edge ≤ 0 → 清仓。
     """
     kline = ctx.get("kline") or {}
     daily: Sequence[KLineBar] = list(kline.get("daily") or [])
@@ -830,61 +526,32 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
     mtf_n = int(m_down) + int(w_down)
     mtf_down = bool(mtf_n)                     # 保留 or 语义，仅用于破位/硬止损分支
     mom_up = _mom_up(daily, 3)                 # 日线动量确认：原策略完全缺失的正向项
-    exhaust = _upper_shadow_exhaust(daily)     # 第 14 步：放量长上影阴线 + 未收复其高点 ⇒ 衰减
-    # 第 16 步：前高被日内穿刺、收盘却被压回 + 放量 = 假突破（供给证据）
-    failed_breakout = _failed_breakout(daily, res_prev)
-    # 第 17 步：收盘在当日区间中的位置（尾盘强弱）。high==low 时无信息 ⇒ None（不惩罚）
-    hi_last = float(last.get("high") or 0.0)
-    lo_last = float(last.get("low") or 0.0)
-    close_pos = ((close - lo_last) / (hi_last - lo_last)) if hi_last > lo_last else None
-
-    # 第 18 步：动态风险预算 + MFE 回吐锁 + 入场方向确认（依据 05-19 复盘 score 57.2/100）
-    rb_pct = _risk_budget_pct(mtf_n, mom_up, expand)
-    giveback = _mfe_giveback(daily, cost)
-    entry_ok = _entry_confirmed(daily, res_prev, gap_lower, expand, mom_up, close)
 
     tp = _target_position(close, sup_prev, res_prev, gap_lower, gap_upper,
                           atr, mtf_down, shrink, expand, total_value, gap_age,
-                          mtf_n=mtf_n, mom_up=mom_up, exhaust=exhaust,
-                          failed_breakout=failed_breakout, close_pos=close_pos,
-                          risk_budget_pct=rb_pct,
-                          kelly_boost=bool(entry_ok and mtf_n == 0))
+                          mtf_n=mtf_n, mom_up=mom_up)
 
     def _order_px(side: int) -> float:
-        """申报价：side +1 买入 / −1 卖出（**成交触发位，不是成交价**）。
+        """申报价：side +1 买入 / −1 卖出（**成交触发位，非成交价**）。
 
-        执行层撮合规则（第 16 步用实盘回执校准后的口径；旧的「申报价须落入 D+1 的
-        [low, high] 闭区间」描述与实测矛盾，已废弃）：
-            买入：成交条件 = 申报价 ≥ D+1 low；  成交价 = min(申报价, D+1 开盘)
-            卖出：成交条件 = 申报价 ≤ D+1 high； 成交价 = max(申报价, D+1 开盘)
-        校准证据（同一笔交易同时给出两个方向的信息）：
-          · 报买 60.14 / 成交 58.07（= 当日开盘），而当日 high 58.40 < 60.14 却**未失效**
-            ⇒ 闸门不可能含「申报 ≤ high」（否则整笔失效）；成交价 = min(申报, 开盘) 成立。
-          · 反例（第 13 步）：报买 55.21 遇向上跳空（low > 55.21）失效 ⇒ 闸门含「申报 ≥ low」。
-        由上面两条得出的报价学（本轮不再动带宽的根据）：
-          · 抬价**不改变成交价**（成交价被开盘价压住），只把触发窗从 low≤close 扩到 low≤申报；
-            两者差别仅在「low > close」的日子（强势跳空上涨日）——抬价能覆盖那些日子，属净收益。
-          · 低开下跌日 low≤close 恒真 ⇒ **报价高低无法避免成交**。即「跌日报价高就不成交」
-            是伪安全（本局第 3 轮实盘即如此：报 60.14、D+1 低开 58.07 立即成交、收 56.69）。
-          · 因此下跌风险只能由**方向判据（p / 硬否决）**承担，不能寄望于报价层过滤。
+        执行层撮合规则（本文件唯一的执行假设）：买入 effective = min(申报价, D+1 开盘)、
+        卖出 effective = max(申报价, D+1 开盘)；唯一闸门 = 申报价须落入成交日 D+1 的
+        [low, high] 闭区间，越界**整笔失效**（仓位不变但仍推进一日）。
+        推论一：申报价只回答「D+1 是否会碰到该价位」；成交价水平由 min/max 与开盘价决定。
+        实证（第 13 步）：锚定 D 收盘的 55.21 遇 D+1 向上跳空 ⇒ 200 股加仓整笔失效、
+               仓位维持 26%、交易次数 69 未变 ⇒ 方向对、仓位上不去。**锚价申报在跳空日
+               的失效概率是结构性缺陷，不是运气**；只靠「有动量才偏移 0.3·ATR」不够，
+               因为「收复缺口下沿/放量阳线」常伴 mom_up=False（前一日微跌即打断严格递增）。
+        修正：双向宽容带 band = max(gap_tol_atr·ATR, gap_tol_pct·close)，且**不再以 mom_up
+               为启用前提**（动量仅在 band 之上追加 0.3·ATR 同向偏移）。
+               安全性不自相矛盾：买 effective = min(申报, 开盘) ⇒ 抬高申报价只扩触发窗、
+               不抬高成交价（最坏等于按开盘价成交）；卖 effective = max(申报, 开盘) 对称。
         边界：band 只由当日可知的 ATR 与 close 决定（无未来信息）；整体受 ±9.5% 限幅约束。
         """
         band = max(_CFG["gap_tol_atr"] * atr, _CFG["gap_tol_pct"] * close)
         drift = _CFG["order_slip_atr"] * atr if ((side > 0 and mom_up) or (side < 0 and mtf_down and not mom_up)) else 0.0
         lim = 0.095 * close
         return round(_clip(close + side * (band + drift), close - lim, close + lim), 2)
-
-    # 第 19 步：止盈阶梯（浮盈激活的移动保护线——只上移止损，不主动兑现）＋追高分位
-    u_atr = ((close - cost) / atr) if (atr > 0 and cost > 0) else 0.0
-    peak_n = max(float(b.get("high") or 0.0) for b in daily[-int(_CFG["mfe_window"]):])
-    dyn_stop = tp["stop"]
-    if u_atr >= _CFG["be_trigger_atr"]:
-        dyn_stop = max(dyn_stop, cost + _CFG["be_pad_atr"] * atr)      # 保本垫
-    if u_atr >= _CFG["trail_trig_atr"]:
-        dyn_stop = max(dyn_stop, peak_n - _CFG["trail_lock_atr"] * atr)  # 峰值 trail
-    entry_pos = _entry_pos_pct(daily, _CFG["pos_win"])
-    chase = (_CFG["buy_chase_scale"]
-             if (entry_pos >= _CFG["buy_chase_pos"] and close > res_prev) else 1.0)
 
     pi_star = tp["pi_star"]
     pi_cur = (mv / total_value) if qty_held > 0 else 0.0
@@ -921,14 +588,7 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
              "eff_buy_band": round(eff_buy_band, 4), "eff_sell_band": round(eff_sell_band, 4),
              "vol_shrink": shrink, "vol_expand": expand, "mtf_down": mtf_down,
              "mtf_n": mtf_n, "mom_up": mom_up, "mom_adj": round(tp["mom_adj"], 3),
-             "exhaust": exhaust, "failed_breakout": failed_breakout,
-             "close_pos": (round(close_pos, 3) if close_pos is not None else None),
-             "cl_pen": round(tp["cl_pen"], 3),
              "cooldown_mult": cooldown_mult, "add_scale": round(add_scale, 2),
-             "rb_pct": round(rb_pct, 2), "kelly_mult": round(tp.get("kelly_mult", 1.0), 2),
-             "giveback": giveback, "entry_ok": entry_ok,
-             "u_atr": round(u_atr, 3), "dyn_stop": round(dyn_stop, 3),
-             "entry_pos_pct": round(entry_pos, 3), "chase": chase,
              "cash": cash, "total_value": total_value}
 
     def _lot(budget_value: float, price: Optional[float] = None) -> int:
@@ -964,17 +624,6 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
         if tp["edge"] <= 0:
             return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
                         "赔率×胜率期望为负，持有即负期望，退出", **feats)
-        if giveback:
-            return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
-                        "利润回吐锁：近%d根内最高价曾给出≥%.0f%%浮盈，现自峰值回撤≥%.1f·ATR且收盘贴区间下沿"
-                        "（派发特征），先于结构破位锁定剩余利润"
-                        % (_CFG["mfe_window"], _CFG["mfe_min_runup_pct"] * 100,
-                           _CFG["mfe_giveback_atr"]), **feats)
-        if dyn_stop > tp["stop"] + 1e-9 and close < dyn_stop:
-            return _dec(DECISION_SELL, _order_px(-1), qty_held, CONF_MID,
-                        "止盈阶梯触发：浮盈%.1f·ATR已激活移动保护线%.2f（保本垫/峰值trail），"
-                        "回落即离场锁定利润——下跌段主动行动，不等派发确认"
-                        % (u_atr, dyn_stop), **feats)
         if delta >= eff_buy_band:
             # 准入层先于配额层（第 12 步纠错：kelly 答「该放多大」、不答「该不该放」）：
             # 三闸门未过 → 直接产出不动仓类枚举，**不得**被 kelly 侧 Δπ≥eff_buy_band 短路。
@@ -986,10 +635,6 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
                             "⇒ 仓位可放大≠应当放大，本次不动仓"
                             % (delta * 100, eff_buy_band * 100, tp["edge"], tp["p"],
                                _CFG["p_gate"], tp["squeeze"]), **feats)
-            if not entry_ok:
-                return _dec(DECISION_HOLD, 0.0, 0, CONF_MID,
-                            "准入通过但无方向确认事件（收盘未站上 res_prev=%.2f／无量能收复缺口／日线动量未向上）"
-                            "⇒ 只动 p 不动 r 的加仓属弱信号，本次不加仓" % res_prev, **feats)
             # 加仓侧动量否决分级（第 11 步）：单周期空头不享有与双周期空头同等的一票否决权。
             #   · mtf_n ≥ 2 且 Δπ < 2×eff_buy_band → 全否决（月/周一致空头 = 趋势证据最强）；
             #   · mtf_n == 1（常见于「月线未收官 bar」）→ 只折半执行，保留 kelly 的方向权；
@@ -1059,40 +704,16 @@ def _decide_core(ctx: TradeContext) -> TradeDecision:
                     % (abs(delta) * 100), **feats)
 
     # ── 空仓 ──────────────────────────────────────────────────────────────
-    # 第 16 步硬否决（前置于一切建仓路径）：箱体上沿「日内穿刺、收盘被压回」+ 放量。
-    # 为何必须是硬否决而非仅靠 p：①它是本局唯一产生**已实现亏损**的入场形态（05-14→05-15 −414）；
-    # ②它独立于 squeeze（squeeze 描述箱体高度，本项描述当日供给），故覆盖 squeeze 也不能绕过。
-    if failed_breakout:
-        return _flat(True, CONF_MID,
-                     "当日 high 越前高 %.2f 但收盘被压回箱体内（假突破/上影供给），且放量 ⇒ "
-                     "不追高；等**收盘**站上 res_prev 再建仓（不拿 high 穿刺当突破确认）"
-                     % res_prev, **feats)
     if close < sup_prev and mtf_down:
         return _flat(True, CONF_MID, "已跌破前3日低点且月/周线空头，破位下跌中不建仓，等站回结构位", **feats)
     # 空仓：开仓与加仓受同一套闸门约束（逐日结算下低胜率开仓同样放大负分天数）
-    if tp["edge"] > 0 and tp["floor_on"]:
-        if not entry_ok:
-            return _flat(True, CONF_MID,
-                         "正期望(edge=%.2f)但无方向确认事件（收盘未站上 res_prev=%.2f／无量能收复缺口下沿／"
-                         "日线动量未向上）⇒ 二次确认前不入场（纠 action_lag：宁等确认，不接飞刀）"
-                         % (tp["edge"], res_prev), **feats)
-        if not (_CFG["momentum_veto"] and mtf_down and not mom_up):
-            px_ord = _order_px(+1)
-            # 第 19 步：追高分位折价——突破道（close>res_prev）且分位≥0.75 时首笔只建
-            # buy_chase_scale 比例，余量留回踩道：pi_star 不变而 pi_cur 偏低 ⇒ 后续 Δπ 仍
-            # ≥ 触发带时自动补足（无需状态机），平均买点下移而不牺牲收盘确认。
-            q = _lot(_target_qty(pi_star * chase) * px_ord, px_ord)   # 预算按申报价计
-            if q == 0 and chase < 1.0 and _target_qty(pi_star) >= 100:
-                q = 100                                              # 折半不足一手→保底一手试仓
-            if q >= 100:
-                return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
-                            "正期望(edge=%.2f)且方向确认成立、目标仓位 %.0f%%（rb=%.1f%%）"
-                            % (tp["edge"], pi_star * 100, rb_pct)
-                            + ("；入场分位%.0f%%≥%.0f%%属追高区，首笔折价至 %.0f%%，余量留回踩道补足"
-                               % (entry_pos * 100, _CFG["buy_chase_pos"] * 100,
-                                  pi_star * chase * 100)) if chase < 1.0 else
-                            "，按风险预算建仓",
-                            **feats)
+    if tp["edge"] > 0 and tp["floor_on"] and not (_CFG["momentum_veto"] and mtf_down and not mom_up):
+        px_ord = _order_px(+1)
+        q = _lot(_target_qty(pi_star) * px_ord, px_ord)   # 同上：预算按申报价计
+        if q >= 100:
+            return _dec(DECISION_BUY, _order_px(+1), q, CONF_MID,
+                        "正期望(edge=%.2f)且目标仓位 %.0f%%，按风险预算建仓" % (tp["edge"], pi_star * 100),
+                        **feats)
     if mtf_down and close < res_prev and shrink:
         return _flat(True, CONF_MID, "大级别空头+缩量未突破近期压力，继续跟踪", **feats)
     return _flat(True, CONF_LOW, "无正期望信号，继续观察等待放量突破", **feats)
@@ -1192,12 +813,6 @@ def _contract_violations(d: TradeDecision, ctx: TradeContext) -> List[str]:
             v.append("buy_blocked_by_p_gate:p=%.2f<%.2f" % (float(p_snap), _CFG["p_gate"]))
         if sq_snap is True:
             v.append("buy_blocked_by_squeeze")
-    # ⑥ **假突破反例断言**（第 16 步）：日内穿刺前高、收盘未站上且放量的当日，任何买入产出都
-    #    必须被判违规。理由：该形态是本局唯一产生已实现亏损（−414）的入场，而 p 公式对其原本
-    #    完全不敏，唯一防线 squeeze 可被「high 已越上沿」这一单根证据覆盖 ⇒ 必须让守卫独立拦住，
-    #    使「覆盖 squeeze」不再能绕过风控（R7：在输出层把元规则做成结构约束）。
-    if dec == DECISION_BUY and snap.get("failed_breakout") is True:
-        v.append("buy_blocked_by_false_breakout")
     # ⑤ **可成交性断言**（第 13 步）：申报价必须带宽容带，不得退回「贴锚价」
     #    失败模式：锚价申报在 D+1 跳空日整笔失效 ⇒ 仓位不变、白耗一日、方向对而收益不落地。
     #    本层无法知道 D+1 的 [low, high]，但 band 只依赖当日可知的 ATR/close ⇒ 可断言。
@@ -1317,261 +932,6 @@ def _selfcheck() -> bool:
     ok = ok and ok_drift
     print("[%s] 边界(超配未达减仓带): %s pi_gap=%s under_target=%s"
           % ("OK" if ok_drift else "FAIL", dd["decision"], s_.get("pi_gap"), s_.get("under_target")))
-    # 第 14 步回归样本（真实 sz.301299 04-18…05-08 逐日回放，复现本轮实盘失败模式）：
-    # 轻仓 + 冲高衰竭 ⇒ 不得停在「超配未达带」的惰性持有。对照差分（monthly=[] 时）：
-    #   修补前：p=0.58（仅 pos_adj +0.08）⇒ edge=+0.10 ⇒ 不进 edge≤0 分支；Δπ≈−4%
-    #           < eff_sell_band 12% ⇒ 持有（即把回撤全额留在账上）；
-    #   修补后：exhaust=True ⇒ p=0.50 ⇒ edge=−0.05 ≤ 0 ⇒ 清仓（**无需任何仓位前提**）。
-    # 该差分只在轻仓时可见（300 股时两条路径都指向卖出），故必须用 light 仓位数做样本。
-    ex_daily = [dict(open=53.78, high=54.19, low=52.95, close=53.18, volume=1207500),
-                dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
-                dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
-                dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
-                dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
-                dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100),
-                dict(open=54.97, high=56.06, low=53.83, close=53.84, volume=1306800),
-                dict(open=52.59, high=54.40, low=52.59, close=53.83, volume=1089400),
-                dict(open=54.84, high=55.88, low=53.86, close=55.21, volume=1883000),
-                dict(open=55.80, high=57.00, low=55.51, close=56.96, volume=1671900),
-                dict(open=58.61, high=59.84, low=56.11, close=56.61, volume=2227500),
-                dict(open=56.67, high=57.78, low=56.67, close=57.45, volume=1686800)]
-    ex_weekly = [dict(open=53.97, high=54.99, low=51.66, close=53.18),
-                 dict(open=52.95, high=55.78, low=52.33, close=54.93),
-                 dict(open=54.97, high=56.06, low=52.59, close=55.21),
-                 dict(open=55.80, high=59.84, low=55.51, close=57.45)]
-    ex_ctx = dict(kline=dict(daily=ex_daily, weekly=ex_weekly, monthly=[]),
-                  account=dict(cash=104571.0 - 100 * 54.19, total_value=104571.0,
-                               position=dict(symbol="sz.301299", quantity=100,
-                                             cost_price=54.19, market_value=100 * 54.19)))
-    dx = decide(ex_ctx)
-    sx = dx.get("featureSnapshot") or {}
-    ok_exh = (sx.get("exhaust") is True and dx["decision"] == DECISION_SELL)
-    ok = ok and ok_exh
-    print("[%s] 第14步回归(轻仓+冲高衰竭): %s exhaust=%s p=%s edge=%s pi_cur=%s"
-          % ("OK" if ok_exh else "FAIL", dx["decision"], sx.get("exhaust"),
-             sx.get("p"), sx.get("edge"), sx.get("pi_cur")))
-    # 第 15 步回归样本（真实 04-21…05-09 逐日回放；两处缺陷必须同修才能翻转决策）：
-    #   只修确认窗口 ⇒ exhaust=True、p=0.34，但 b 仍 3.07 ⇒ edge=+0.33 仍不退出；
-    #   只修靶位折价 ⇒ exhaust=False（上影线在 daily[-3]）⇒ 折价根本不生效；
-    #   同修 ⇒ p=0.34、target=58.13、b=1.67、edge=−0.09 ≤ 0 ⇒ 清仓 300 股。
-    # 注意 weekly 只有 2 根时 _mtf_down 返回 False，故 monthly 必须给满 3 根（mtf_n=1），
-    # 否则 p 少扣 −0.05、edge 回升至 +0.04 又会被推到「准入未过 ⇒ 持有」。
-    d509 = [dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
-            dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
-            dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
-            dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
-            dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100),
-            dict(open=54.97, high=56.06, low=53.83, close=53.84, volume=1306800),
-            dict(open=52.59, high=54.40, low=52.59, close=53.83, volume=1089400),
-            dict(open=54.84, high=55.88, low=53.86, close=55.21, volume=1883000),
-            dict(open=55.80, high=57.00, low=55.51, close=56.96, volume=1671900),
-            dict(open=58.61, high=59.84, low=56.11, close=56.61, volume=2227500),
-            dict(open=56.67, high=57.78, low=56.67, close=57.45, volume=1686800),
-            dict(open=57.43, high=57.43, low=56.10, close=56.10, volume=1315200)]
-    w509 = [dict(open=54.97, high=56.06, low=52.59, close=55.21),
-            dict(open=55.80, high=59.84, low=55.51, close=56.10)]
-    m509 = [dict(open=66.29, high=71.42, low=58.56, close=60.09),
-            dict(open=60.15, high=60.97, low=43.85, close=55.21),
-            dict(open=55.80, high=59.84, low=55.51, close=56.10)]
-    ctx509 = dict(kline=dict(daily=d509, weekly=w509, monthly=m509),
-                  account=dict(cash=87336.0, total_value=104166.0,
-                               position=dict(symbol="sz.301299", quantity=300,
-                                             cost_price=54.19, market_value=16830.0)))
-    d9 = decide(ctx509)
-    s9 = d9.get("featureSnapshot") or {}
-    ok9 = (s9.get("exhaust") is True and d9["decision"] == DECISION_SELL
-           and d9["tradeQuantity"] == 300)
-    ok = ok and ok9
-    print("[%s] 第15步回归(05-09 衰竭清仓): %s qty=%s exhaust=%s p=%s b=%s edge=%s"
-          % ("OK" if ok9 else "FAIL", d9["decision"], d9["tradeQuantity"],
-             s9.get("exhaust"), s9.get("p"), s9.get("b"), s9.get("edge")))
-    # ── 第 16 步回归（真实 05-14 sz.301299 全量数据；本轮实盘亏损 −414 的入场样本）─────
-    # 判别力：修补前 p 公式对「日内穿刺前高、收盘被压回」不敏 ⇒ 唯一防线是 squeeze，而
-    #   squeeze 可被人工以「high 已越上沿」覆盖（本轮即如此 ⇒ 买入 @58.07 ⇒ D+1 −3.49%）；
-    # 修补后：failed_breakout=True（high 59.74 > res_prev 59.25 ∧ close 58.74 < 59.25 ∧
-    #   量 2766200 = 1.55×前5日均量 1785520）⇒ p −0.06、**空仓侧硬否决**、且守卫新增
-    #   buy_blocked_by_false_breakout ⇒ 三重防线，覆盖 squeeze 也绕不过。
-    fb_daily = [dict(open=53.97, high=54.80, low=53.60, close=54.08, volume=1487800),
-                dict(open=53.60, high=54.99, low=53.17, close=53.43, volume=1419300),
-                dict(open=53.81, high=54.16, low=51.66, close=52.92, volume=1651400),
-                dict(open=52.64, high=54.17, low=52.37, close=53.30, volume=1370200),
-                dict(open=53.78, high=54.19, low=52.95, close=53.18, volume=1207500),
-                dict(open=52.95, high=54.87, low=52.33, close=54.73, volume=1578500),
-                dict(open=54.70, high=55.48, low=54.12, close=54.18, volume=1591200),
-                dict(open=54.73, high=55.60, low=54.11, close=55.35, volume=1729600),
-                dict(open=55.71, high=55.71, low=53.37, close=53.69, volume=1443400),
-                dict(open=54.42, high=55.78, low=53.77, close=54.93, volume=1659100),
-                dict(open=54.97, high=56.06, low=53.83, close=53.84, volume=1306800),
-                dict(open=52.59, high=54.40, low=52.59, close=53.83, volume=1089400),
-                dict(open=54.84, high=55.88, low=53.86, close=55.21, volume=1883000),
-                dict(open=55.80, high=57.00, low=55.51, close=56.96, volume=1671900),
-                dict(open=58.61, high=59.84, low=56.11, close=56.61, volume=2227500),
-                dict(open=56.67, high=57.78, low=56.67, close=57.45, volume=1686800),
-                dict(open=57.43, high=57.43, low=56.10, close=56.10, volume=1315200),
-                dict(open=56.93, high=59.25, low=56.67, close=58.09, volume=1976300),
-                dict(open=59.05, high=59.05, low=57.22, close=57.40, volume=1721800),
-                dict(open=57.31, high=59.74, low=56.20, close=58.74, volume=2766200)]
-    fb_weekly = [dict(open=68.88, high=71.42, low=66.50, close=70.30),
-                 dict(open=70.30, high=70.79, low=59.85, close=60.94),
-                 dict(open=61.25, high=61.89, low=58.48, close=58.80),
-                 dict(open=52.34, high=54.95, low=43.85, close=52.90),
-                 dict(open=53.97, high=54.99, low=51.66, close=53.18),
-                 dict(open=52.95, high=55.78, low=52.33, close=54.93),
-                 dict(open=54.97, high=56.06, low=52.59, close=55.21),
-                 dict(open=55.80, high=59.84, low=55.51, close=56.10),
-                 dict(open=56.93, high=59.74, low=56.20, close=58.74)]
-    fb_monthly = [dict(open=55.23, high=77.38, low=50.39, close=77.38),
-                  dict(open=78.30, high=93.28, low=65.38, close=65.48),
-                  dict(open=66.29, high=71.42, low=58.56, close=60.09),
-                  dict(open=60.15, high=60.97, low=43.85, close=55.21),
-                  dict(open=55.80, high=59.84, low=55.51, close=58.74)]
-    fb_ctx = dict(kline=dict(daily=fb_daily, weekly=fb_weekly, monthly=fb_monthly),
-                  account=dict(cash=104415.0, total_value=104415.0, position=None))
-    dfb = decide(fb_ctx)
-    sfb = dfb.get("featureSnapshot") or {}
-    ok_fb = (sfb.get("failed_breakout") is True
-             and dfb["decision"] in (DECISION_WATCH, DECISION_NO_POSITION))
-    ok = ok and ok_fb
-    print("[%s] 第16步回归(05-14 假突破且空仓): %s failed_breakout=%s p=%s edge=%s squeeze=%s"
-          % ("OK" if ok_fb else "FAIL", dfb["decision"], sfb.get("failed_breakout"),
-             sfb.get("p"), sfb.get("edge"), sfb.get("squeeze")))
-    # 负例（第 16 步）：即便 squeeze 被覆盖（False），假突破当日的买入仍必须被守卫拦住
-    bad4 = {"decision": DECISION_BUY, "tradePrice": 60.14, "tradeQuantity": 300,
-            "confidence": CONF_MID,
-            "featureSnapshot": {"p": 0.55, "squeeze": False, "failed_breakout": True}}
-    v4 = _contract_violations(bad4, fb_ctx)
-    ok = ok and "buy_blocked_by_false_breakout" in v4
-    print("[%s] 负例(覆盖 squeeze 的假突破买入)命中 %s"
-          % ("OK" if "buy_blocked_by_false_breakout" in v4 else "FAIL", v4))
-    # ── 第 17 步回归（真实 05-15 sz.301299 日/周线；月线置空以隔离收盘质量项）────────
-    # 判别力：05-15 是缩量光头阴（close 56.69 ≈ low 56.67，close_pos=0.012，尾盘无承接）；
-    #   high 58.40 < res_prev 59.74 ⇒ 不构成 failed_breakout；箱体 59.74−56.20=3.54 >
-    #   1.5·ATR(3.49) ⇒ 非 squeeze ⇒ 三项现有防线全部“失手”：
-    #     修补前 p=0.52 ≥ p_gate ⇒ 空仓会建仓（floor_on）
-    #     修补后 cl_pos_pen −0.05 ⇒ p=0.47 < p_gate ⇒ 不建仓（弃权）
-    cl_daily = fb_daily[1:] + [dict(open=58.07, high=58.40, low=56.67, close=56.69, volume=1683500)]
-    #            （= 04-15…05-14 的 19 根 + 05-15，共 20 根；决策日 = 05-15）
-    cl_ctx = dict(kline=dict(daily=cl_daily, weekly=fb_weekly, monthly=[]),
-                  account=dict(cash=104001.0, total_value=104001.0, position=None))
-    dcl = decide(cl_ctx)
-    scl = dcl.get("featureSnapshot") or {}
-    ok_cl = (scl.get("close_pos") is not None and scl["close_pos"] <= 0.2
-             and scl.get("p") < 0.50
-             and dcl["decision"] in (DECISION_WATCH, DECISION_NO_POSITION))
-    ok = ok and ok_cl
-    print("[%s] 第17步回归(05-15 弱收盘): %s close_pos=%s p=%s edge=%s cl_pen=%s"
-          % ("OK" if ok_cl else "FAIL", dcl["decision"], scl.get("close_pos"),
-             scl.get("p"), scl.get("edge"), scl.get("cl_pen")))
-    # ── 第 18 步回归 A（利润回吐锁）：曾有浮盈 → 自峰值回撤 ≥1.2·ATR + 弱收盘 + 动量向下 ⇒ 卖出 ──
-    # 判别力：该样本 close 51.6 > sup_prev 51.5（不触发结构止损）、edge>0（不触发负期望），
-    #   修补前会落入「仓位带内持有」，mfe_giveback 全额留在账上；修补后 giveback=True ⇒ 锁定离场。
-    gb_daily = [dict(open=49.5, high=50.2, low=49.3, close=49.8, volume=1500000),
-                dict(open=49.8, high=50.5, low=49.6, close=50.3, volume=1400000),
-                dict(open=50.3, high=51.0, low=50.1, close=50.8, volume=1600000),
-                dict(open=50.8, high=51.6, low=50.5, close=51.4, volume=1500000),
-                dict(open=51.4, high=52.2, low=51.2, close=52.0, volume=1700000),
-                dict(open=52.0, high=53.0, low=51.8, close=52.8, volume=1800000),
-                dict(open=52.8, high=53.2, low=52.3, close=52.6, volume=1200000),
-                dict(open=52.6, high=53.0, low=52.0, close=52.4, volume=1100000),
-                dict(open=52.4, high=52.7, low=51.5, close=52.1, volume=1000000),
-                dict(open=52.1, high=52.2, low=51.4, close=51.6, volume=900000)]
-    gb_ctx = dict(kline=dict(daily=gb_daily, weekly=[], monthly=[]),
-                  account=dict(cash=90000.0, total_value=100320.0,
-                               position=dict(symbol="sz.301299", quantity=200,
-                                             cost_price=51.5, market_value=200 * 51.6)))
-    dgb = decide(gb_ctx)
-    sgb = dgb.get("featureSnapshot") or {}
-    ok_gb = (sgb.get("giveback") is True and dgb["decision"] == DECISION_SELL
-             and dgb["tradeQuantity"] == 200)
-    ok = ok and ok_gb
-    print("[%s] 第18步回归A(利润回吐锁): %s qty=%s giveback=%s close_pos=%s"
-          % ("OK" if ok_gb else "FAIL", dgb["decision"], dgb["tradeQuantity"],
-             sgb.get("giveback"), sgb.get("close_pos")))
-    # ── 第 18 步回归 B（入场须方向确认）：正期望+准入通过，但收盘未站上 res_prev／无量能收复／
-    #   动量未向上 ⇒ 不得建仓（二次确认前不接飞刀，纠 action_lag 病灶）。
-    ec_daily = [dict(open=52.0, high=52.8, low=51.9, close=52.5, volume=1400000),
-                dict(open=52.5, high=53.3, low=52.5, close=53.0, volume=1500000),
-                dict(open=53.0, high=54.0, low=52.8, close=53.8, volume=1600000),
-                dict(open=53.8, high=54.6, low=52.9, close=54.2, volume=1500000),
-                dict(open=53.8, high=54.0, low=52.9, close=53.45, volume=1700000)]
-    ec_weekly = [dict(open=51.9, high=52.9, low=51.8, close=52.6),
-                 dict(open=52.6, high=54.0, low=52.4, close=53.9),
-                 dict(open=53.9, high=54.6, low=52.8, close=53.45)]
-    ec_ctx = dict(kline=dict(daily=ec_daily, weekly=ec_weekly, monthly=[]),
-                  account=dict(cash=100000.0, total_value=100000.0, position=None))
-    dec_ = decide(ec_ctx)
-    sec = dec_.get("featureSnapshot") or {}
-    ok_ec = (dec_["decision"] == DECISION_WATCH and sec.get("entry_ok") is False
-             and sec.get("admit") is True and "无方向确认" in dec_["reasoning"])
-    ok = ok and ok_ec
-    print("[%s] 第18步回归B(入场须方向确认): %s entry_ok=%s admit=%s p=%s edge=%s"
-          % ("OK" if ok_ec else "FAIL", dec_["decision"], sec.get("entry_ok"),
-             sec.get("admit"), sec.get("p"), sec.get("edge")))
-    # ── 第 19 步回归 A（止盈阶梯）：浮盈 ≥2·ATR 后自峰值回落至 trail 线下方，但不满足
-    #   giveback 的弱收盘条件（close_pos=0.67 中性）⇒ 修补前落「仓位带内持有」（利润继续暴露），
-    #   修补后移动保护线触发卖出（下跌段主动行动）。
-    ts_daily = [dict(open=50.0, high=50.4, low=49.8, close=50.2, volume=2000000),
-                dict(open=50.2, high=50.8, low=50.0, close=50.6, volume=2000000),
-                dict(open=50.6, high=51.2, low=50.4, close=51.0, volume=2000000),
-                dict(open=51.0, high=51.6, low=50.8, close=51.4, volume=2000000),
-                dict(open=51.4, high=52.0, low=51.2, close=51.8, volume=2000000),
-                dict(open=52.0, high=52.8, low=51.9, close=52.6, volume=2000000),
-                dict(open=52.6, high=53.2, low=52.4, close=53.0, volume=2000000),
-                dict(open=53.0, high=53.6, low=52.9, close=53.4, volume=2000000),
-                dict(open=53.0, high=56.5, low=52.9, close=53.6, volume=2000000),  # 峰值56.5冲高回落
-                dict(open=53.7, high=54.2, low=53.6, close=54.0, volume=2000000)]
-    ts_ctx = dict(kline=dict(daily=ts_daily, weekly=[], monthly=[]),
-                  account=dict(cash=88020.0, total_value=104220.0,
-                               position=dict(symbol="sz.301151", quantity=300,
-                                             cost_price=50.0, market_value=300 * 54.0)))
-    dts = decide(ts_ctx)
-    sts = dts.get("featureSnapshot") or {}
-    ok_ts = (dts["decision"] == DECISION_SELL and sts.get("u_atr", 0) >= _CFG["trail_trig_atr"]
-             and sts.get("dyn_stop", 0) > sts.get("sup_prev", 9e9))
-    ok = ok and ok_ts
-    print("[%s] 第19步回归A(止盈阶梯峰值trail): %s u_atr=%s dyn_stop=%s sup_prev=%s"
-          % ("OK" if ok_ts else "FAIL", dts["decision"], sts.get("u_atr"),
-             sts.get("dyn_stop"), sts.get("sup_prev")))
-    # ── 第 19 步回归 B（追高分位折价）：同为全闸门通过的突破道买入，分位≥0.75 首笔折半，
-    #   分位<0.75 全额 ⇒ 数量差分可观测（回踩补足由后续 Δπ 带自动完成）。
-    ch_hi = [dict(open=50.0, high=50.4, low=49.8, close=50.2, volume=2000000),
-             dict(open=50.2, high=50.8, low=50.0, close=50.6, volume=2000000),
-             dict(open=50.6, high=51.2, low=50.4, close=51.0, volume=2000000),
-             dict(open=51.0, high=51.6, low=50.8, close=51.4, volume=2000000),
-             dict(open=51.4, high=52.0, low=51.2, close=51.8, volume=2000000),
-             dict(open=51.8, high=52.4, low=51.6, close=52.2, volume=2000000),
-             dict(open=52.2, high=52.8, low=52.0, close=52.6, volume=2000000),
-             dict(open=52.6, high=53.2, low=52.4, close=53.0, volume=2000000),
-             dict(open=53.0, high=53.6, low=52.8, close=53.4, volume=2000000),
-             dict(open=53.4, high=54.1, low=53.3, close=54.0, volume=2000000)]  # 分位≈0.98
-    ch_lo = [dict(open=53.0, high=56.0, low=49.9, close=50.5, volume=2000000),  # 窗口高点在前段
-             dict(open=50.5, high=51.0, low=50.2, close=50.8, volume=2000000),
-             dict(open=50.8, high=51.2, low=50.5, close=51.0, volume=2000000),
-             dict(open=51.0, high=51.4, low=50.8, close=51.2, volume=2000000),
-             dict(open=51.2, high=51.6, low=51.0, close=51.4, volume=2000000),
-             dict(open=51.4, high=52.0, low=51.2, close=51.8, volume=2000000),
-             dict(open=51.8, high=52.4, low=51.6, close=52.2, volume=2000000),
-             dict(open=52.2, high=52.8, low=52.4, close=52.6, volume=2000000),
-             dict(open=52.6, high=53.5, low=52.9, close=53.4, volume=2000000),
-             dict(open=53.5, high=53.9, low=53.3, close=53.8, volume=2000000)]  # 收53.8>前3日高53.5，分位≈0.65
-    ch_weekly = [dict(open=49.9, high=51.0, low=49.8, close=50.9),
-                 dict(open=50.9, high=52.4, low=50.7, close=52.3),
-                 dict(open=52.3, high=54.1, low=52.1, close=54.0)]
-    acc_ch = dict(cash=104400.0, total_value=104400.0, base_cash=100000.0,
-                  total_return=4.4, position=None)
-    dh = decide(dict(kline=dict(daily=ch_hi, weekly=ch_weekly, monthly=[]), account=acc_ch))
-    dl = decide(dict(kline=dict(daily=ch_lo, weekly=ch_weekly, monthly=[]), account=acc_ch))
-    sh, sl = dh.get("featureSnapshot") or {}, dl.get("featureSnapshot") or {}
-    ok_ch = (dh["decision"] == DECISION_BUY and dl["decision"] == DECISION_BUY
-             and sh.get("entry_pos_pct", 0) >= _CFG["buy_chase_pos"]
-             and sl.get("entry_pos_pct", 1) < _CFG["buy_chase_pos"]
-             and dh["tradeQuantity"] < dl["tradeQuantity"]
-             and "追高区" in dh["reasoning"] and "追高区" not in dl["reasoning"])
-    ok = ok and ok_ch
-    print("[%s] 第19步回归B(追高分位折价): hi=%s/%d股(分位%.2f) vs lo=%s/%d股(分位%.2f)"
-          % ("OK" if ok_ch else "FAIL", dh["decision"], dh["tradeQuantity"],
-             sh.get("entry_pos_pct", -1), dl["decision"], dl["tradeQuantity"],
-             sl.get("entry_pos_pct", -1)))
     print("契约守卫 + 冒烟：%s" % ("全部通过" if ok else "存在失败项"))
     return ok
 

@@ -18,8 +18,7 @@ flowchart TD
 
 ### n4 (start)
 
-default agent 驱动 stock-trade 交易游戏工作流记录开始时间和 完成时间
-
+default agent 驱动 stock-trade 交易游戏工作流记录开始时间和 完成时间，最后结束要根据 每次的工作流运行时间 优化 工作流
 1. 了解玩法: 虚拟账户¥10万+真实行情逐日推进; 每轮决策{买入·卖出·持有·不建仓}, /api/step 成交后按后续行情结算, 盈亏反馈复盘反传 textron
 2. 调 GET /api/health 探活
 3. 调 POST /api/enter 自动进入(空 body 不指定股票): default 有进行中→continue; 否则载入 active 存档; 全无→随机新开
@@ -38,7 +37,7 @@ sender根据2次交易，和股票后续走势给worker 打分 盈亏比，持�
 
 ### n6 (prompt)
 
-1. default-> guard:通知。guard 调 coms_send 向 sender 下发指令，**正文必须逐字携带第 2–12 步完整角色链**，不得省略、不得概括为一句话（如「开始交易游戏：完成2次交易推进」）。依据 HANDOVER 硬性约束 15 / 待办 #27：缺角色链边界时子 agent 会用自执行补齐，跳过 worker 全链、trade.py 零迭代（第二十二轮已复发一次，纠偏后重跑才闭合）。禁止指定股票和日期。指令末尾必须附三条硬性守卫：(a) 禁自执行——sender 不得自建决策脚本、不得自行产出决策、不得以「命令过长/耗时」为由退回自执行；(b) I3 防伪——sender 每次 POST /api/step 之前必须已存在 worker 的决策回包且按 msg_id 可配对，无回包即停手并向 guard 报告；(c) 收件人边界——worker 只与 sender 交互，guard 不直接指挥 worker。
+1. default-> guard:通知。guard 调 coms_send 向 sender 下发指令，**正文必须逐字携带第 2–12 步完整角色链**（n6 节点自身的 2–12 步原文），不得省略、不得概括为一句话（如「开始交易游戏：完成2次交易推进」）。依据 HANDOVER 硬性约束 15 / 待办 #27：缺角色链边界时子 agent 会用自执行补齐，跳过 worker 全链、trade.py 零迭代（第二十二轮已复发一次，纠偏重跑多花约 20 分钟）。禁止指定股票和日期。指令末尾必须附三条硬性守卫：(a) 禁自执行——sender 不得自建决策脚本、不得自行产出决策、不得以「命令过长/耗时」为由退回自执行；(b) I3 防伪——sender 每次 POST /api/step 之前必须已存在 worker 的决策回包且按 msg_id 可配对，无回包即停手并向 guard 报告；(c) 收件人边界——worker 只与 sender 交互，guard 不直接指挥 worker。
 2. 验证：sender 调 GET http://127.0.0.1:7860/api/health 确认 UI 服务在线；
 3. 执行：sender 调 POST http://127.0.0.1:7860/api/enter 进入交易游戏
 4. 取：sender 调 GET http://127.0.0.1:7860/api/prompt?session_id={session_id}，取 data.prompt 决策提示词(含当前价/涨跌幅/持仓组合)

@@ -2945,7 +2945,19 @@ LIFT / SPLIT SCAN (MANDATORY): Review RELATED nodes above. (a) 若 N 个节点**
         : (oldIsArtifact ? completeContent(newContent, NODE_CONTENT_MAX_CHARS) : mergeContent(oldContent, newContent));
       // 写入宽: NODE_CONTENT_MAX_CHARS=0（不限）时不再触发溢出拆分，融合内容完整留在本节点。
       // 仅在显式配置了正上限时才走溢出→新节点分流。
-      const contentLimit = NODE_CONTENT_MAX_CHARS > 0 ? NODE_CONTENT_MAX_CHARS : Number.MAX_SAFE_INTEGER;
+      // 2026-09-21 n8 第二十三轮（R1 失控环修复）：merge 拼接路径引入融合溢出硬上限。
+      // 病灶实测：NODE_CONTENT_MAX_CHARS=0 ⇒ contentLimit=MAX_SAFE_INTEGER ⇒ 溢出分流永不触发；
+      // 且旧文越大 → LLM 单次重写输出（受输出预算约束 ~2-3KB）恒小于旧文 → retentionVerdict
+      // scoreNew<scoreOld 恒 downgrade 到 mergeContent=old+" | "+new（旧文无 "|" 时片段去重
+      // 失效，全量拼接）→ 每轮净增 2-3KB 单调膨胀（L0::node_0 实测 89474c/107 片段/最大 3963c）。
+      // 修法：只对**融合拼接**产物设硬上限（forcedReplace/cleanse 是 LLM 全量重写，长度天然
+      // 受输出预算约束，不设上限）；超限时复用下方 overflow 分流把溢出切片搬到同层新节点——
+      // 不拒绝 LLM 输出（长度不作为准入条件，符合第二十三轮原则），只做结构归位；被分流后
+      // 本节点恢复「LLM 够得着重写」的体量，replace 语义重新可达，失控环被掐断。
+      const MERGE_OVERFLOW_CAP = 12000;
+      const contentLimit = NODE_CONTENT_MAX_CHARS > 0
+        ? NODE_CONTENT_MAX_CHARS
+        : (forcedReplace ? Number.MAX_SAFE_INTEGER : MERGE_OVERFLOW_CAP);
       if (!isCleanse && mergedContent.length > contentLimit) {
         const overflow = mergedContent.slice(contentLimit);
         mergedContent = mergedContent.slice(0, contentLimit);

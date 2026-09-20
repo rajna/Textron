@@ -1844,7 +1844,7 @@ export default function (pi: ExtensionAPI) {
     ctx: any,
     turnId?: string,
     compressionMandate?: string,
-  ): Promise<{ reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] }> {
+  ): Promise<{ reward: number; rationale?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "lift" | "split" | "merge" | "keep" | "delete"; source?: string; target?: string; node?: string; rationale?: string; sources?: string[]; lifted?: string; source_reduction?: Record<string, string>; resolved?: string | null; migrated?: boolean; kept_abstraction?: string; sink_to?: number; moved_items?: string[] }[] }> {
     const model = (ctx as any).model || _textronModel;
     if (!model?.id || !model?.baseUrl) return { reward: 0, rationale: "no model" };
 
@@ -1928,7 +1928,7 @@ export default function (pi: ExtensionAPI) {
     // 2026-08-03: <Function> 块（functionSymbol/functionAbstract）随训练包透传——parseHighEntropyCrystal 只取
     // Name/Task/Technique，Function 块不进 prompt 则 functionSymbol 落盘核验（引用链 H1）结构性不可能通过。
     const functionBlock = extractFunctionBlock(previousAssistantHighEntropy);
-    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"mode":"merge|replace","keep":"<旧内容中仍成立的要点，≤400 char>","drop":"<旧内容中被本轮证伪的要点+依据>","name":"<48 char","content":"<本轮新增/修正（增量，非全文）>"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<内容，无字数上限>"}],"node_actions":[{"action":"merge","source":"L1::node_3","target":"L1::node_6","rationale":"≤60 chars"}]}';
+    const schemaHint = '{"reward":0.0,"rationale":"≤80 chars","node_updates":{"L0::node_0":{"mode":"absorb|replace","absorbed":"<被新表述吸收的旧判据（声明用，不参与文本拼接）>","dropped":"<被本轮证伪的旧判据+依据>","migrated":true,"name":"<48 char","content":"<重写后的整体表述（不是旧文+增量的拼接）>"}},"add_nodes":[{"layer":0,"name":"<48 char","content":"<内容>"}],"node_actions":[{"action":"lift","sources":["L1::node_3","L1::node_6"],"lifted":"<抽出的共同抽象判据>","source_reduction":{"L1::node_3":"<该节点删掉了什么>"},"resolved":"all|one|none","migrated":true,"rationale":"≤60 chars"},{"action":"split","node":"L0::node_0","kept_abstraction":"<留在该节点的框架句>","sink_to":1,"moved_items":["<下沉的具体实例>"],"migrated":true}]}';
     // ── Build filtered existing nodes list (global top-1 by TF-IDF relevance) ──
     const existingNodesTfidf = tfidfSimilarity(net, previousTask.slice(0, 200), currentUserMessage.slice(0, 200));
     const allExistingNodes: { key: string; layer: number; name: string; content: string; sim: number }[] = [];
@@ -2019,11 +2019,16 @@ ${fnDomainGate}${goalRule}1. Prefer node_updates over add_nodes. add_nodes ONLY 
 5. Choose layer by content abstraction: L0=compact reusable principle, L1=causal mechanism, L2=concrete rule.
 6. L0 CRITICAL: If ALL existing L0 nodes are non-domain (engineering/communication/tooling) but this task clearly belongs to the taskFamily domain, you MUST add 1-2 new L0 domain nodes (e.g. "K线三维共振·星象三天窗口·相位净计数" or "放量破位三周期共振·新月相位群覆盖基线") to establish domain routing anchors — BUT ONLY if L0 has spare capacity (Layer usage room>0); if L0 is at/over cap, you MUST merge the new domain knowledge into the most semantically-relevant existing L0 node via node_updates instead. This takes PRIORITY over L2 tactic updates — without L0 domain nodes, forward propagation cannot route to domain knowledge, breaking the entire network.
 6b. L1 DOMAIN CHECK (soft, NOT mandatory): Consider whether the activated L1 nodes are semantically DISTANT from this task's domain (e.g. weapon/music/engineering content while the task is stock trading). If so, the causal layer may be MISSING a domain node — you MAY add 1 L1 domain node (causal mechanism: 若A则B因为C) when the mechanism is genuinely novel and reusable. This is a per-case judgment, not a rule: analyze concretely. A layer being at capacity is NOT by itself a reason to force-add (merging similar content is often the better choice); likewise an off-domain L1 is NOT always wrong — judge by actual semantic distance and reuse value.
-7. MERGE DUTY: After producing node_updates, scan RELATED nodes for ≥15% semantic overlap (shared keywords, concepts, or domain). For each such pair, add a merge action (source=more-specific-node → target=more-general-node). Missing obvious merges → node bloat.
-8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer merge over add to prevent node bloat. The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. CAPACITY-BOUNDED GROWTH (硬约束): 网络容量有限，不能无限增长。每层上限见 user prompt 的 Layer usage (cap=网络配置 layerCaps，无配置默认每层 40)。规则: (a) used>=cap 的层 add_nodes 会被系统拒绝(over_cap)——对满/超容层禁止 add_nodes，必须用 node_updates 更新已有节点或用 node_actions merge 去重腾出空间; (b) OVER CAP +N 的层是收缩优先级最高的层: 主动找出该层最冗余/最低质的节点对提出 merge(source→target)，merge 后源节点清空即可回收容量; (c) 仅在目标层 room>0 时才允许 add_nodes，且必须与所有现有节点正交(≥15% 重叠=update 不=add); (d) 不存在"新建层"逃生口: layer>=层数 的 add_nodes 一律拒绝。容量满了不代表停止学习——用 merge 压缩冗余、用 node_updates 提升已有节点信息密度，让同等容量承载更高熵知识。\n10. FUSION NOT OVERWRITE —— 三段式融合 (默认；覆盖必须举证): 节点更新 = **keep(旧内容中仍然成立、可复用的要点) + drop(旧内容中被本轮证据证伪的要点，附依据) + content(本轮新增/修正知识)**。内容素材三源并重：①旧 content（前向节点信息）②本轮 feedback（证伪/修正）③HighEntropy/Function（新增知识）。**禁止只写 content** —— 那等于覆盖，旧知识静默丢失（实测：高质量交易规则被整段顶替）。规则 8 的 keep that node's name 只保名字，**不代替保内容**。仅当旧内容被证伪或与 goal 无关(off-goal)时才 mode=replace 并在 rationale 给出证伪依据。` },
+7. LIFT DUTY（抽象上提·聚合，取代旧 MERGE DUTY）: 扫 RELATED nodes，若 N 个节点**同构**（共享机制/因果链，能写出覆盖它们的**更一般判据**），输出 lift 声明并同时交出写入：
+   (a) add_nodes 在**更抽象层（层号-1）**建 1 个新节点：name=抽象框架名，content=lifted（共同抽象判据）；
+   (b) node_updates 重写**每个源节点**：移除被抽走的表述、只留各自的具体内容（migrated:true）；
+   (c) node_actions 里声明 {"action":"lift","sources":[...],"lifted":"...","source_reduction":{...},"migrated":true,"resolved":"all|one|none"}（resolved=源节点留一/都留/都删，由你判断）。
+   **迁移而非复制**：被抽走的表述必须从源节点移除；只往上层复制而不动源节点 = 伪抽象。缺失明显的 lift ⇒ 抽象层失去锚点。
+8. FUNCTION BLOCK (LLM决策·同类归并优先): The training packet may carry <Function> (functionSymbol + functionAbstract code). Decide by same-mechanism-merge-FIRST: (a) 同类归并 — if ANY forward-activated node or existing node covers the same function/mechanism (semantic overlap, or its content references the same functionSymbol), do NOT add a new node; merge the function incrementally into that node via node_updates (absorb the code body, keep that node's name). (b) 正交新增 — ONLY if the function is fully orthogonal to every existing node, add a new node via add_nodes: name = functionSymbol verbatim (以函数名为name), content = functionAbstract code (函数体为content). Prefer LIFT over add ONLY when a shared more-general criterion exists; if the function/knowledge is orthogonal, add a new node even in the same layer — 把一个正交内容塞进已有节点才是真正的 bloat（单节点膨胀）。 The functionSymbol MUST appear verbatim as an exact substring in the absorbing/new node's content — never paraphrase, translate, or split it (citation routing matches it literally).\n9. CAPACITY-BOUNDED GROWTH (硬约束): 网络容量有限，不能无限增长。每层上限见 user prompt 的 Layer usage (cap=网络配置 layerCaps，无配置默认每层 40)。规则: (a) used>=cap 的层 add_nodes 会被系统拒绝(over_cap)——对满/超容层禁止 add_nodes，必须用 node_updates 更新已有节点或用 node_actions merge 去重腾出空间; (b) OVER CAP +N 的层是收缩优先级最高的层: 主动找出该层最冗余/最低质的节点对提出 merge(source→target)，merge 后源节点清空即可回收容量; (c) 仅在目标层 room>0 时才允许 add_nodes，且必须与所有现有节点正交(≥15% 重叠=update 不=add); (d) 不存在"新建层"逃生口: layer>=层数 的 add_nodes 一律拒绝。容量满了不代表停止学习——用 merge 压缩冗余、用 node_updates 提升已有节点信息密度，让同等容量承载更高熵知识。\n10. 判据级保留（禁止文本拼接）: 旧内容里仍然成立的**判据**，要么被本轮抽出的更一般判据**吸收**（表述随之压缩），要么显式声明移除（dropped + 依据）。『content』必须是**重写后的整体表述**，不是旧文与新文的顺序拼接（旧实现『keep ⏎ delta』拼接是节点膨胀到数万字符的机械来源，已废）；用『absorbed』声明吸收了哪些旧判据、『migrated:true』声明迁移已完成。**禁止只写增量 delta 而不交代旧判据去向**；仅当旧内容被证伪或与 goal 无关(off-goal)时才 mode=replace 并在 rationale 给出证伪依据。
+11. SPLIT（具体下沉·分解）+ 迁移不变量: 若**单个节点**里抽象与实例混装（判断提示：⏎ 片段数>3、跨多个域、体积明显偏大 —— 这些只作为你的判断提示，**不是硬约束**，任何情况下不得为凑数字而丢知识），输出 {"action":"split","node":"L0::node_0","kept_abstraction":"<留在该节点的框架句>","sink_to":<层号+1>,"moved_items":["<下沉的具体实例>"],"migrated":true}，并用 add_nodes 在下层落地这些实例、用 node_updates 把原节点改成只剩框架句。层语义：层号=抽象级别，**L0 最抽象**，层号越大越具体 —— 框架句（机制/因果链/可自动化判据）归 L0，具体实例与单域细节在下层。**唯一硬不变量：迁移而非复制** —— 上提的内容必须从下方消失，下沉的内容必须从原节点消失；知识总量不变，只改分布。` },
       { role: "user", content: `Layer usage: ${layerUsageText}${goalUserBlock}\n\nPrevious user task:\n${previousTask.slice(0, 4200)}\n\nPrevious assistant HighEntropy training packet:\n${previousCrystal?.ok ? `Name: ${previousCrystal?.name}\nTask: ${previousCrystal.task || "(legacy)"}\nTechnique: ${previousCrystal.technique}` : `(invalid/missing)`}${functionBlock ? `\nFunction:\n${functionBlock}` : ""}\n\nEXISTING nodes (DO NOT duplicate; global top-1 across all layers):\n${promptExisting}\n\nRELATED nodes (may need merge to deduplicate or LIFT abstraction; global top-1 across path nodes, same-or-adjacent layer |Δ|≤1):\n${promptRelated}\n\nFUSION TARGETS (旧内容=必须评估保留或显式证伪的融合素材，**不是**被替换对象；只写 content 即等于丢弃旧知识):\n${pathNodes.filter(n => !n.isVirtual).map(n => `${n.id}: ${n.name || "(empty)"}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim() || "(no content)"}`).join("\n") || "(none)"}${pathNodes.some(n => n.isVirtual) ? `\n\nSEED node (not in network — use add_nodes to materialize):\n${pathNodes.filter(n => n.isVirtual).map(n => `  ${n.id}: ${n.name}\n  content: ${String(n.content || "").replace(/\s+/g, " ").trim()}`).join("\n")}` : ""}\n\nCurrent feedback:\n${currentUserMessage.slice(0, FEEDBACK_PROMPT_MAX)}\n\nDistill reusable experience. ALWAYS prefer node_updates over add_nodes (>15% overlap=update). FAILED→"avoid X→prefer Y". SUCCEEDED→encode winning mechanism. Content 无字数上限（写全，禁复制旧文）, name=3-6 keywords≤48c.\n\n更新语义（三段式融合，强制）：keep=旧内容仍成立的要点 + drop=旧内容被本轮证伪的要点(附依据) + content=本轮新增。素材三源并重：旧 content(前向节点信息) / 本轮 feedback / HighEntropy·Function。只写 content = 覆盖 = 丢弃旧知识，视为不合格输出；整段替换须 mode=replace 并说明证伪依据。
 
-MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% semantic overlap (keywords/concepts/domain), output a merge action in node_actions. source and target MAY be in the SAME or ADJACENT abstract layer (|Δlayer|≤1; skip jumps like L0↔L2). MERGE LIFTS ABSTRACTION: system places result at the MORE ABSTRACT layer — L2+L2→L1, L1+L2→L1, L1+L1→L0, any L0 merge stays L0 (edges auto-rebuild from merged content via materialize). If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}${compressionMandate ? `\n\n${compressionMandate}` : ""}` },
+LIFT / SPLIT SCAN (MANDATORY): Review RELATED nodes above. (a) 若 N 个节点**同构**（共享机制、能写出覆盖它们的更一般判据）→ 输出 lift 声明的三个写入：add_nodes 在层号-1 建抽象节点 + node_updates 重写每个源节点（移除被抽部分）+ node_actions 里声明 lift（sources/lifted/source_reduction/migrated=true/resolved）——**迁移而非复制**。(b) 若**单个节点**抽象与实例混装 → 输出 split 声明的三个写入：add_nodes 在下层落地实例 + node_updates 把原节点改成只剩框架句 + node_actions 里声明 split（node/kept_abstraction/sink_to/moved_items/migrated=true）。(c) 都不需要 → output node_actions=[{"action":"keep","rationale":"no lift/split needed"}]。旧格式 merge(source→target) 仍被接受（视为 lift 的一种，系统按更抽象层定宿主）。 If no merges needed, output node_actions=[{"action":"keep","rationale":"no overlap ≥15%"}]. node_actions MUST NOT be empty — this is a required output field.${pathNodes.some(n => n.isVirtual) ? `\n\nCOLD START: A SEED node is provided above. It is NOT yet in the network. You MUST add at least one L0 domain node from the SEED content using add_nodes.` : ""}${compressionMandate ? `\n\n${compressionMandate}` : ""}` },
     ];
 
     // Log LLM input AFTER messages is fully constructed (was accidentally referenced before declaration — causing "Cannot access 'messages' before initialization")
@@ -2044,7 +2049,8 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
 
     function clampReward(v: unknown) { return clamp(Number(v) || 0, -1, 1); }
     function normalize(obj: any) {
-      const out: { reward: number; rationale?: string; function_off_goal?: boolean; function_off_goal_reason?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string; mode?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "merge" | "delete" | "keep"; source?: string; target?: string; node?: string; rationale?: string }[] } = {
+      let dropMissing = false; // 观测节流：判据级保留缺失只记一次
+      const out: { reward: number; rationale?: string; function_off_goal?: boolean; function_off_goal_reason?: string; node_updates?: Record<string, string | { name?: string; content?: string; context?: string; mode?: string }>; add_nodes?: { layer: number; name?: string; content: string; context?: string }[]; node_actions?: { action: "lift" | "split" | "merge" | "keep" | "delete"; source?: string; target?: string; node?: string; rationale?: string; sources?: string[]; lifted?: string; source_reduction?: Record<string, string>; resolved?: string | null; migrated?: boolean; kept_abstraction?: string; sink_to?: number; moved_items?: string[] }[] } = {
         reward: clampReward(obj?.reward),
       };
       if (obj?.rationale) out.rationale = String(obj.rationale).slice(0, 120);
@@ -2089,7 +2095,18 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
             const rawMode = String(vv.mode || "merge").trim().toLowerCase();
             const keep = completeContent(String(vv.keep || "").trim(), 400);
             const delta = completeContent(String(vv.content || vv.context || "").trim(), NODE_CONTENT_MAX_CHARS);
-            const content = rawMode === "replace" || !keep ? delta : `${keep} ⏎ ${delta}`;
+            // 2026-09-21 反传抽象改造：取消 `keep ⏎ delta` 机械拼接。
+            // 实证病灶：该拼接是 L0::node_0 膨胀到 67364 字符 / 27 个 ⏎ 片段的机械来源 ——
+            // 每次 merge 都把上一版 keep 前缀拼进来，而 NODE_CONTENT_MAX_CHARS=0（不限）时无上界。
+            // 改为「判据级保留」：content = LLM 重写后的整体表述（单段）；absorbed/dropped/migrated
+            // 仅作声明与审计，不参与文本拼接；旧判据去向未交代时记日志（不拒绝，交下一轮 prompt 收敛）。
+            const absorbed = String(vv.absorbed || "").trim();
+            const migrated = vv.migrated === true;
+            const content = delta || keep;
+            if (!absorbed && !migrated && !dropMissing) {
+              dropMissing = true;
+              onLog(`Textron 判据级保留: node_updates 未声明 absorbed/migrated（旧判据去向未交代），本轮按整体表述写入，不做文本拼接`);
+            }
             const name = completeContent(String(vv.name || compressNodeName(content)).trim(), 64);
             const drop = String(vv.drop || "").trim();
             if (drop) onLog(`Textron fusion: ${k} drop(证伪)=${drop.slice(0, 200)}`);
@@ -2113,14 +2130,41 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         out.node_actions = [];
         for (const a of obj.node_actions.slice(0, 4)) {
           const action = String(a?.action || "").trim().toLowerCase();
-          if (action !== "merge" && action !== "keep") {
+          // 2026-09-21 反传抽象改造：动作集合 = {lift, split, keep}（merge 为 lift 的旧别名）。
+          // 此处只做**结构校验**（枚举合法 / 必填声明字段存在与类型）—— 语义判断由 LLM 用声明
+          // 字段外化，程序不解读内容（无正则/长度/相似度判决）。
+          if (!["lift", "split", "keep", "merge"].includes(action)) {
             if (action === "delete") {
-              onLog(`Textron semantic backward: IGNORED delete action from LLM (${a?.node || "?"}) — delete is system-managed, use merge instead`);
+              onLog(`Textron semantic backward: IGNORED delete action from LLM (${a?.node || "?"}) — delete is system-managed, use lift/split instead`);
             }
             continue;
           }
-          const entry: any = { action: action as "merge" | "keep" };
+          const norm = (action === "merge" ? "lift" : action) as "lift" | "split" | "keep";
+          // 结构契约：lift 需 sources（或旧格式 source/target）；split 需 node+kept_abstraction+sink_to
+          if (norm === "lift" && !(Array.isArray(a?.sources) && a.sources.length) && !(a?.source && a?.target)) {
+            recordMonitorEvent({ type: "trace", action: "action_contract_reject", rule: "lift_requires_sources_or_source_target", sources: a?.sources ?? null, source: a?.source ?? null });
+            continue;
+          }
+          if (norm === "split" && (!String(a?.node || "").trim() || !Number.isInteger(a?.sink_to) || !String(a?.kept_abstraction || "").trim())) {
+            recordMonitorEvent({ type: "trace", action: "action_contract_reject", rule: "split_requires_node_kept_abstraction_sink_to", node: a?.node ?? null });
+            continue;
+          }
+          const entry: any = { action: action === "merge" ? "merge" : norm };
           if (a?.rationale) entry.rationale = String(a.rationale).slice(0, 80);
+          if (norm === "lift") {
+            if (Array.isArray(a?.sources)) entry.sources = (a.sources as any[]).map(String);
+            if (String(a?.lifted || "").trim()) entry.lifted = String(a.lifted).trim();
+            if (a?.source_reduction && typeof a.source_reduction === "object") entry.source_reduction = a.source_reduction as Record<string, string>;
+            entry.migrated = a?.migrated === true;
+            const rs = String(a?.resolved || "").toLowerCase();
+            entry.resolved = ["all", "one", "none"].includes(rs) ? rs : null;
+          } else if (norm === "split") {
+            entry.node = String(a.node).trim();
+            entry.kept_abstraction = String(a.kept_abstraction).trim();
+            entry.sink_to = Number(a.sink_to);
+            entry.moved_items = Array.isArray(a?.moved_items) ? (a.moved_items as any[]).map(String) : [];
+            entry.migrated = a?.migrated === true;
+          }
           if (action === "merge") {
             entry.source = String(a?.source || "").trim();
             entry.target = String(a?.target || "").trim();

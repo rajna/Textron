@@ -608,3 +608,67 @@
 8. **判据的适用前提必须显式化**（防假阴性）——“字段出现率 < 30% ⇒ 未生效”这类反证只能用于**窗口内确有目标样本**时；无样本时闸门本无需触发，直接套用会误报失败。修法：给判据加前置样本断言（本例：先看 `highentropy_function_persisted` 且符号属离域族），无样本记 `no_offgoal_sample` **跳过而非失败**。同理：闸门“输出事件为 0”必先分辨“判据维度不匹配（LLM 从未作答）”与“实现 bug（字段有但未拦）”——前者换维度，后者修消费点。
 
 ---
+
+---
+
+## 十二、第二十三轮(2026-09-21,default driver 侧)：反传抽象改造 —— 取消文本拼接,确立 lift/split 对偶与「语义归 LLM、结构归程序」
+
+### 12.1 根因(实测,非推断;两处互证)
+
+| 证据 | 观测 |
+|---|---|
+| **机械病灶** | `src/index.ts` normalize 内 `node_updates` 合成:`const content = rawMode === "replace" \|\| !keep ? delta : \`${keep} ⏎ ${delta}\`` —— **每次 merge 把上一版 keep 前缀拼进新内容**,配合 `NODE_CONTENT_MAX_CHARS = 0`(不限长,`content_limits.ts:6`)⇒ 无上界增长 |
+| **膨胀结果** | `stock_alpha L0::node_0` = **67364 字符 / 27 个 ⏎ 片段 / 13 个域标签**;`_node_history` 128 个版本 `1313 → 7228 → 25302 → 67364`(51×) |
+| **层次倒挂** | 层体积 `L0=67364(81%) / L1=7140 / L2=2686 / L3=6219`;>20KB 节点仅 2 个却占全网 39% 体积 ⇒ **最抽象层(L0)被实例淹没** |
+| **同病节点** | `normal L0::node_0` = 42638 字符 / 35 片段(五子棋/手部检测/视频句柄/交易混装) |
+| **规则侧同源** | 旧规则 10「FUSION NOT OVERWRITE — 三段式 keep+drop+content」在**文本层**工作 ⇒ 与拼接代码配合,LLM 的最安全策略必然是"旧文 + 追加新文";旧规则 8「Prefer merge over add to prevent node bloat」防的是**节点数**,实际制造**单节点爆炸** |
+
+### 12.2 层语义(本轮确认,单一事实来源)
+
+**层号 = 抽象级别,L0 最抽象,层号越大越具体**(与常规 ML「L0=输入层」相反)。三处互证:`lib/lift_merge.ts:5` 注释「层=抽象级别(L0 最抽象)…L0 封顶」;定层函数 `liftMergeResultLayer = Math.min(srcLayer,tgtLayer)`(异层取更抽象);规则 7 `L2+L2→L1 / L1+L2→L1 / L1+L1→L0`。
+⇒ 归位方向:**框架句(机制/因果链/可自动化判据)归 L0,具体实例与单域细节下沉 L1/L2**;倒挂判据 = 体积/片段数/域跨度应随层号递增。
+
+### 12.3 本轮改动(8 处,均已落地并通过 esbuild)
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `index.ts` normalize(node_updates 合成) | **删除 `keep ⏎ delta` 机械拼接** ⇒ `content = delta \|\| keep`(单段整体表述);`absorbed/dropped/migrated` **仅作声明与审计**,不参与拼接;未声明时 `onLog` 一次(节流 `dropMissing`),**不拒绝**(交下一轮 prompt 收敛) |
+| 2 | 规则 7 | `MERGE DUTY` → **`LIFT DUTY`(抽象上提·聚合)**:lift = 三步写入①`add_nodes` 在**层号-1** 建抽象节点 ②`node_updates` 重写**每个源节点**(移除被抽部分)③`node_actions` 声明 lift(sources/lifted/source_reduction/migrated/resolved) |
+| 3 | 规则 8 末句 | 删「Prefer merge over add to prevent node bloat」→ **正交内容即新建**(塞进已有节点才是真 bloat) |
+| 4 | 规则 10 | 三段式**文本融合** → **判据级保留**(禁止文本拼接;content 必须是重写后的整体表述) |
+| 5 | 新增规则 11 | **`SPLIT`(具体下沉·分解)** + **迁移不变量**;**片段>3 / 跨域 / 体积偏大仅作判断提示,不是硬约束** |
+| 6 | user prompt | `MERGE SCAN` → **`LIFT / SPLIT SCAN`**(含三步写入说明);旧 `merge(source→target)` 保留兼容 |
+| 7 | `node_actions` 解析 | 动作集合 = **{lift, split, keep}** + `merge` 别名;只做**结构契约校验**(枚举 / 必填声明字段存在与类型),拒绝时记 `action_contract_reject`;新字段透传 |
+| 8 | `schemaHint` + 两处类型签名(1847 / 2047) | 契约扩展:`lifted / source_reduction / resolved / migrated / kept_abstraction / sink_to / moved_items` |
+
+### 12.4 本轮确立的设计原则(后续必守)
+
+1. **语义判断归 LLM,结构归程序**:程序**不做任何语言分析**(无正则、无长度判决、无相似度);只校验枚举合法、id 存在、层号 ∈ [0,layers)、必填声明字段存在与类型。
+2. **迁移而非复制**(唯一硬不变量):上提的内容必须从下方消失,下沉的内容必须从原节点消失;知识总量不变,只改分布。
+3. **不设长度闸**:长度测量只用于**观测告警**(L0 体积占比 / 片段数 / 层间递增),**不得作为拒绝 LLM 输出的准入条件**(抽象必然新增上层节点,总量会增加,长度闸会误杀正确的 lift)。
+4. **阈值只作 prompt 提示**:片段数/域跨度/体积用于引导 LLM 判断,不写成程序闸门。
+
+### 12.5 验收断言(下一轮工作流可直接字面核对)
+
+- **A1** 静态:`grep -c 'keep} ⏎ ${delta' src/index.ts` == **0**;`esbuild index.ts --bundle --packages=external` 通过(bundle ≈ **359.4 kb**)。
+- **A2** 生效前置:本改动**需 `/reload`(或重启三件套)** 后生效;未 reload 时行为不变 —— 判据 = 反传日志 `semantic_backward_llm_input` 的规则文本中是否出现 **`7. LIFT DUTY`**。
+- **A3** 契约合规:反传输出出现 `action:"lift"` 或 `"split"`(不再是只有 merge/keep),且观测事件 `action_contract_reject` **计数为 0**(结构字段齐全)。
+- **A4** **停止膨胀(核心断言)**:下一轮反传后各 L0 节点字符数**不再单调增长** —— `_node_history` 新版本长度 ≤ 上一版(允许持平或下降)。
+- **A5** `⏎` 片段数不再增加(`stock_alpha L0::node_0` 现值 **27**,新版本应 ≤ 27)。
+- **A6** 层次回收:L0 体积占比自 **81%** 起下行;`>20KB` 节点数(现 **2** 个,占 39% 体积)不增。
+- **A7** 实例下沉证据:新增节点出现在 **L1/L2**(而非继续堆在 L0)。
+
+### 12.6 遗留 / 下一轮 P0 候选(按杠杆排序)
+
+| # | 问题 | 说明 |
+|---|---|---|
+| **P0-1** | `lib/lift_merge.ts` 的 grafted 合并仍会把 source 内容并入 host(有 `overflowContent` >1000c 溢出分流) | 本轮**未动**。若 A4/A5 未达标,L0 膨胀的残留来源即此处 ⇒ 下一步让溢出分流按「抽象/实例」归位,而不是简单分片 |
+| **P0-2** | reward 未纳入层次健康度 | 建议:L0 体积占比 ↑ 或片段数 ↑ ⇒ 负;源节点净减少 + 上层出现更一般判据 ⇒ 正 |
+| **P0-3** | 存量归位 | `stock_alpha L0::node_0`(67364c/27 片段/13 域)与 `normal L0::node_0`(42638c/35 片段)需一次 `split` —— **由 LLM 判断并执行,不用脚本硬切** |
+| **P0-4** | 程序侧 `validate_action_channels` 独立模块化 | 本轮把结构校验内联在 `normalize` 内;若字段继续扩张,应抽到 `lib/action_contract.ts` 单一事实来源(与测试共用) |
+
+### 12.7 交付
+
+- 代码:`src/index.ts`(文本真实路径;`~/.pi/agent/extensions/textron/index.ts` 为**软链**指向此处)。
+- 备份:`~/.pi/agent/extensions/textron/index.ts.bak-abstraction-20260921_012923`(改前,319978 字节)。
+- 编译:`esbuild` bundle **359.4 kb** 通过。

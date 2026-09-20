@@ -6,6 +6,93 @@
 
 ---
 
+# ✦ 最近更新（2026-09-20 23:30）：n8 **第二十二轮** —— **R11 = 判据冲突（双判据互斥无仲裁）**：离域候选判据 `goalSim`（词面余弦）与写入侧保留判据 `retentionVerdict.evidence` 对**同一节点**给出相反结论 ⇒ `cleanseViolationCount` 结构性每轮必 1、永不收敛 ⇒ 实施**判据冲突分流**（需 `/reload`；只分类不拦截）
+
+> 本轮由 n6 交易推进（`/api/step` ×2）+ 其后一次完整反传触发，全链取证。
+
+## 一、本轮验收（n6 产物生效性 / 轨迹保真 / 反传健康度）
+
+| 项 | 结果 | 证据（可复算） |
+|---|---|---|
+| 交易推进 | ✅ 2 次（step_index 80→81→82，2025-05-12→05-14），两次均「不建仓继续观察」价量双零；现金 ¥104,415 未动、累计 +4.415%；`trade_quality` 58.2→58.1（`position` 维度 0 分 = 结构性零值，待办 23） | `/api/saves`、`/api/trade_quality?session_id=ff5b7ae0f07a` |
+| **R10 干净基线** | ✅ `semantic_backward_apply` = `nodesUpdated=1 / edgesUpdated=3 / nodesAdded=0 / nodesMerged=0`（崩溃期恒 0–1 属伪影，本轮确认） | `ts=2026-09-20T15:26:17.759Z` |
+| `goalCleanseFallback` 崩溃 | ✅ **本轮 15:25 反传未复现**（修复需 `/reload`，实际已 reload）。存量 49 次 `debug_backward_autobackward_failed`，其中 `goalCleanseFallback` 25 次、末次 `2026-09-20T12:16:13Z` | 全量聚合 by error 首行 |
+| 轨迹保真 | ✅ `entries=45, inputTruncated=0, outputTruncated=0, droppedOldest=0`（`db33ba8` 生效） | `trajectory_tools_fidelity` |
+| 函数块存活 | ✅ `symbolsAlive=6 / fnBlocksOnDisk=7 / refsTotal=122`（`741788a` 生效，非结构性零值）；本轮新落 `orchestrate_step_loop_band_gate`（1200c） | `fn_ref_dangling`、`highentropy_function_persisted` |
+| R10 判据接线 | ✅ `semantic_backward_goal_cleanse.candidates` **非空（6 项）**、`candidateModes` 键集==candidates、`fallbackApplied=null` ⇒ 待办 22 判据达标 | `ts=15:26:17.756Z` |
+| 待办 21（函数侧域闸） | ✅ LLM 输出 `function_off_goal:false`（字段出现，非缺失） | `semantic_backward_llm_raw_response` |
+| 待办 18（配对源陈旧） | ❌ 复现：`semantic_backward_entered.matchedTaskTs=2026-09-17T20:40:59Z`（早于窗口 3 天，远超 10min 判据）；`taskPromptPatch="matched"` ∧ `taskPromptPatchedRawChars=0`（补丁分支仍不走） | `ts=15:25:17.557Z` |
+| 待办 13（丢 HE） | 本轮 `no_pending_match` 未复现；但出现新变体 `agent_end_backward_skipped.reason="no_assistant_content"`（sender 首次回空文本 = local-coms `empty_assistant_text` 场景，`hasMatch=true`） | `ts=15:22:14Z` |
+
+## 二、本轮根因 **R11（单变量）：候选枚举侧与写入侧使用两套互斥判据，且无仲裁**
+
+**字面取证（同一节点，同一轮，两判据结论相反）**：
+- 候选侧（`goalCleanseTargets` → `goalSim` 词面余弦）：`L1::node_1` = **0.0236**，是 4 个候选中的**最低分**（最"离域"）⇒ 列入 MUST-CLEANSE。
+- 写入侧（`retentionVerdict`）：同节点 `evidence=["goal","coherence"]`、`goalHits=5`、`oldCover=0.5803`、`offDomain=false` ⇒ 判**在域**，`node_write_downgraded_to_merge` 放行。
+- 程序行为：按写入侧**放行**、按候选侧**告警** ⇒ `cleanseViolationCount=1`（首次真实落盘 `semantic_backward_goal_cleanse_violation`）。
+
+**LLM 侧反证（排除"LLM 未遵规则 0(a)"这一假设）**：本轮 `node_updates["L1::node_1"].mode="merge"` 是 LLM **显式输出**，且其 `content` 是**纯交易域**符号化增量（`p_gate` / `box=res_prev−sup_prev` / `squeez_mult·ATR` / 闸门死区 `p_band=0.03`），`name` 亦为交易域（"闸门死区·p_gate邻域单侧翻转·第二独立证据裁决"）。⇒ 判"离域污染"是误判，不是 LLM 违规。
+
+**成因同 R8 家族**：`terms()` 对符号化专业增量（`p_gate`/`ATR`/`1.5·ATR`）与 goal 文本（"交易经验/量能/均线/黄金分割"）字面重合天然稀疏 ⇒ 词面余弦低分。R8 修的是它在**写入侧**的出口（拒写），R11 是它在**候选枚举侧**的第二个出口 ⇒ `cleanseViolationCount` 是死指标复活（违反硬性约束 11/12：跨轮可比性）。
+
+## 三、本轮实施的改进（`src/index.ts`；需 `/reload`；**只分类不拦截**）
+
+1. `applySemanticNodeUpdates` 的 `result` 新增 **`domainVerdicts`**（把写入侧判据的 `scoreOld/scoreNew/goalHits/oldCover/evidence/offDomain/decision` 回传；`decision ∈ replaced|refused|downgraded_merge`）——此前这些值只进日志、出不了函数，是"双判据无法对账"的结构性原因。
+2. `semantic_backward_goal_cleanse` 段改为**分流**：带 `goal` 证据的候选移入 `judgmentConflicts` 并落新事件 **`semantic_backward_judge_conflict`**（`note=program_off_goal_but_write_side_has_goal_evidence`）；`cleanseViolationCount` **只计「写入侧无 goal 证据」的真违规**；事件新增 `judgmentConflictCount` / `candidateDecisions`。
+3. **不改写入策略**（守硬性约束 2/7：不重开 `forceOverwrite`/强制覆写通道）——冲突时既不拦截也不清洗，只让"判据是否自洽"进入时间序列。
+4. 测试：`tests/goal_cleanse_mode_audit.py` 扩展 —— 分类逻辑同构重算 + `--expect-violation/--expect-conflict` + **`--replay` 与落盘字段逐字对账**。实测真实样本 `conflict=1 / violation=0` ✅（旧实现记 `violation=1`）；`esbuild --bundle` **578.1kb** 通过。
+5. 修一个测试侧陷阱（写入侧事件由 `_logFields` 展开落盘、**不带 `taskFamily`** ⇒ 按 taskFamily 过滤会全量漏采）：改为"字段缺失即放行 + 按 `goal_guard.ts` 时间窗对齐"（`_events.jsonl` 多进程交错写入，非严格时序）。
+
+## 四、下一轮验收断言（H 组，逐条可字面核对）
+
+- **H1**：窗口出现 `semantic_backward_judge_conflict` ∧ 同轮 `cleanseViolationCount` == 写入侧无 `goal` 证据的候选数 ∧ `judgmentConflictCount` == 带 `goal` 证据的候选数。
+- **H2（反证）**：`judgmentConflictCount` 字段在 `semantic_backward_goal_cleanse` 上缺失率 100% ⇒ 未 `/reload`，不得记失败于实现。
+- **H3**：`python3 tests/goal_cleanse_mode_audit.py --replay` **退出码 0**（口径可复算）；`--expect-conflict 1 --expect-violation 0` 通过。
+- **H4**：`debug_backward_autobackward_failed` 不再出现 `goalCleanseFallback`（本轮已作正向基线）。
+- **H5**：`nodesMerged/nodesAdded/edgesUpdated` 维持非零（R10 干净基线不得再回退）。
+
+## 五、P0 排序变化
+
+- **#25（新增，最高杠杆）**：R11 的**仲裁层缺失** —— 分流只让冲突可见，离域内容仍在累积（`L1::node_1` 已 **24062 字符**；`layer_0/node_0` 166KB / `layer_0/node_1` 174KB / `layer_1/node_1` 50KB）。仲裁判据须用 **LLM 语义判据**（同轮已输出 `function_off_goal`）而非词面余弦——与待办 20「优先淘汰离目标域块，判据须由 LLM 给」同源，两条合并实施。
+- **#18（仍为高杠杆）**：`matchedTaskTs` 陈旧 3 天已第二次取证；`taskPromptPatch="matched"` ∧ `rawPromptPatchedRawChars=0` ⇒ 反传的"任务侧"用的是旧任务原文。
+- **#13 变体**：`agent_end_backward_skipped{reason:"no_assistant_content"}`（`hasMatch=true`）——空回包场景下 reward 与 HE 双丢，须补 self-backward（reward 标 `unattributed`，禁由 HE 驱动）。
+- **#26（新增，观测项）**：单轮反传 `userPromptChars=213740`（≈21 万字符）且 `durationMs=60301` —— 预算/裁剪未见上限，成本与超时风险未量化。
+
+---
+
+# ✦ 最近更新（2026-09-20 20:15）：① stock-trade **空仓多标的决策稿 + 按 `stock_code` 成交**（7860 已重启生效）｜② Textron `autoBackward` **作用域崩溃修复**（需 `/reload`；24 次实证，并据此**修正 R10 结论**）
+
+> 备份：本文件 `HANDOVER.bak.20260920_201514.md`；stock-trade `app.py.snapshot-promptmulti-20260920-194922`。
+> git：`src/index.ts` 已改（**未提交**）；`~/.pi/agent/extensions/textron/index.ts` 是**符号链接**指向上文件 ⇒ 无构建步骤，改完仅需 `/reload`。
+
+## 一、stock-trade：空仓 3 只标的选一只 → 按标的成交（`skills/stock-trade/UI/app.py`）
+
+**需求口径（用户校准后的准确版）**：`/api/prompt` 判断是否持仓；**空仓**则调选股模块加选 2 只，`data.prompt`（**永远只有一份**，不是 `prompts` 数组）内容变成 3 只股票的 日K/周K/月K，并要求选定 1 只交易；prompt 的 JSON 加 `stock_code` 字段；`/api/step` 按该代码成交。**有仓位 = 单份、只讲当前股**（“保持原样”= 形态不变，**不是**退回改造前——K 线块两态都必须有）。
+
+**实施（单一事实来源，4 处）**：
+1. `_decision_contract_text(symbol)`：决策 JSON 契约唯一来源（`stock_code` + 6 值 `decision` + tradePrice/tradeQuantity/confidence + 语义段），主稿/空仓稿共用 ⇒ 消灭“两处契约漂移”。
+2. `_kline_periods_text(daily, as_of)` + `_resample_asof(df, rule)`：任意标的日/周/月 K 文本；**as_of 截断 + resample 未完整桶标签修正为数据末日**（与 `update_market_prices_local` 同规则）⇒ 无未来 K 线泄漏（守 n6 第 10 条）。
+3. `_prompt_stock_data(session, extra)`：有持仓→仅当前股；空仓→当前股 + `pick_new_stock`（排除当前股与已参加记录池）加选 `PROMPT_EXTRA_STOCKS=2`，K 线拉取失败有界换股；候选池按 **`(session_id, current_stock, current_date, extra)` 快照缓存**（否则每次轮询换新股 ⇒ worker 选定的 `stock_code` 在两次调用间失效）。
+4. `_switch_active_stock(session, symbol, as_of)` + `/api/step` 路由：`stock_code` ≠ 当前股 → 新建该标的 `StockTradingGame` → `current_data_index` 快进到 ≤ as_of 最近交易日 → 回填 `cash_balance/initial_cash/transaction_history` → `stg._update_market_prices` 刷新 → 替换 `session.game`（**时间轴/现金/成交记录不变**，写“切换标的”轨迹）。**有持仓时切他股 → 400**「有持仓时不能切换标的（请先卖出）」；`stock_code` 缺省 ⇒ 行为与改造前完全一致。
+
+**实测（进程内 test_client + 一次性 GameSession，跑完按目录 diff 清理，未触碰存档）**：空仓 ⇒ `data` 无 `prompts`；prompt 内 3 只标的、`【日K】/【周K】/【月K】`各 3 段、含“选定 1 只”与 `"stock_code"`。`step` 带候选代码 ⇒ `stock_switch` 记录 `from→to` 且成交成功（例 `成功买入 sz.002987 100股 @ $7.47`）。有仓位 ⇒ 单份、只讲当前股（三周期各 1 段）+ 持仓组合 + “本次只交易该标的”，`stock_code`=当前股。
+**实测坑（已写入空仓稿硬提示）**：切标的买入时 `tradePrice` 必须是**所选那只**的价格 —— 沿用原股票价格会被限价撮合按**目标股** D+1 区间拒（实测「买入价 20.28 超出当日价格范围 [27.51, 28.66]，交易失败」）。
+
+## 二、Textron `autoBackward` 崩溃：`goalCleanseFallback is not defined`（`src/index.ts`，需 `/reload`）
+
+**病灶（跨作用域引用，同族第二例）**：`goalCleanseFallback` 声明在 prompt 构建函数（~L1985，供 `semantic_backward_llm_input` 日志）；9/18 移除 `forceOverwrite` 后 `semantic_backward_goal_cleanse` 事件（~L3124）仍引用它 ⇒ 每次走到该事件即 `ReferenceError`。
+**实证（可复算，非推测）**：`~/.textron/_events.jsonl` 的 `debug_backward_autobackward_failed` 按 error 首行聚合 ⇒ **`ReferenceError: goalCleanseFallback is not defined` 24 次，时间窗 `2026-09-19T13:37:59 ~ 2026-09-20T12:06:29`**；同族历史：`2026-07-24` `ReferenceError: nodesAdded is not defined` 5 次 ⇒ “跨作用域变量引用”是**可复发家族**（检测手段：该事件按 error 首行聚合 + 时间窗，不要只看总次数）。
+**修法（最小侵入，零行为变更）**：在事件所在函数内补 `const goalCleanseFallback = "";` + 注释（`forceOverwrite` 移除后确定性兜底结构性不触发，字段仅保事件 schema）；`esbuild --bundle` **853.7kb** 通过。
+**⚠️ 连带影响 ⇒ R10 结论需修正**：崩溃点在 `applySemanticNodeUpdates(...)` **之后**、`Node additions` / `node_actions`(merge) / edges / `semantic_backward_apply` 事件**之前**，而 `forcedSemanticBackward` 的 `catch` 只记 `debug_backward_autobackward_failed` 后**原样 rethrow** ⇒ 这 24 轮反传的 **merge / add_nodes / edges / 计数全部被跳过**。R10 记的「抽象融合质量欠佳（`nodesMerged=0–1`、`edgesUpdated=0`、`nodesAdded=0`，L2/L3 无更新）」**很可能是崩溃伪影而非 LLM 质量**；R10 引用的 `fallbackApplied` 值也从未真正落盘（须作废）。
+
+## 三、待办（交接给 guard / 下轮验收，带判据）
+1. **`/reload` 后复核 2 项**：① `debug_backward_autobackward_failed` 不再出现 `goalCleanseFallback`；② `semantic_backward_apply` 的 `nodesMerged/nodesAdded/edgesUpdated` **是否恢复非零** —— 这才是 R10「抽象融合」指标的**干净基线**，不得再拿崩溃期数据下结论。
+2. **workflow n6 三处对齐**（`workflows/workflow.md`）：① 第 6/8 步决策 JSON 与 `/api/step` body 必须带 `stock_code`；② 第 8 步先判 `ok`，遇 `400 有持仓时不能切换标的` 要把 `error` 回发 worker 重出决策且**不计入 2 次交易计数**；③ 第 11 步补语义（候选跨日才刷新；买入某候选后其成为当前股，下一轮回到“有仓位”单股形态）。配套 `workflows/trade.py`：`TradeDecision` TypedDict、`_dec()` 出口、`decide()` 契约守卫降级分支补 `stock_code`，改后跑 `_selfcheck`。
+3. **数据隔离复核（复核项，非假设）**：主稿/空仓稿/候选三处 K 线来源一律 `as_of` 截断，`resample` 未完整桶标签修正为末日。
+4. **git**：`src/index.ts` 的本次修复待提交（工作区另有他人未提交的 `workflows/textron-agent_workflows_workflow_3.md`，勿一并扫入）。
+
+---
+
 # ✦ default 侧改进（2026-09-18 04:25）：monitor **端口漂移/掉线**治理 —— 端口注册表 + 固定分配 + 读侧工具
 
 > 触发：用户报「textron live web 总是掉线或换端口」。归因链全部落代码取证，非猜测。
@@ -51,6 +138,7 @@
 ## 二、R10 根因（>95% 置信度，字面取证）
 1. **死指标**：`semantic_backward_goal_cleanse` 的 `cleanseTargets` **结构性恒为空** —— `src/index.ts` 中 `const cleanseTargets = new Set<string>()`（2026-09-15 有意移除 forceOverwrite「抹掉好知识的直接通道」后**未同步事件语义**）⇒ `cleansedNodes` 恒空，该字段对「离域是否被清洗」零判别力，且容易被误读为「清洗已执行」（硬性约束 11/12 的反面样本：指标存在但采集源注定为空）。
 2. **mode 被丢弃 ⇒ 程序侧无法分辨真清洗**：LLM 的 `mode`（replace=整段覆盖 / merge=keep⏎delta）在 `normalize` 消费后不再透传；而 prompt 规则 0(a) 明写「离域候选清洗必须 OVERWRITE」。实测候选被 **merge** 更新 ⇒ 离域内容**继续追加留存**；同时 (a2) 的「非空候选必须至少覆盖一个」被 `covered = 键是否存在` 满足（**不看 mode**）⇒ 确定性兜底清洗不触发（`fallbackApplied=''`）⇒ 离域治理在「已覆盖」的假象下空转。
+   > ⚠️ **2026-09-20 更正**：该事件此前走不到这行就 `ReferenceError` 崩了（详见本文置顶条目二，实证 24 次）⇒ 这里的 `fallbackApplied=''` **不构成有效观测**，且 `mode`/`candidateModes` 同样未落盘；本条的“merge 静默留存”结论需在 `/reload` 后**重新取证**再下断言。
 3. **离线重放（本轮真实样本）**：`tests/goal_cleanse_mode_audit.py` → 候选 4（`L1::node_1 goalSim=0.0164` / `L3::node_0 0.0186` / `L1::node_0` / `L0::node_1`），mode = `merge/merge/(no_update)/(no_update)` ⇒ **违规 2 例**，判据有判别力。副证：**全部候选 goalSim ≤0.019**（网络内容与 goal 词面近乎无交集）⇒ goalSim 排序会把真交易节点一并标为离域 ⇒ 「LLM 是唯一语义判据、程序侧禁止据 goalSim 强制覆写」的历史结论**继续成立**，本轮不动写入策略。
 
 ## 三、实施 `e9076f0`（需 `/reload`；纯观测 + 告警，无拦截）
@@ -390,8 +478,10 @@
 | 19 | **悬空 `[fn:σ]`**：✅ 口径采集源已修（`741788a`：`symbolsAlive` 恒 0 的根因 = 函数块写在 `</content>` 之外）；**真基线 stock_alpha 79 pairs / 103 refs（symbolsAlive 6）**。剥离 content 引用的策略待 G1 基线稳固后再决；**存量悬空仍禁手工清理** | ⏳ 部分 |
 | 20 | **层容量 `maxBlocks=2` 下的淘汰优先级（已重复现象）**：第十七轮 `sender_step_loop_orchestrate` 顶掉 `pi_star_gate_delta_decision`（上轮 `turn_based_step_driver` 顶掉 `classify_reply_failure`）；可评估「优先淘汰离目标域块」，判据须由 LLM 给 | ⏳ 观察 |
 | 23 | **`/api/trade_quality` 空仓时 `position` 维度恒 0 分**（第二十一轮实测：清仓后 `open_trades=0` ⇒ `position=0`，而 `account/behavior/benchmark/holding/risk_control/timing/trade` 均正常）：属**结构性零值**（无持仓 → 无仓位可评），不得当作「仓位管理最差」记入质量台账（同硬性约束 12 推论）；判据：`open_trades==0` 时该维度必须返回 `null`/`no_position` 而非 0，且综合分权重重归一 | ⏳ 未修（7860 侧） |
-| 22 | **R10 离域清洗判据运行期验收**（`e9076f0`，需 `/reload`）：`semantic_backward_goal_cleanse.candidates` 非空 ∧ `candidateModes` 键集==candidates ∧ `cleanseViolationCount`==离线脚本重算；反证：`candidates` 恒空或与 `nodeUpdatesKeys` 无关 ⇒ 判据未接线 | ⏳ 待 reload |
+| 22 | **R10 离域清洗判据运行期验收**（`e9076f0`，需 `/reload`）：✅ **第二十二轮达标** —— `semantic_backward_goal_cleanse.candidates` 非空（6 项）∧ `candidateModes` 键集==candidates ∧ `fallbackApplied=null`；但该判据的 violation 语义已被第二十二轮**判据冲突分流**取代（见 #25），跨轮**只读 `cleanseViolationCount`（真违规）** | ✅ 已达标 |
 | 21 | **函数侧域闸运行期验收（本轮新实施，需 n9 重启）**：窗口出现 `semantic_backward_function_off_goal` ∧ `highentropy_function_skipped{function_off_goal}`；反证：`function_off_goal` 字段出现率 <30% ⇒ 判迁移未生效（判据见第五节 F1'/F2'/反证） | ⏳ 待 n9 |
+| 25 | **R11 仲裁层缺失（第二十二轮新增，最高杠杆）**：分流只让"候选侧判离域 ∧ 写入侧判在域"可见，**未仲裁** ⇒ 离域内容仍在累积（`L1::node_1` 24062c；`layer_0/node_0` 166KB、`layer_0/node_1` 174KB、`layer_1/node_1` 50KB）。仲裁判据须用 **LLM 语义判据**（同轮已输出 `function_off_goal`）而非词面余弦——**与 #20 合并实施**。判据：`judgmentConflictCount` 出现后，#20 的淘汰/清洗应由 LLM 给出的域标签驱动，且节点字符数**不再单调增长** | ⏳ 未修（与 #20 合并） |
+| 26 | **反传 prompt 体量无上限（第二十二轮新增，观测）**：单轮 `semantic_backward_llm_input.userPromptChars=213740`（≈21 万字符）、`durationMs=60301`；预算参数已走 `buildBudgetParams()`（守约束 4），但无"输入体量/耗时"上限与告警。判据：超阈值（如 >120k）时落告警事件，先观测再定阈 | ⏳ 未修（观测） |
 
 ---
 
@@ -434,6 +524,11 @@
     - **规则**：任何「每进程一份」的对外资源（监听端口 / 临时文件 / 单例句柄）上线时必须带**名片**（`pid + 身份 + 资源号 + startedAt/updatedAt`）写入固定注册表，并提供**读侧校验工具**（以「pid 存活 ∧ 资源真在监听」为准，不得只信注册表）；身份字段要**从 `argv` 取值**而非依赖扩展加载顺序（`pi.getFlag('cname')` 在早加载的扩展里取不到）。
     - **退出路径必须三保险**：`session_shutdown`（优雅） + `process.on("exit")`（同步兜底） + **显式 `SIGTERM/SIGHUP/SIGINT` 监听**——实测非 TTY 下无信号 handler 时 SIGTERM **不触发** `exit` 事件，条目必残留；`SIGKILL` 不可捕获，只能靠「下一个注册者 prune + 读侧 `kill -0` 校验」收敛。
     - **推论**：跨进程资源的「存活」判定权在**读者**手里，不在写者；只写不验的注册表等于新噪音。
+14. **同一对象上的多个判据必须可对账，否则不算判据**（第二十二轮新增；触发：离域候选侧 `goalSim`（词面余弦）与写入侧 `retentionVerdict.evidence` 对**同一节点**给出相反结论（0.0236=最离域 vs `[goal,coherence]`=在域），程序按写入侧放行、按候选侧告警 ⇒ `cleanseViolationCount` 结构性每轮必 1、永不收敛）。
+    - **规则**：凡对同一对象（节点/函数/回合）存在两个及以上判据，必须在同一事件里**同时落两边的分数与结论**（本例：`domainVerdicts` 回传 + `judgmentConflictCount` / `candidateDecisions`），并把「两判据结论相反」定义为**冲突**而非任一方的结论统计值。
+    - **推论 1**：判据的中间量只进日志、出不了函数（拿不到旧文/新文就无对账依据）⇒ 必然不可对账；判据结论必须作为**结构化返回值**随流程上行。
+    - **推论 2**：**词面判据不得单独给"离域"定性**（同 R8：符号化专业增量与 goal 的 2-gram 重合天然稀疏）；域标签须由 LLM 语义判定给出（同轮 `function_off_goal` 已在同一决策里），与待办 20 同源。
+    - **推论 3**：跨轮只允许引用**真违规**作台账；混入冲突会让指标值变化不可解释（约束 11/12 的直接推论）。
 
 ---
 

@@ -2785,7 +2785,10 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       skipReasons: string[];
       changedNodes: { id: string; layer: number; nodeId: string; oldName: string; newName: string; oldContent: string; newContent: string }[];
       nodeMutations: { type: "update" | "add" | "merge" | "delete"; id: string; source?: string; target?: string }[];
-    } = { updated: 0, skipped: 0, skipReasons: [], changedNodes: [], nodeMutations: [] };
+      // 2026-09-20 n8 第二十二轮：把「写入侧保留判据」的结论回传（此前只进 _logFields 日志、出不了函数），
+      // 供 cleanse 段做判据冲突分流（程序判离域 ∧ 写入侧有 goal 证据 = 冲突而非违规）。纯观测、不改写入策略。
+      domainVerdicts: Record<string, { scoreOld: number; scoreNew: number; goalHits: number; oldCover: number; evidence: string[]; offDomain: boolean; decision: string }>;
+    } = { updated: 0, skipped: 0, skipReasons: [], changedNodes: [], nodeMutations: [], domainVerdicts: {} };
     let nodesAdded = 0;
     if (!updates) return result;
 
@@ -2873,7 +2876,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         const _sOld = _v.scoreOld;
         const _sNew = _v.scoreNew;
         const _logFields = { id, scoreOld: Number(_sOld.toFixed(4)), scoreNew: Number(_sNew.toFixed(4)), goalHits: _v.goalHits, oldCover: Number(_v.oldCover.toFixed(4)), freshNode: _v.freshNode, evidence: _v.evidence, oldChars: oldContent.length, newChars: newContent.length };
+        result.domainVerdicts[id] = { scoreOld: _sOld, scoreNew: _sNew, goalHits: _v.goalHits, oldCover: _v.oldCover, evidence: _v.evidence, offDomain: _v.offDomain, decision: "replaced" };
         if (_sNew < _sOld * 0.85 && _v.offDomain) {
+          result.domainVerdicts[id].decision = "refused";
           result.skipped++;
           result.skipReasons.push(`${id}:retention_new_worse`);
           recordMonitorEvent({ type: "trace", action: "node_write_refused_keep_better", ..._logFields, offDomain: true });
@@ -2882,6 +2887,7 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         }
         if (_sNew < _sOld) {
           forcedReplace = false;
+          result.domainVerdicts[id].decision = "downgraded_merge";
           // 观测点（下轮验收）：判据修正后 LLM 增量应当真正落盘 ⇒ 本事件数应与 refused 一起看。
           recordMonitorEvent({ type: "trace", action: "node_write_downgraded_to_merge", ..._logFields, offDomain: false });
           onLog(`Textron backward: downgraded overwrite of ${id} to merge — in-domain increment (${_sNew.toFixed(4)} < ${_sOld.toFixed(4)}, evidence=${_v.evidence.join("+") || "none"})`);
@@ -3088,6 +3094,9 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
     // 网络目标驱动的离域清洗：候选节点的写入必须走 replace（覆盖），而非 merge（拼接）。
     // 否则「把工程知识更新掉」会被引警退化为「工程+交易 拼接」，越洗越脏。
     const cleanseInfo = goalCleanseTargets(net, 8);
+    // 修复 ReferenceError：goalCleanseFallback 原属 prompt 构建函数作用域（~L1985），
+    // 此处仅是监控事件字段；forceOverwrite 移除后确定性兜底结构性不触发，恒为空串。
+    const goalCleanseFallback = "";
     // 2026-09-15：不再把候选名单当 forceOverwrite —— 「程序侧强制覆写」正是抹掉好知识的直接通道
     // （候选名单一旦错选，真领域知识必被硬替换）。清洗改由 LLM 显式决策，程序只做相对保留闸门。
     const cleanseTargets = new Set<string>();
@@ -3100,13 +3109,35 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
       // 候选各自收到的 mode（replace=真清洗 / merge=内容追加 / 无键=false=未动），供离线形成时间序列。
       const candidateModes: Record<string, string> = {};
       const cleanseViolations: { nodeId: string; mode: string; goalSim: number | null }[] = [];
+      // 2026-09-20 n8 第二十二轮 **判据冲突分流**（本事件上线以来的首次真实违规取证暴露的真因）：
+      // 程序侧离域判据 goalSim（词面余弦）与写入侧保留判据 retentionVerdict.evidence 含 "goal"
+      // 对同一节点给出**相反**结论时，原实现仍计入 cleanseViolation ⇒ 该计数对「是否真离域」零判别力
+      // （结构性每轮必 1、永不收敛，违反硬性约束 11/12：跨轮比较的指标必须可解释）。
+      // 本轮实证：L1::node_1 goalSim=0.0236（候选中最“离域”）却被 LLM 写入**纯交易域**的符号化增量
+      // （p_gate / box / squeez_mult / 1.5·ATR 闸门死区），retentionVerdict 判 evidence=["goal","coherence"] ⇒ 同一节点被两判据给出互斥结论。
+      // 成因同 R8 家族（词面稀疏的符号化专业增量天然低分），此处是它在**候选枚举侧**的第二个出口。
+      // 处置：只分类、不拦截（守硬性约束 2/7：不重开强制覆写通道）。真违规走原事件，带 goal 证据的移入冲突集，
+      // 使 cleanseViolationCount 恢复可收敛、可跨轮比较的判别力。
+      const judgmentConflicts: { nodeId: string; mode: string; goalSim: number | null; evidence: string[]; goalHits: number; scoreOld: number; scoreNew: number }[] = [];
+      const candidateDecisions: Record<string, string> = {};
       for (const t of cleanseInfo.targets) {
         const u = nodeUpdates ? (nodeUpdates as any)[t.key] : undefined;
         const mode = !u ? "(no_update)" : String(u?.mode || "merge");
         candidateModes[t.key] = mode;
+        const v = nodeResult.domainVerdicts[t.key];
         // 规则 0(a)：离域候选必须走 replace(OVERWRITE)。用 merge 更新候选 = 「工程内容被追加留存」的
-        // 静默违反（候选判据与写入目标自相矛盾）。只告警、不改写入策略（硬性约束 2/7：不重开强制覆写通道）。
-        if (u && mode !== "replace") cleanseViolations.push({ nodeId: t.key, mode, goalSim: t.goalSim });
+        // 静默违反（候选判据与写入目标自相矛盾）。
+        if (!u || mode === "replace") {
+          candidateDecisions[t.key] = v ? v.decision : "(untouched)";
+          continue;
+        }
+        if (v && v.evidence.includes("goal")) {
+          judgmentConflicts.push({ nodeId: t.key, mode, goalSim: t.goalSim, evidence: v.evidence, goalHits: v.goalHits, scoreOld: v.scoreOld, scoreNew: v.scoreNew });
+          candidateDecisions[t.key] = `conflict:${v.decision}`;
+        } else {
+          cleanseViolations.push({ nodeId: t.key, mode, goalSim: t.goalSim });
+          candidateDecisions[t.key] = v ? v.decision : "(no_verdict)";
+        }
       }
       recordMonitorEvent({
         type: "trace",
@@ -3120,10 +3151,23 @@ MERGE SCAN (MANDATORY): Review RELATED nodes above. For EVERY pair with ≥15% s
         // 新增（真实值）：离域候选名单 + 各自 mode + 兜底是否触发（此前无任何字段能反映清洗是否发生）
         candidates: cleanseInfo.targets.map((t) => t.key),
         candidateModes,
+        // 第二十二轮：违规数只计「写入侧无 goal 证据」的真违规；冲突单独成集，避免死指标复活。
         cleanseViolationCount: cleanseViolations.length,
+        judgmentConflictCount: judgmentConflicts.length,
+        candidateDecisions,
         fallbackApplied: goalCleanseFallback || null,
         nodeUpdatesKeys: Object.keys(nodeUpdates || {}),
       });
+      if (judgmentConflicts.length) {
+        recordMonitorEvent({
+          type: "trace",
+          action: "semantic_backward_judge_conflict",
+          taskFamily: path.basename(net.path),
+          goal: cleanseInfo.goal,
+          conflicts: judgmentConflicts,
+          note: "program_off_goal_but_write_side_has_goal_evidence",
+        });
+      }
       if (cleanseViolations.length) {
         recordMonitorEvent({
           type: "trace",
